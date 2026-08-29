@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create or promote an admin and encode a 30-day one-time login ticket locally."""
+"""Create or promote an admin and encode a reusable 30-day login ticket locally."""
 
 from __future__ import annotations
 
@@ -153,7 +153,7 @@ def write_qr(value: str, output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create an admin account and a local, 30-day one-time login QR code."
+        description="Create an admin account and a local, reusable 30-day login QR code."
     )
     parser.add_argument("--email", help="Admin email; defaults to CROSSREF_MAILTO")
     parser.add_argument("--site-url", default=DEFAULT_SITE_URL)
@@ -187,11 +187,12 @@ def main() -> None:
             {
                 "admin_email": email,
                 "user_id": user_id,
-                "credential_type": "one_time_admin_ticket",
+                "credential_type": "reusable_admin_ticket",
                 "created_at": created_at.isoformat(),
                 "expires_at": expires_at.isoformat(),
                 "expires_in_seconds": expires_in,
-                "single_use": True,
+                "single_use": False,
+                "reusable_until_expiry": True,
                 "qr_path": str(output),
             },
             indent=2,
@@ -208,7 +209,8 @@ def main() -> None:
                 "qr_path": str(output),
                 "expires_in_seconds": expires_in,
                 "valid_days": args.valid_days,
-                "single_use": True,
+                "single_use": False,
+                "reusable_until_expiry": True,
                 "raw_ticket_printed": False,
             },
             indent=2,

@@ -19,7 +19,7 @@ Deno.serve(async (request) => {
     }
 
     const admin = adminClient();
-    const { data: claimed, error: claimError } = await admin.rpc("claim_admin_login_ticket", {
+    const { data: claimed, error: claimError } = await admin.rpc("redeem_admin_login_ticket", {
       p_token_hash: await sha256(token),
     });
     if (claimError) throw claimError;

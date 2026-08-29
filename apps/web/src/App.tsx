@@ -32,7 +32,7 @@ function AdminTicketLogin() {
         throw new Error("服务器返回了无效登录地址");
       }
       window.location.replace(actionLink);
-    }).catch(() => setError("管理员二维码无效、已使用或已过期，请重新生成。"));
+    }).catch(() => setError("管理员二维码无效、已撤销或已过期，请重新生成。"));
   }, []);
   return <div className="grid min-h-screen place-items-center p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-paper">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-red-200" : "text-slate-400"}`}>{error || "请勿关闭页面，完成后将自动进入管理界面。"}</p></div></div>;
 }
