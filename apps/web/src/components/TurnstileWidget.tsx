@@ -15,6 +15,5 @@ export function TurnstileWidget({ onToken }: { onToken: (token: string) => void 
     }, 100);
     return () => { cancelled = true; window.clearInterval(interval); if (widgetId && window.turnstile) window.turnstile.remove(widgetId); };
   }, [siteKey, onToken]);
-  return <div ref={container}>{!siteKey && <span className="text-xs text-amber">Turnstile local development mode</span>}</div>;
+  return <div ref={container}>{!siteKey && <span className="text-xs text-warning">Turnstile local development mode</span>}</div>;
 }
-

@@ -14,7 +14,7 @@ const ReportPage = lazy(() => import("./pages/ReportPage").then((module) => ({ d
 const SharedReportPage = lazy(() => import("./pages/SharedReportPage").then((module) => ({ default: module.SharedReportPage })));
 
 function Loading() {
-  return <div className="panel p-12 text-center text-slate-400">加载页面…</div>;
+  return <div className="panel p-12 text-center text-muted">加载页面…</div>;
 }
 
 function AdminTicketLogin() {
@@ -45,11 +45,11 @@ function AdminTicketLogin() {
       setError(`扫码登录失败：${message}`);
     });
   }, []);
-  return <div className="grid min-h-screen place-items-center p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-paper">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-red-200" : "text-slate-400"}`}>{error || "请勿关闭页面，完成后将自动进入管理界面。"}</p></div></div>;
+  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-content">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-danger" : "text-muted"}`}>{error || "请勿关闭页面，完成后将自动进入管理界面。"}</p></div></div>;
 }
 
 function SetupRequired() {
-  return <div className="grid min-h-screen place-items-center p-5"><div className="panel max-w-xl p-8"><p className="eyebrow">Configuration required</p><h1 className="mt-3 text-3xl font-semibold text-paper">连接 Supabase 后启动网站</h1><p className="mt-4 leading-7 text-slate-400">复制 <code className="text-amber">apps/web/.env.example</code> 为本地环境文件，只填写 Supabase URL、anon key 和 Turnstile site key。秘密 provider key 不得出现在前端。</p></div></div>;
+  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-xl p-8"><p className="eyebrow">Configuration required</p><h1 className="mt-3 text-3xl font-semibold text-content">连接 Supabase 后启动网站</h1><p className="mt-4 leading-7 text-muted">复制 <code className="text-warning">apps/web/.env.example</code> 为本地环境文件，只填写 Supabase URL、anon key 和 Turnstile site key。秘密 provider key 不得出现在前端。</p></div></div>;
 }
 
 function PrivateApp({ session, isAdmin }: { session: Session; isAdmin: boolean }) {
@@ -78,8 +78,8 @@ export default function App() {
   if (!isConfigured) return <SetupRequired/>;
   if (window.location.hash.startsWith("#admin_ticket=")) return <AdminTicketLogin/>;
   if (location.hash.startsWith("#/share/")) return <Suspense fallback={<Loading/>}><Routes><Route path="/share/:token" element={<SharedReportPage/>}/></Routes></Suspense>;
-  if (session === undefined) return <div className="grid min-h-screen place-items-center text-slate-400">正在建立安全会话…</div>;
-  if (!session) return <main className="relative mx-auto max-w-7xl px-5"><AuthPanel/></main>;
-  if (isAdmin === undefined) return <div className="grid min-h-screen place-items-center text-slate-400">正在验证访问权限…</div>;
+  if (session === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">正在建立安全会话…</div>;
+  if (!session) return <main className="relative min-h-screen bg-canvas px-5"><AuthPanel/></main>;
+  if (isAdmin === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">正在验证访问权限…</div>;
   return <PrivateApp session={session} isAdmin={isAdmin}/>;
 }

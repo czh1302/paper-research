@@ -4,8 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Evidence-grounded computer-science literature research" />
-    <meta name="theme-color" content="#08111f" />
+    <meta name="theme-color" content="#F6F8FB" />
     <title>Research Atlas · 论文研究图谱</title>
+    <script>
+      (() => {
+        let theme = "light";
+        try { theme = localStorage.getItem("paper-research-theme") === "dark" ? "dark" : "light"; } catch { /* Default to light. */ }
+        document.documentElement.dataset.theme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#152131" : "#F6F8FB");
+      })();
+    </script>
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
   </head>
   <body>
@@ -13,4 +21,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
