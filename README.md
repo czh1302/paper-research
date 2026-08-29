@@ -116,6 +116,14 @@ Fill only `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and the Turnstile site 
 uses the same names as repository **Variables**, not provider secrets. Enable Pages with “GitHub
 Actions” as its source, then push `main` to run `.github/workflows/pages.yml`.
 
+For production Turnstile, create a Managed widget for the GitHub Pages hostname, then run the
+interactive helper. It hides the secret while typing and synchronizes the local files, Supabase
+Auth/Edge Functions, and the GitHub Pages variable without printing secret values:
+
+```bash
+.venv/bin/python scripts/configure-production-turnstile.py
+```
+
 ## Worker and pilot
 
 The worker polls Supabase every ten seconds and renews its lease during long MinerU/LLM calls:
