@@ -1,33 +1,30 @@
-import { ArrowRight, FileStack, Gauge, Plus, RefreshCw } from "lucide-react";
+import { ArrowRight, FileStack, FlaskConical, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getQuota, listJobs } from "../lib/api";
-import type { JobRecord, Quota } from "../lib/types";
+import { listJobs } from "../lib/api";
+import type { JobRecord } from "../lib/types";
 import { StatusBadge } from "../components/StatusBadge";
 
 export function DashboardPage() {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
-  const [quota, setQuota] = useState<Quota | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   async function load() {
     setLoading(true); setError("");
-    try { const [jobRows, quotaRow] = await Promise.all([listJobs(), getQuota()]); setJobs(jobRows); setQuota(quotaRow); }
+    try { setJobs(await listJobs()); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "加载失败"); }
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
-  const remaining = quota ? quota.allocation - quota.used - quota.reserved : 0;
   return (
     <>
       <div className="flex flex-col justify-between gap-6 md:flex-row md:items-end">
         <div><p className="eyebrow">Research workspace</p><h1 className="mt-3 text-4xl font-semibold text-paper">你的分析任务</h1><p className="mt-3 text-slate-400">每个结论都可回溯到 PDF 页码或检索来源。</p></div>
         <div className="flex gap-3"><button className="button button-secondary" onClick={load}><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />刷新</button><Link className="button button-primary" to="/new"><Plus className="h-4 w-4" />新建分析</Link></div>
       </div>
-      <div className="mt-8 grid gap-4 sm:grid-cols-3">
-        <div className="panel p-5"><Gauge className="h-5 w-5 text-cyan" /><div className="mt-4 text-3xl font-semibold text-paper">{remaining}</div><div className="mt-1 text-sm text-slate-400">本月剩余分析单元</div></div>
+      <div className="mt-8 grid gap-4 sm:grid-cols-2">
         <div className="panel p-5"><FileStack className="h-5 w-5 text-amber" /><div className="mt-4 text-3xl font-semibold text-paper">{jobs.length}</div><div className="mt-1 text-sm text-slate-400">历史任务</div></div>
-        <div className="panel p-5"><div className="font-mono text-xs text-cyan">1 UNIT</div><div className="mt-4 text-lg font-semibold text-paper">1 PDF × 1 ROUND</div><div className="mt-1 text-sm text-slate-400">提前停止会退还未运行轮次</div></div>
+        <div className="panel p-5"><FlaskConical className="h-5 w-5 text-cyan" /><div className="mt-4 text-lg font-semibold text-paper">BETA ACCESS</div><div className="mt-1 text-sm text-slate-400">内测期间不限任务配额</div></div>
       </div>
       {error && <div className="mt-6 rounded-xl border border-red-400/30 bg-red-400/10 p-4 text-red-200">{error}</div>}
       <section className="panel mt-8 overflow-hidden">
@@ -38,4 +35,3 @@ export function DashboardPage() {
     </>
   );
 }
-

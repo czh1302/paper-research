@@ -64,7 +64,7 @@ export function AdminPage() {
         <div>
           <p className="eyebrow">Administrator · read only</p>
           <h1 className="mt-3 flex items-center gap-3 text-4xl font-semibold text-paper"><ShieldCheck className="h-9 w-9 text-amber" />全站管理</h1>
-          <p className="mt-3 text-slate-400">查看全部用户、配额和任务状态。此页面不允许修改或删除其他用户的数据。</p>
+          <p className="mt-3 text-slate-400">查看全部用户和任务状态。此页面不允许修改或删除其他用户的数据。</p>
         </div>
         <button className="button button-secondary" onClick={() => void load()}><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />刷新</button>
       </div>
@@ -86,12 +86,11 @@ export function AdminPage() {
         <div className="flex flex-col justify-between gap-3 border-b border-white/10 px-6 py-5 sm:flex-row sm:items-center"><h2 className="font-semibold text-paper">全部用户</h2><Pager offset={userOffset} total={totalUsers} onChange={setUserOffset}/></div>
         <div className="overflow-x-auto">
           <table className="report-table min-w-[960px]">
-            <thead><tr><th>用户</th><th>注册 / 最近登录</th><th>任务</th><th>本月配额</th></tr></thead>
+            <thead><tr><th>用户</th><th>注册 / 最近登录</th><th>任务</th></tr></thead>
             <tbody>{visibleUsers.map((user) => <tr key={user.user_id}>
               <td><div className="font-medium text-paper">{user.email}</div><div className="mt-1 font-mono text-[10px] text-slate-500">{user.user_id}</div></td>
               <td><div>{new Date(user.created_at).toLocaleString()}</div><div className="mt-1 text-xs text-slate-500">最近：{user.last_sign_in_at ? new Date(user.last_sign_in_at).toLocaleString() : "尚未登录"}</div></td>
               <td><span className="text-paper">{user.job_count}</span><span className="ml-2 text-xs text-slate-500">活跃 {user.active_job_count} · 完成 {user.completed_job_count}</span></td>
-              <td><span className="font-mono text-cyan">{user.used}</span> 已用 · {user.reserved} 预留 · {user.allocation} 总额</td>
             </tr>)}</tbody>
           </table>
           {!loading && visibleUsers.length === 0 && <div className="p-10 text-center text-sm text-slate-500">当前页没有匹配用户</div>}
@@ -107,7 +106,7 @@ export function AdminPage() {
               <td><div className="font-mono text-xs text-cyan">{job.job_id}</div><div className="mt-1 max-w-xs truncate text-xs text-slate-400" title={job.file_names.join(", ")}>{job.file_names.join(", ") || "—"}</div></td>
               <td><div className="text-paper">{job.user_email}</div><div className="mt-1 font-mono text-[10px] text-slate-500">{job.user_id}</div></td>
               <td><StatusBadge status={job.status}/><div className="mt-2 text-xs text-slate-500">{job.stage} · {job.progress}%</div>{job.error && <div className="mt-1 max-w-xs truncate text-xs text-red-300" title={job.error}>{job.error}</div>}</td>
-              <td>{job.current_round}/{job.max_rounds} 轮<div className="mt-1 text-xs text-slate-500">计费 {job.charged_units} · 预留 {job.reserved_units}</div></td>
+              <td>{job.current_round}/{job.max_rounds} 轮</td>
               <td>{new Date(job.created_at).toLocaleString()}<div className="mt-1 text-xs text-slate-500">更新：{new Date(job.updated_at).toLocaleString()}</div></td>
               <td><Link className="button button-secondary !px-3 !py-2" to={`/admin/jobs/${job.job_id}`}>详情<ExternalLink className="h-3.5 w-3.5" /></Link>{job.report_id && <Link className="mt-2 block text-center text-xs text-cyan hover:underline" to={`/admin/reports/${job.report_id}`}>报告</Link>}</td>
             </tr>)}</tbody>

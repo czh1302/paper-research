@@ -99,10 +99,10 @@ and DBLP do not need API keys; Crossref only requires a contact email for its po
 5. During local Edge Function development only, set `ALLOW_INSECURE_LOCAL_DEV=true`; never set it
    in the hosted project.
 
-The database migration creates a private `papers` bucket, owner-only RLS, five monthly analysis
-units, atomic job reservation, one active job per user, worker leases, early-stop refunds, provider
-usage accounting, 24-hour upload expiry and 30-day revocable share expiry. Private reports remain
-until their owner deletes the corresponding job.
+The database migration creates a private `papers` bucket, owner-only RLS, atomic job creation, one
+active job per user, worker leases, provider usage accounting, 24-hour upload expiry and 30-day
+revocable share expiry. During the private beta there is no per-user or monthly analysis-unit quota.
+Private reports remain until their owner deletes the corresponding job.
 
 ### Administrator dashboard
 

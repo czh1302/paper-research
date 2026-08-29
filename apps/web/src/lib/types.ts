@@ -14,7 +14,6 @@ export interface JobRecord {
 }
 
 export interface JobEvent { id: number; kind: string; message: string; data: Record<string, unknown>; created_at: string; }
-export interface Quota { allocation: number; used: number; reserved: number; }
 
 export interface Evidence { id: string; paper_id: string; page?: number; section?: string; text: string; source_url?: string; }
 export interface ProblemElement { name: string; symbol?: string; domain?: string; description_zh: string; description_en: string; evidence_ids: string[]; }
@@ -46,9 +45,6 @@ export interface AdminUserRow {
   job_count: number;
   active_job_count: number;
   completed_job_count: number;
-  allocation: number;
-  used: number;
-  reserved: number;
 }
 
 export interface AdminJobRow {
@@ -62,8 +58,6 @@ export interface AdminJobRow {
   progress: number;
   max_rounds: number;
   current_round: number;
-  reserved_units: number;
-  charged_units: number;
   cancellation_requested: boolean;
   error: string | null;
   created_at: string;

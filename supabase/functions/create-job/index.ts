@@ -43,12 +43,10 @@ Deno.serve(async (request) => {
       p_languages: ["zh", "en"],
     });
     if (error) {
-      const message = error.message.includes("insufficient") ? "Insufficient analysis units" : error.message;
-      throw new HttpError(409, message);
+      throw new HttpError(409, error.message);
     }
     return json(request, { job: data }, 201);
   } catch (error) {
     return handleError(request, error);
   }
 });
-

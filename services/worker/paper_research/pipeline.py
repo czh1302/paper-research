@@ -753,7 +753,7 @@ class AnalysisPipeline:
                     await self._event(
                         job.id,
                         "early_stop",
-                        "Search converged; unused quota will be refunded",
+                        "Search converged; stopping before the configured round limit",
                         stop_metrics,
                     )
                     break

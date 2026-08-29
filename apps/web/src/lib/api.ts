@@ -1,5 +1,5 @@
 import { requireSupabase } from "./supabase";
-import type { AdminJobRow, AdminUserRow, JobRecord, Quota, ReportRecord } from "./types";
+import type { AdminJobRow, AdminUserRow, JobRecord, ReportRecord } from "./types";
 
 export async function checkIsAdmin(): Promise<boolean> {
   const { data, error } = await requireSupabase().rpc("is_admin");
@@ -29,14 +29,6 @@ export async function listJobs(): Promise<JobRecord[]> {
   const { data, error } = await requireSupabase().from("jobs").select("*").order("created_at", { ascending: false });
   if (error) throw error;
   return data as JobRecord[];
-}
-
-export async function getQuota(): Promise<Quota> {
-  const monthStart = new Date();
-  monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
-  const { data, error } = await requireSupabase().from("user_quotas").select("allocation,used,reserved").eq("month_start", monthStart.toISOString().slice(0, 10)).maybeSingle();
-  if (error) throw error;
-  return data ?? { allocation: 5, used: 0, reserved: 0 };
 }
 
 export async function createAnalysis(files: File[], mode: "single" | "multi", maxRounds: number, turnstileToken: string) {
