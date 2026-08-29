@@ -22,7 +22,7 @@ export function Layout({ children, email, isAdmin = false }: { children: ReactNo
             {isAdmin && <NavLink className={navClass} to="/admin"><ShieldCheck className="h-4 w-4" /><span className="hidden lg:inline">管理</span></NavLink>}
             {email && <NavLink className={({ isActive }) => `button button-primary !min-h-10 !px-3 ${isActive ? "ring-2 ring-accent/20" : ""}`} to="/new"><Plus className="h-4 w-4" /><span className="hidden sm:inline">新建分析</span></NavLink>}
             <ThemeToggle />
-            {email && <button className="button button-secondary !h-10 !min-h-10 !w-10 !p-0" title={`退出 ${email}`} aria-label="退出登录" onClick={() => requireSupabase().auth.signOut()}><LogOut className="h-4 w-4" /></button>}
+            {email && <button className="button button-secondary !h-10 !min-h-10 !w-10 !p-0" title={`退出 ${email}`} aria-label="退出登录" onClick={() => requireSupabase().auth.signOut({ scope: "local" })}><LogOut className="h-4 w-4" /></button>}
           </nav>
         </div>
       </header>

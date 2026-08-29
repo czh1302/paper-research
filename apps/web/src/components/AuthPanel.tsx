@@ -1,11 +1,13 @@
 import { ArrowRight, LockKeyhole } from "lucide-react";
 import { FormEvent, useCallback, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { requireSupabase } from "../lib/supabase";
 import { TurnstileWidget } from "./TurnstileWidget";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./ThemeToggle";
 
 export function AuthPanel() {
+  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isSignup, setIsSignup] = useState(false);
@@ -29,6 +31,7 @@ export function AuthPanel() {
     setBusy(false);
     if (result.error) setMessage(result.error.message);
     else if (isSignup) setMessage("验证邮件已发送，请先完成邮箱验证。 / Check your verification email.");
+    else navigate("/new", { replace: true });
   }
 
   return (

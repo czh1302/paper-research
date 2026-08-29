@@ -110,6 +110,10 @@ The `/admin` route is available only to users explicitly listed in `public.admin
 provides a read-only, paginated view of every registered user and analysis job; it does not grant
 cross-user mutation or PDF Storage access.
 
+Password login and administrator QR login both open the new-analysis workspace. Supabase permits
+multiple active sessions for the same account by default, and the frontend uses local-scope sign-out
+so logging out on one browser or device does not terminate sessions on other devices.
+
 After deploying the latest database migration and web build, install the local QR helper and create
 or refresh the administrator login QR code:
 

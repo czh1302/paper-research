@@ -39,13 +39,13 @@ function AdminTicketLogin() {
       if (sessionError || !sessionData.session) {
         throw new Error(`管理员会话保存失败：${sessionError?.message ?? "未返回会话"}`);
       }
-      window.location.replace(`${window.location.pathname}#/admin`);
+      window.location.replace(`${window.location.pathname}#/new`);
     }).catch((cause) => {
       const message = cause instanceof Error ? cause.message : "未知错误";
       setError(`扫码登录失败：${message}`);
     });
   }, []);
-  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-content">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-danger" : "text-muted"}`}>{error || "请勿关闭页面，完成后将自动进入管理界面。"}</p></div></div>;
+  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-content">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-danger" : "text-muted"}`}>{error || "请勿关闭页面，完成后将自动进入新建分析界面。"}</p></div></div>;
 }
 
 function SetupRequired() {
@@ -72,7 +72,7 @@ export default function App() {
   }, [session?.access_token]);
   useEffect(() => {
     if (session && isAdmin === true && new URLSearchParams(window.location.search).get("admin") === "1") {
-      window.location.replace(`${window.location.pathname}#/admin`);
+      window.location.replace(`${window.location.pathname}#/new`);
     }
   }, [isAdmin, session]);
   if (!isConfigured) return <SetupRequired/>;
