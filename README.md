@@ -153,7 +153,19 @@ Auth/Edge Functions, and the GitHub Pages variable without printing secret value
 
 ## Worker and pilot
 
-The worker polls Supabase every ten seconds and renews its lease during long MinerU/LLM calls:
+Production uses a systemd user service so the worker restarts after failures and server reboots.
+Install it once, then enable lingering so it remains active without an interactive login session:
+
+```bash
+chmod 700 scripts/install-worker-service.sh
+scripts/install-worker-service.sh
+sudo loginctl enable-linger "${USER}"
+systemctl --user status paper-research-worker.service
+journalctl --user -u paper-research-worker.service -f
+```
+
+The worker polls Supabase every ten seconds and renews its lease during long MinerU/LLM calls. For
+temporary development sessions where systemd is unavailable, the legacy nohup launcher remains:
 
 ```bash
 scripts/run-worker-nohup.sh

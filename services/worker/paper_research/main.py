@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import shutil
+import signal
 import sys
 import uuid
 from pathlib import Path
@@ -121,6 +122,23 @@ def write_report(report: AnalysisReport, output: Path) -> None:
     print(f"Report written to {output}")
 
 
+async def run_worker(settings: Settings) -> None:
+    worker = Worker(settings)
+    loop = asyncio.get_running_loop()
+    installed_signals: list[signal.Signals] = []
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(signum, worker.stop)
+            installed_signals.append(signum)
+        except NotImplementedError:  # pragma: no cover - Windows fallback
+            pass
+    try:
+        await worker.run_forever()
+    finally:
+        for signum in installed_signals:
+            loop.remove_signal_handler(signum)
+
+
 async def analyze_baseline_local(settings: Settings, file: Path, output: Path) -> int:
     size, _ = validate_pdf(file)
     job = Job(
@@ -181,7 +199,7 @@ def main() -> None:
         elif args.command == "worker":
             settings.require_worker_secrets()
             code = 0
-            asyncio.run(Worker(settings).run_forever())
+            asyncio.run(run_worker(settings))
         elif args.command == "analyze-local":
             if not settings.DEEPSEEK_API_KEY or not settings.MINERU_API_TOKEN:
                 raise RuntimeError("Rotated DEEPSEEK_API_KEY and MINERU_API_TOKEN are required")
