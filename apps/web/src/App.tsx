@@ -33,13 +33,17 @@ function AdminTicketLogin() {
       if (typeof accessToken !== "string" || typeof refreshToken !== "string") {
         throw new Error("服务器没有返回有效会话");
       }
-      const { data: sessionData, error: sessionError } = await client.auth.setSession({
-        access_token: accessToken,
+      const { data: sessionData, error: sessionError } = await client.auth.refreshSession({
         refresh_token: refreshToken,
       });
-      if (sessionError || !sessionData.session) throw sessionError ?? new Error("管理员会话保存失败");
+      if (sessionError || !sessionData.session) {
+        throw new Error(`管理员会话保存失败：${sessionError?.message ?? "未返回会话"}`);
+      }
       window.location.replace(`${window.location.pathname}#/admin`);
-    }).catch(() => setError("管理员二维码无效、已撤销或已过期，请重新生成。"));
+    }).catch((cause) => {
+      const message = cause instanceof Error ? cause.message : "未知错误";
+      setError(`扫码登录失败：${message}`);
+    });
   }, []);
   return <div className="grid min-h-screen place-items-center p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-paper">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-red-200" : "text-slate-400"}`}>{error || "请勿关闭页面，完成后将自动进入管理界面。"}</p></div></div>;
 }

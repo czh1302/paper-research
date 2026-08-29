@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create or promote an admin and encode a reusable 30-day login ticket locally."""
+"""Create or promote an admin and encode a reusable permanent login ticket locally."""
 
 from __future__ import annotations
 
@@ -91,10 +91,10 @@ def create_ticket(
     supabase_url: str,
     service_role_key: str,
     user_id: str,
-    valid_days: int,
-) -> tuple[str, datetime, datetime]:
+    valid_days: int | None,
+) -> tuple[str, datetime, datetime | None]:
     created_at = datetime.now(timezone.utc)
-    expires_at = created_at + timedelta(days=valid_days)
+    expires_at = created_at + timedelta(days=valid_days) if valid_days is not None else None
     revoke = httpx.patch(
         f"{supabase_url.rstrip('/')}/rest/v1/admin_login_tickets",
         headers={**auth_headers(service_role_key), "Prefer": "return=minimal"},
@@ -117,7 +117,7 @@ def create_ticket(
             "token_hash": token_hash,
             "admin_user_id": user_id,
             "created_at": created_at.isoformat(),
-            "expires_at": expires_at.isoformat(),
+            "expires_at": expires_at.isoformat() if expires_at is not None else "infinity",
         },
         timeout=30,
     )
@@ -153,11 +153,15 @@ def write_qr(value: str, output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create an admin account and a local, reusable 30-day login QR code."
+        description="Create an admin account and a local, reusable permanent login QR code."
     )
     parser.add_argument("--email", help="Admin email; defaults to CROSSREF_MAILTO")
     parser.add_argument("--site-url", default=DEFAULT_SITE_URL)
-    parser.add_argument("--valid-days", type=int, default=30)
+    parser.add_argument(
+        "--valid-days",
+        type=int,
+        help="Optional finite lifetime (1-30 days); omit for a permanent QR code",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
@@ -169,7 +173,7 @@ def main() -> None:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     if not email or email.endswith("@example.invalid"):
         raise RuntimeError("Pass a real admin email with --email or configure CROSSREF_MAILTO")
-    if args.valid_days < 1 or args.valid_days > 30:
+    if args.valid_days is not None and (args.valid_days < 1 or args.valid_days > 30):
         raise RuntimeError("--valid-days must be between 1 and 30")
 
     user_id = ensure_user(supabase_url, service_role_key, email)
@@ -180,19 +184,20 @@ def main() -> None:
     output = args.output.resolve()
     write_qr(build_ticket_url(args.site_url, token), output)
 
-    expires_in = args.valid_days * 86_400
+    expires_in = args.valid_days * 86_400 if args.valid_days is not None else None
     metadata_path = output.with_suffix(".json")
     metadata_path.write_text(
         json.dumps(
             {
                 "admin_email": email,
                 "user_id": user_id,
-                "credential_type": "reusable_admin_ticket",
+                "credential_type": "permanent_reusable_admin_ticket",
                 "created_at": created_at.isoformat(),
-                "expires_at": expires_at.isoformat(),
+                "expires_at": expires_at.isoformat() if expires_at is not None else None,
                 "expires_in_seconds": expires_in,
                 "single_use": False,
                 "reusable_until_expiry": True,
+                "never_expires": expires_at is None,
                 "qr_path": str(output),
             },
             indent=2,
@@ -211,6 +216,7 @@ def main() -> None:
                 "valid_days": args.valid_days,
                 "single_use": False,
                 "reusable_until_expiry": True,
+                "never_expires": expires_at is None,
                 "raw_ticket_printed": False,
             },
             indent=2,

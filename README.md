@@ -118,13 +118,13 @@ or refresh the administrator login QR code:
 .venv/bin/python scripts/create-admin-qr.py
 ```
 
-The QR code is written to `.artifacts/admin-login-qr.png` with mode `600`. It contains a reusable
-30-day administrator bearer ticket, not a password. Each scan is audited and exchanged server-side
-for a fresh, short-lived Supabase Magic Link; the ticket remains usable until it expires or a newer
-QR revokes it. This keeps the ordinary signup, recovery and email-change link expiry unchanged.
-Anyone holding a copy can repeatedly obtain an administrator session during that period, so the
-image must be protected like a long-lived administrator password. Neither the image nor the raw
-ticket may be committed or sent to a third-party QR service.
+The QR code is written to `.artifacts/admin-login-qr.png` with mode `600`. By default it contains a
+permanent, reusable administrator bearer ticket. Each scan is audited and exchanged server-side for
+a fresh Supabase session; the QR remains usable until a newer QR revokes it or an operator revokes it
+in the database. Pass `--valid-days 1..30` only when a finite lifetime is preferred. Anyone holding a
+copy can repeatedly obtain an administrator session, so the image must be protected exactly like a
+permanent administrator password. Neither the image nor the raw ticket may be committed or sent to
+a third-party QR service.
 
 ## Frontend
 
