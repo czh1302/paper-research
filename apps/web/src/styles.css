@@ -1,0 +1,40 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap");
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color: #dbe8f6; background: #08111f; font-family: Inter, "Noto Sans SC", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #08111f; }
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .32;
+  background-image: linear-gradient(rgba(54,213,210,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(54,213,210,.04) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+a { color: inherit; text-decoration: none; }
+button, input, select { font: inherit; }
+.panel { background: rgba(14, 29, 47, .86); border: 1px solid rgba(125, 161, 194, .19); border-radius: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.18); }
+.button { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; border-radius: 10px; padding: .72rem 1rem; font-weight: 600; transition: 160ms ease; cursor: pointer; border: 1px solid transparent; }
+.button:disabled { opacity: .42; cursor: not-allowed; }
+.button-primary { background: #36d5d2; color: #06151b; }
+.button-primary:hover:not(:disabled) { background: #68e8e5; transform: translateY(-1px); }
+.button-secondary { color: #dbe8f6; border-color: rgba(125,161,194,.35); background: rgba(8,17,31,.5); }
+.button-danger { color: #ffb5b5; border-color: rgba(255,105,105,.4); background: rgba(110,20,30,.2); }
+.input { width: 100%; border: 1px solid rgba(125,161,194,.3); border-radius: 10px; padding: .78rem .9rem; color: #f2f7fc; background: rgba(4,12,23,.7); outline: none; }
+.input:focus { border-color: #36d5d2; box-shadow: 0 0 0 3px rgba(54,213,210,.12); }
+.label { display: block; margin-bottom: .45rem; color: #9db2c6; font-size: .85rem; font-weight: 600; }
+.eyebrow { color: #36d5d2; font: 500 .73rem/1.4 "IBM Plex Mono", monospace; letter-spacing: .14em; text-transform: uppercase; }
+.muted { color: #91a5ba; }
+.prose-report h2 { margin-top: 2.5rem; font-size: 1.5rem; color: #f4f1e8; }
+.prose-report h3 { margin-top: 1.5rem; font-size: 1.1rem; color: #36d5d2; }
+.report-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.report-table th, .report-table td { border-bottom: 1px solid rgba(125,161,194,.18); padding: .8rem; text-align: left; vertical-align: top; }
+.report-table th { color: #9db2c6; font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; }
+@media print {
+  body, :root { background: white; color: #111827; }
+  body::before, .no-print, header, footer { display: none !important; }
+  .panel { background: white; border-color: #d1d5db; box-shadow: none; break-inside: avoid; }
+  .report-table th, .report-table td { border-color: #d1d5db; }
+  .prose-report h2, .prose-report h3 { color: #111827; }
+}
+
