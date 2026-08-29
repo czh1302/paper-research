@@ -21,17 +21,24 @@ function AdminTicketLogin() {
   const started = useRef(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (started.current || !supabase || !supabaseUrl) return;
+    const client = supabase;
+    if (started.current || !client || !supabaseUrl) return;
     started.current = true;
     const token = new URLSearchParams(window.location.hash.slice(1)).get("admin_ticket");
     if (!token) { setError("管理员二维码无效"); return; }
-    void supabase.functions.invoke("admin-qr-login", { body: { token } }).then(({ data, error: exchangeError }) => {
+    void client.functions.invoke("admin-qr-login", { body: { token } }).then(async ({ data, error: exchangeError }) => {
       if (exchangeError) throw exchangeError;
-      const actionLink = data?.actionLink;
-      if (typeof actionLink !== "string" || !actionLink.startsWith(`${supabaseUrl}/auth/v1/verify`)) {
-        throw new Error("服务器返回了无效登录地址");
+      const accessToken = data?.accessToken;
+      const refreshToken = data?.refreshToken;
+      if (typeof accessToken !== "string" || typeof refreshToken !== "string") {
+        throw new Error("服务器没有返回有效会话");
       }
-      window.location.replace(actionLink);
+      const { data: sessionData, error: sessionError } = await client.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      });
+      if (sessionError || !sessionData.session) throw sessionError ?? new Error("管理员会话保存失败");
+      window.location.replace(`${window.location.pathname}#/admin`);
     }).catch(() => setError("管理员二维码无效、已撤销或已过期，请重新生成。"));
   }, []);
   return <div className="grid min-h-screen place-items-center p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-paper">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-red-200" : "text-slate-400"}`}>{error || "请勿关闭页面，完成后将自动进入管理界面。"}</p></div></div>;

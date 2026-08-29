@@ -22,7 +22,12 @@ export function corsHeaders(request: Request): Record<string, string> {
 export function json(request: Request, body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders(request), "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      ...corsHeaders(request),
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Pragma": "no-cache",
+    },
   });
 }
 

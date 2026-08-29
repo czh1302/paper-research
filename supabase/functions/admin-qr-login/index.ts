@@ -44,11 +44,31 @@ Deno.serve(async (request) => {
     });
     if (!linkResponse.ok) throw new Error(`Supabase Auth link generation failed (${linkResponse.status})`);
     const linkPayload = await linkResponse.json();
-    const actionLink = linkPayload.action_link ?? linkPayload.properties?.action_link;
-    if (typeof actionLink !== "string" || !actionLink.startsWith(`${supabaseUrl}/auth/v1/verify`)) {
-      throw new Error("Supabase Auth returned an invalid action link");
+    const hashedToken = linkPayload.hashed_token ?? linkPayload.properties?.hashed_token;
+    const verificationType = linkPayload.verification_type
+      ?? linkPayload.properties?.verification_type
+      ?? "magiclink";
+    if (typeof hashedToken !== "string" || hashedToken.length < 32) {
+      throw new Error("Supabase Auth returned an invalid verification token");
     }
-    return json(request, { actionLink });
+
+    const verifyResponse = await fetch(`${supabaseUrl}/auth/v1/verify`, {
+      method: "POST",
+      headers: {
+        "apikey": serviceRoleKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ token_hash: hashedToken, type: verificationType }),
+    });
+    if (!verifyResponse.ok) throw new Error(`Supabase Auth verification failed (${verifyResponse.status})`);
+    const session = await verifyResponse.json();
+    if (typeof session.access_token !== "string" || typeof session.refresh_token !== "string") {
+      throw new Error("Supabase Auth did not return a session");
+    }
+    return json(request, {
+      accessToken: session.access_token,
+      refreshToken: session.refresh_token,
+    });
   } catch (error) {
     return handleError(request, error);
   }
