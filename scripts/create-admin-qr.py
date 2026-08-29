@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Create or promote an admin and encode a one-time Magic Link locally."""
+"""Create or promote an admin and encode a 30-day one-time login ticket locally."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import qrcode
@@ -16,8 +18,7 @@ from qrcode.constants import ERROR_CORRECT_Q
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / ".artifacts" / "admin-login-qr.png"
-DEFAULT_SITE_URL = "https://czh1302.github.io/paper-research/?admin=1"
-ACCESS_TOKEN_FILE = Path("/home/czh/.supabase/access-token")
+DEFAULT_SITE_URL = "https://czh1302.github.io/paper-research/"
 
 
 def auth_headers(service_role_key: str) -> dict[str, str]:
@@ -26,56 +27,6 @@ def auth_headers(service_role_key: str) -> dict[str, str]:
         "apikey": service_role_key,
         "Content-Type": "application/json",
     }
-
-
-def project_ref(supabase_url: str) -> str:
-    hostname = urlparse(supabase_url).hostname or ""
-    suffix = ".supabase.co"
-    if not hostname.endswith(suffix):
-        raise RuntimeError("SUPABASE_URL is not a hosted Supabase project URL")
-    return hostname.removesuffix(suffix)
-
-
-def magic_link_expiry_seconds(supabase_url: str) -> int:
-    if not ACCESS_TOKEN_FILE.exists():
-        return 86_400
-    token = ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip()
-    if not token:
-        return 86_400
-    try:
-        response = httpx.get(
-            f"https://api.supabase.com/v1/projects/{project_ref(supabase_url)}/config/auth",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        response.raise_for_status()
-        return int(response.json().get("mailer_otp_exp") or 86_400)
-    except (httpx.HTTPError, TypeError, ValueError):
-        return 86_400
-
-
-def generate_link(
-    supabase_url: str,
-    service_role_key: str,
-    email: str,
-    redirect_to: str,
-) -> tuple[str, str]:
-    response = httpx.post(
-        f"{supabase_url.rstrip('/')}/auth/v1/admin/generate_link",
-        headers=auth_headers(service_role_key),
-        json={"type": "magiclink", "email": email, "redirect_to": redirect_to},
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    properties = payload.get("properties") or {}
-    action_link = payload.get("action_link") or properties.get("action_link")
-    user_id = (payload.get("user") or {}).get("id") or find_user_id(
-        supabase_url, service_role_key, email
-    )
-    if not action_link or not user_id:
-        raise RuntimeError("Supabase did not return a usable action link or user ID")
-    return str(action_link), str(user_id)
 
 
 def find_user_id(supabase_url: str, service_role_key: str, email: str) -> str | None:
@@ -94,6 +45,24 @@ def find_user_id(supabase_url: str, service_role_key: str, email: str) -> str | 
         if len(users) < 1000:
             break
     return None
+
+
+def ensure_user(supabase_url: str, service_role_key: str, email: str) -> str:
+    existing = find_user_id(supabase_url, service_role_key, email)
+    if existing:
+        return existing
+    response = httpx.post(
+        f"{supabase_url.rstrip('/')}/auth/v1/admin/users",
+        headers=auth_headers(service_role_key),
+        json={"email": email, "email_confirm": True},
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    user_id = payload.get("id") or (payload.get("user") or {}).get("id")
+    if not user_id:
+        raise RuntimeError("Supabase created the user without returning its ID")
+    return str(user_id)
 
 
 def grant_admin(supabase_url: str, service_role_key: str, user_id: str) -> None:
@@ -118,10 +87,64 @@ def grant_admin(supabase_url: str, service_role_key: str, user_id: str) -> None:
         raise RuntimeError("Administrator grant could not be verified")
 
 
-def write_qr(action_link: str, output: Path) -> None:
+def create_ticket(
+    supabase_url: str,
+    service_role_key: str,
+    user_id: str,
+    valid_days: int,
+) -> tuple[str, datetime, datetime]:
+    created_at = datetime.now(timezone.utc)
+    expires_at = created_at + timedelta(days=valid_days)
+    revoke = httpx.patch(
+        f"{supabase_url.rstrip('/')}/rest/v1/admin_login_tickets",
+        headers={**auth_headers(service_role_key), "Prefer": "return=minimal"},
+        params={
+            "admin_user_id": f"eq.{user_id}",
+            "consumed_at": "is.null",
+            "revoked_at": "is.null",
+        },
+        json={"revoked_at": created_at.isoformat()},
+        timeout=30,
+    )
+    revoke.raise_for_status()
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    response = httpx.post(
+        f"{supabase_url.rstrip('/')}/rest/v1/admin_login_tickets",
+        headers={**auth_headers(service_role_key), "Prefer": "return=minimal"},
+        json={
+            "token_hash": token_hash,
+            "admin_user_id": user_id,
+            "created_at": created_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    verification = httpx.get(
+        f"{supabase_url.rstrip('/')}/rest/v1/admin_login_tickets",
+        headers=auth_headers(service_role_key),
+        params={"select": "expires_at", "token_hash": f"eq.{token_hash}"},
+        timeout=30,
+    )
+    verification.raise_for_status()
+    if not verification.json():
+        raise RuntimeError("Administrator login ticket could not be verified")
+    return token, created_at, expires_at
+
+
+def build_ticket_url(site_url: str, token: str) -> str:
+    parts = urlsplit(site_url)
+    if parts.scheme != "https" or not parts.netloc:
+        raise RuntimeError("The production site URL must use HTTPS")
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, f"admin_ticket={token}"))
+
+
+def write_qr(value: str, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     qr = qrcode.QRCode(version=None, error_correction=ERROR_CORRECT_Q, box_size=9, border=4)
-    qr.add_data(action_link)
+    qr.add_data(value)
     qr.make(fit=True)
     image = qr.make_image(fill_color="black", back_color="white")
     image.save(output)
@@ -130,10 +153,11 @@ def write_qr(action_link: str, output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create an admin account and a local, one-time login QR code."
+        description="Create an admin account and a local, 30-day one-time login QR code."
     )
     parser.add_argument("--email", help="Admin email; defaults to CROSSREF_MAILTO")
     parser.add_argument("--site-url", default=DEFAULT_SITE_URL)
+    parser.add_argument("--valid-days", type=int, default=30)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
@@ -145,24 +169,27 @@ def main() -> None:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     if not email or email.endswith("@example.invalid"):
         raise RuntimeError("Pass a real admin email with --email or configure CROSSREF_MAILTO")
-    if not args.site_url.startswith("https://"):
-        raise RuntimeError("The production redirect URL must use HTTPS")
+    if args.valid_days < 1 or args.valid_days > 30:
+        raise RuntimeError("--valid-days must be between 1 and 30")
 
-    action_link, user_id = generate_link(supabase_url, service_role_key, email, args.site_url)
+    user_id = ensure_user(supabase_url, service_role_key, email)
     grant_admin(supabase_url, service_role_key, user_id)
+    token, created_at, expires_at = create_ticket(
+        supabase_url, service_role_key, user_id, args.valid_days
+    )
     output = args.output.resolve()
-    write_qr(action_link, output)
+    write_qr(build_ticket_url(args.site_url, token), output)
 
-    expires_in = magic_link_expiry_seconds(supabase_url)
-    created_at = datetime.now(timezone.utc)
+    expires_in = args.valid_days * 86_400
     metadata_path = output.with_suffix(".json")
     metadata_path.write_text(
         json.dumps(
             {
                 "admin_email": email,
                 "user_id": user_id,
+                "credential_type": "one_time_admin_ticket",
                 "created_at": created_at.isoformat(),
-                "expires_at": (created_at + timedelta(seconds=expires_in)).isoformat(),
+                "expires_at": expires_at.isoformat(),
                 "expires_in_seconds": expires_in,
                 "single_use": True,
                 "qr_path": str(output),
@@ -180,8 +207,9 @@ def main() -> None:
                 "admin_email": email,
                 "qr_path": str(output),
                 "expires_in_seconds": expires_in,
+                "valid_days": args.valid_days,
                 "single_use": True,
-                "raw_login_link_printed": False,
+                "raw_ticket_printed": False,
             },
             indent=2,
         )

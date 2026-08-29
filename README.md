@@ -84,13 +84,14 @@ and DBLP do not need API keys; Crossref only requires a contact email for its po
    ```bash
    npx supabase secrets set \
      TURNSTILE_SECRET_KEY=ROTATED_VALUE \
-     PUBLIC_SITE_URL=https://YOUR_USER.github.io/SJTU_Task_final
+     PUBLIC_SITE_URL=https://YOUR_USER.github.io \
+     ADMIN_REDIRECT_URL=https://YOUR_USER.github.io/SJTU_Task_final/?admin=1
    ```
 
-4. Deploy the seven functions:
+4. Deploy the eight functions:
 
    ```bash
-   for function_name in create-upload create-job cancel-job delete-job create-share revoke-share get-share; do
+   for function_name in create-upload create-job cancel-job delete-job create-share revoke-share get-share admin-qr-login; do
      npx supabase functions deploy "${function_name}"
    done
    ```
@@ -117,10 +118,12 @@ or refresh the administrator login QR code:
 .venv/bin/python scripts/create-admin-qr.py
 ```
 
-The QR code is written to `.artifacts/admin-login-qr.png` with mode `600`. It contains a single-use
-Supabase Magic Link, not a permanent password. Treat the image as a temporary credential and
-regenerate it by rerunning the command after it is used or expires. Neither the image nor the raw
-link may be committed or sent to a third-party QR service.
+The QR code is written to `.artifacts/admin-login-qr.png` with mode `600`. It contains a 30-day,
+single-use administrator ticket, not a permanent password. On scan, the ticket is atomically
+consumed and exchanged server-side for a short-lived Supabase Magic Link. This keeps the ordinary
+signup, recovery and email-change link expiry unchanged. Treat the image as a temporary credential
+and regenerate it by rerunning the command after it is used or expires. Neither the image nor the
+raw ticket may be committed or sent to a third-party QR service.
 
 ## Frontend
 

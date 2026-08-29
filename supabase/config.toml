@@ -46,3 +46,5 @@ verify_jwt = true
 [functions.get-share]
 verify_jwt = false
 
+[functions.admin-qr-login]
+verify_jwt = false

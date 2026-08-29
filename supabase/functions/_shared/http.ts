@@ -1,6 +1,12 @@
 import { createClient, SupabaseClient, User } from "npm:@supabase/supabase-js@2.112.4";
 
-const configuredOrigin = Deno.env.get("PUBLIC_SITE_URL") ?? "";
+const configuredSiteUrl = Deno.env.get("PUBLIC_SITE_URL") ?? "";
+let configuredOrigin = configuredSiteUrl;
+try {
+  configuredOrigin = new URL(configuredSiteUrl).origin;
+} catch {
+  // An empty or malformed value will fail closed for non-local origins.
+}
 
 export function corsHeaders(request: Request): Record<string, string> {
   const origin = request.headers.get("origin") ?? "";

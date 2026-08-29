@@ -1,10 +1,10 @@
 import type { Session } from "@supabase/supabase-js";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthPanel } from "./components/AuthPanel";
 import { Layout } from "./components/Layout";
 import { checkIsAdmin } from "./lib/api";
-import { isConfigured, supabase } from "./lib/supabase";
+import { isConfigured, supabase, supabaseUrl } from "./lib/supabase";
 
 const AdminPage = lazy(() => import("./pages/AdminPage").then((module) => ({ default: module.AdminPage })));
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
@@ -15,6 +15,26 @@ const SharedReportPage = lazy(() => import("./pages/SharedReportPage").then((mod
 
 function Loading() {
   return <div className="panel p-12 text-center text-slate-400">加载页面…</div>;
+}
+
+function AdminTicketLogin() {
+  const started = useRef(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (started.current || !supabase || !supabaseUrl) return;
+    started.current = true;
+    const token = new URLSearchParams(window.location.hash.slice(1)).get("admin_ticket");
+    if (!token) { setError("管理员二维码无效"); return; }
+    void supabase.functions.invoke("admin-qr-login", { body: { token } }).then(({ data, error: exchangeError }) => {
+      if (exchangeError) throw exchangeError;
+      const actionLink = data?.actionLink;
+      if (typeof actionLink !== "string" || !actionLink.startsWith(`${supabaseUrl}/auth/v1/verify`)) {
+        throw new Error("服务器返回了无效登录地址");
+      }
+      window.location.replace(actionLink);
+    }).catch(() => setError("管理员二维码无效、已使用或已过期，请重新生成。"));
+  }, []);
+  return <div className="grid min-h-screen place-items-center p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-paper">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-red-200" : "text-slate-400"}`}>{error || "请勿关闭页面，完成后将自动进入管理界面。"}</p></div></div>;
 }
 
 function SetupRequired() {
@@ -45,6 +65,7 @@ export default function App() {
     }
   }, [isAdmin, session]);
   if (!isConfigured) return <SetupRequired/>;
+  if (window.location.hash.startsWith("#admin_ticket=")) return <AdminTicketLogin/>;
   if (location.hash.startsWith("#/share/")) return <Suspense fallback={<Loading/>}><Routes><Route path="/share/:token" element={<SharedReportPage/>}/></Routes></Suspense>;
   if (session === undefined) return <div className="grid min-h-screen place-items-center text-slate-400">正在建立安全会话…</div>;
   if (!session) return <main className="relative mx-auto max-w-7xl px-5"><AuthPanel/></main>;
