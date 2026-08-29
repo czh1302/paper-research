@@ -76,19 +76,13 @@ class ClaudeCodeClient:
         )
         return environment
 
-    async def structured(
+    def _command(
         self,
-        prompt: str,
-        response_model: type[SchemaModel],
+        schema: str,
+        cli_model: str,
         *,
-        allow_web_search: bool = False,
-        model: str | None = None,
-    ) -> SchemaModel:
-        provider_model = model or self.model
-        cli_model = self.cli_model if model is None else self._claude_cli_model(provider_model)
-        schema = json.dumps(
-            response_model.model_json_schema(), ensure_ascii=False, separators=(",", ":")
-        )
+        allow_web_search: bool,
+    ) -> list[str]:
         command = [
             self.binary,
             "--safe-mode",
@@ -112,12 +106,35 @@ class ClaudeCodeClient:
             "--no-session-persistence",
             "--disable-slash-commands",
             "--permission-mode",
-            "dontAsk",
+            # Claude Code 2.1.251 only accepts default, acceptEdits,
+            # bypassPermissions, or plan. Tool access remains independently
+            # restricted below, so default is the safest non-interactive mode.
+            "default",
         ]
         if allow_web_search:
             command.extend(["--tools", "WebSearch", "--allowedTools", "WebSearch"])
         else:
             command.extend(["--tools", ""])
+        return command
+
+    async def structured(
+        self,
+        prompt: str,
+        response_model: type[SchemaModel],
+        *,
+        allow_web_search: bool = False,
+        model: str | None = None,
+    ) -> SchemaModel:
+        provider_model = model or self.model
+        cli_model = self.cli_model if model is None else self._claude_cli_model(provider_model)
+        schema = json.dumps(
+            response_model.model_json_schema(), ensure_ascii=False, separators=(",", ":")
+        )
+        command = self._command(
+            schema,
+            cli_model,
+            allow_web_search=allow_web_search,
+        )
 
         process = await asyncio.create_subprocess_exec(
             *command,
