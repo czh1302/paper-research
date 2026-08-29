@@ -154,6 +154,8 @@ Auth/Edge Functions, and the GitHub Pages variable without printing secret value
 ## Worker and pilot
 
 Production uses a systemd user service so the worker restarts after failures and server reboots.
+The secrets initializer pins `CLAUDE_BIN` to `/home/czh/.local/bin/claude`; keep that installation at
+Claude Code 2.1.248 or newer so systemd does not fall back to an older global binary.
 Install it once, then enable lingering so it remains active without an interactive login session:
 
 ```bash

@@ -39,7 +39,7 @@ printf '%s\n' \
   'BUDGET_GUARD_CNY=95' \
   'MAX_PROVIDER_CONCURRENCY=4' \
   'SEARCH_PROFILE=academic_web' \
-  'CLAUDE_BIN=claude' \
+  'CLAUDE_BIN=/home/czh/.local/bin/claude' \
   'CLAUDE_TIMEOUT_SECONDS=900' \
   'MINERU_POLL_SECONDS=5' \
   'MINERU_TIMEOUT_SECONDS=900' >> "${secrets_file}.new"
