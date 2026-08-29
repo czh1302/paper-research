@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider, useTheme } from "../lib/theme";
+import { LanguageProvider } from "../lib/language";
 import { TurnstileWidget } from "./TurnstileWidget";
 
 function Harness({ onToken }: { onToken: (token: string) => void }) {
@@ -29,11 +30,11 @@ describe("TurnstileWidget", () => {
   it("renders interaction-only, follows the app theme, and clears expired tokens", async () => {
     const onToken = vi.fn();
     const user = userEvent.setup();
-    render(<ThemeProvider><Harness onToken={onToken}/></ThemeProvider>);
+    render(<LanguageProvider><ThemeProvider><Harness onToken={onToken}/></ThemeProvider></LanguageProvider>);
 
     await waitFor(() => expect(renderWidget).toHaveBeenCalledTimes(1));
     const lightOptions = renderWidget.mock.calls[0][1] as Record<string, unknown>;
-    expect(lightOptions).toMatchObject({ appearance: "interaction-only", size: "flexible", theme: "light" });
+    expect(lightOptions).toMatchObject({ appearance: "interaction-only", size: "flexible", theme: "light", language: "zh-CN" });
     expect(onToken).toHaveBeenCalledWith("");
     (lightOptions["expired-callback"] as () => void)();
     expect(onToken).toHaveBeenLastCalledWith("");

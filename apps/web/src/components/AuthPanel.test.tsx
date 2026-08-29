@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "../lib/theme";
+import { LanguageProvider } from "../lib/language";
 import { AuthPanel } from "./AuthPanel";
 
 const auth = vi.hoisted(() => ({
@@ -18,10 +19,10 @@ vi.mock("./TurnstileWidget", () => ({
 describe("AuthPanel", () => {
   it("opens the new-analysis route after password login", async () => {
     const user = userEvent.setup();
-    render(<ThemeProvider><MemoryRouter initialEntries={["/"]}><Routes><Route path="/" element={<AuthPanel/>}/><Route path="/new" element={<div>新建分析页面</div>}/></Routes></MemoryRouter></ThemeProvider>);
+    render(<LanguageProvider><ThemeProvider><MemoryRouter initialEntries={["/"]}><Routes><Route path="/" element={<AuthPanel/>}/><Route path="/new" element={<div>新建分析页面</div>}/></Routes></MemoryRouter></ThemeProvider></LanguageProvider>);
 
-    await user.type(screen.getByLabelText("邮箱 / Email"), "researcher@example.com");
-    await user.type(screen.getByLabelText("密码 / Password"), "password123");
+    await user.type(screen.getByLabelText("邮箱"), "researcher@example.com");
+    await user.type(screen.getByLabelText("密码"), "password123");
     await user.click(screen.getByRole("button", { name: "完成人机验证" }));
     await user.click(screen.getByRole("button", { name: /登录/ }));
 

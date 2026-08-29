@@ -15,4 +15,10 @@ def test_report_always_contains_novelty_disclaimer() -> None:
     )
     markdown = report_markdown(report)
     assert "不构成绝对新颖性证明" in markdown
-    assert "not proof of absolute novelty" in markdown
+    assert "not proof of absolute novelty" not in markdown
+    assert "Search Audit" not in markdown
+    assert "```json" not in markdown
+
+    english = report_markdown(report, "en")
+    assert "not proof of absolute novelty" in english
+    assert "不构成绝对新颖性证明" not in english

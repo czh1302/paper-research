@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useLanguage } from "../lib/language";
 import { useTheme } from "../lib/theme";
 
 type TurnstileAppearance = "always" | "execute" | "interaction-only";
@@ -7,6 +8,7 @@ type TurnstileSize = "normal" | "flexible" | "compact";
 export function TurnstileWidget({ onToken, appearance = "always", size = "normal" }: { onToken: (token: string) => void; appearance?: TurnstileAppearance; size?: TurnstileSize }) {
   const container = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
+  const { language, text } = useLanguage();
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined;
   useEffect(() => {
     onToken("");
@@ -21,7 +23,7 @@ export function TurnstileWidget({ onToken, appearance = "always", size = "normal
           appearance,
           size,
           theme,
-          language: "auto",
+          language: language === "zh" ? "zh-CN" : "en",
           callback: onToken,
           "expired-callback": () => onToken(""),
           "error-callback": () => onToken(""),
@@ -29,6 +31,6 @@ export function TurnstileWidget({ onToken, appearance = "always", size = "normal
       }
     }, 100);
     return () => { cancelled = true; window.clearInterval(interval); if (widgetId && window.turnstile) window.turnstile.remove(widgetId); };
-  }, [appearance, onToken, siteKey, size, theme]);
-  return <div className="max-w-full overflow-hidden" ref={container}>{!siteKey && <span className="text-xs text-warning">Turnstile local development mode</span>}</div>;
+  }, [appearance, language, onToken, siteKey, size, theme]);
+  return <div className="max-w-full overflow-hidden" ref={container}>{!siteKey && <span className="text-xs text-warning">{text("Turnstile 本地开发模式", "Turnstile local development mode")}</span>}</div>;
 }

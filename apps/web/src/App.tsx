@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthPanel } from "./components/AuthPanel";
 import { Layout } from "./components/Layout";
 import { checkIsAdmin } from "./lib/api";
+import { useLanguage } from "./lib/language";
 import { isConfigured, supabase, supabaseUrl } from "./lib/supabase";
 
 const AdminPage = lazy(() => import("./pages/AdminPage").then((module) => ({ default: module.AdminPage })));
@@ -14,10 +15,12 @@ const ReportPage = lazy(() => import("./pages/ReportPage").then((module) => ({ d
 const SharedReportPage = lazy(() => import("./pages/SharedReportPage").then((module) => ({ default: module.SharedReportPage })));
 
 function Loading() {
-  return <div className="panel p-12 text-center text-muted">加载页面…</div>;
+  const { text } = useLanguage();
+  return <div className="panel p-12 text-center text-muted">{text("加载页面…", "Loading page…")}</div>;
 }
 
 function AdminTicketLogin() {
+  const { text } = useLanguage();
   const started = useRef(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -25,31 +28,32 @@ function AdminTicketLogin() {
     if (started.current || !client || !supabaseUrl) return;
     started.current = true;
     const token = new URLSearchParams(window.location.hash.slice(1)).get("admin_ticket");
-    if (!token) { setError("管理员二维码无效"); return; }
+    if (!token) { setError(text("管理员二维码无效", "Invalid administrator QR code")); return; }
     void client.functions.invoke("admin-qr-login", { body: { token } }).then(async ({ data, error: exchangeError }) => {
       if (exchangeError) throw exchangeError;
       const accessToken = data?.accessToken;
       const refreshToken = data?.refreshToken;
       if (typeof accessToken !== "string" || typeof refreshToken !== "string") {
-        throw new Error("服务器没有返回有效会话");
+        throw new Error(text("服务器没有返回有效会话", "The server did not return a valid session"));
       }
       const { data: sessionData, error: sessionError } = await client.auth.refreshSession({
         refresh_token: refreshToken,
       });
       if (sessionError || !sessionData.session) {
-        throw new Error(`管理员会话保存失败：${sessionError?.message ?? "未返回会话"}`);
+        throw new Error(text(`管理员会话保存失败：${sessionError?.message ?? "未返回会话"}`, `Could not save administrator session: ${sessionError?.message ?? "no session returned"}`));
       }
       window.location.replace(`${window.location.pathname}#/new`);
     }).catch((cause) => {
-      const message = cause instanceof Error ? cause.message : "未知错误";
-      setError(`扫码登录失败：${message}`);
+      const message = cause instanceof Error ? cause.message : text("未知错误", "Unknown error");
+      setError(text(`扫码登录失败：${message}`, `QR sign-in failed: ${message}`));
     });
   }, []);
-  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">Administrator sign-in</p><h1 className="mt-3 text-2xl font-semibold text-content">{error ? "无法登录" : "正在安全兑换管理员凭据…"}</h1><p className={`mt-4 text-sm ${error ? "text-danger" : "text-muted"}`}>{error || "请勿关闭页面，完成后将自动进入新建分析界面。"}</p></div></div>;
+  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-lg p-8 text-center"><p className="eyebrow">{text("管理员登录", "Administrator sign-in")}</p><h1 className="mt-3 text-2xl font-semibold text-content">{error ? text("无法登录", "Unable to sign in") : text("正在安全兑换管理员凭据…", "Securely exchanging administrator credentials…")}</h1><p className={`mt-4 text-sm ${error ? "text-danger" : "text-muted"}`}>{error || text("请勿关闭页面，完成后将自动进入新建分析界面。", "Keep this page open. You will enter New analysis automatically.")}</p></div></div>;
 }
 
 function SetupRequired() {
-  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-xl p-8"><p className="eyebrow">Configuration required</p><h1 className="mt-3 text-3xl font-semibold text-content">连接 Supabase 后启动网站</h1><p className="mt-4 leading-7 text-muted">复制 <code className="text-warning">apps/web/.env.example</code> 为本地环境文件，只填写 Supabase URL、anon key 和 Turnstile site key。秘密 provider key 不得出现在前端。</p></div></div>;
+  const { text } = useLanguage();
+  return <div className="grid min-h-screen place-items-center bg-canvas p-5"><div className="panel max-w-xl p-8"><p className="eyebrow">{text("需要配置", "Configuration required")}</p><h1 className="mt-3 text-3xl font-semibold text-content">{text("连接 Supabase 后启动网站", "Connect Supabase to start the site")}</h1><p className="mt-4 leading-7 text-muted">{text("复制 apps/web/.env.example 为本地环境文件，只填写 Supabase URL、anon key 和 Turnstile site key。秘密 provider key 不得出现在前端。", "Copy apps/web/.env.example to a local environment file. Only add the Supabase URL, anon key, and Turnstile site key. Provider secrets must never be exposed to the browser.")}</p></div></div>;
 }
 
 function PrivateApp({ session, isAdmin }: { session: Session; isAdmin: boolean }) {
@@ -57,6 +61,7 @@ function PrivateApp({ session, isAdmin }: { session: Session; isAdmin: boolean }
 }
 
 export default function App() {
+  const { text } = useLanguage();
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [isAdmin, setIsAdmin] = useState<boolean | undefined>(undefined);
   useEffect(() => {
@@ -78,8 +83,8 @@ export default function App() {
   if (!isConfigured) return <SetupRequired/>;
   if (window.location.hash.startsWith("#admin_ticket=")) return <AdminTicketLogin/>;
   if (location.hash.startsWith("#/share/")) return <Suspense fallback={<Loading/>}><Routes><Route path="/share/:token" element={<SharedReportPage/>}/></Routes></Suspense>;
-  if (session === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">正在建立安全会话…</div>;
+  if (session === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">{text("正在建立安全会话…", "Establishing a secure session…")}</div>;
   if (!session) return <main className="relative min-h-screen bg-canvas px-5"><AuthPanel/></main>;
-  if (isAdmin === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">正在验证访问权限…</div>;
+  if (isAdmin === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">{text("正在验证访问权限…", "Checking access permissions…")}</div>;
   return <PrivateApp session={session} isAdmin={isAdmin}/>;
 }

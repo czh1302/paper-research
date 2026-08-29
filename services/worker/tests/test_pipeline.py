@@ -4,15 +4,20 @@ from paper_research.models import (
     ComparisonCell,
     DocumentBlock,
     Evidence,
+    PresentationFinding,
+    PresentationIdea,
     ProblemElement,
     ProblemStatement,
     ProviderUsage,
+    ReportPresentation,
     ResearchOpportunity,
+    ResearchTheme,
     RoundAnalysis,
 )
 from paper_research.pipeline import (
     estimate_usage_cny,
     ground_analysis,
+    ground_presentation,
     ground_problem,
     reconstruct_search_audit,
     should_stop,
@@ -235,3 +240,59 @@ def test_reconstructs_search_audit_from_candidate_provenance() -> None:
         ("crossref", "example query", 1),
         ("openalex", "example query", 1),
     ]
+
+
+def test_ground_presentation_removes_invented_references() -> None:
+    problem = ProblemStatement(
+        paper_id="paper",
+        title="Paper",
+        is_computer_science=True,
+        computer_science_confidence=1,
+        background_zh="背景",
+        background_en="Background",
+        background_evidence_ids=["paper:b1"],
+        task_zh="任务",
+        task_en="Task",
+        task_evidence_ids=["paper:b1"],
+        inputs=[ProblemElement(name="in", description_zh="输入", description_en="input", evidence_ids=["paper:b1"])],
+        outputs=[ProblemElement(name="out", description_zh="输出", description_en="output", evidence_ids=["paper:b1"])],
+        objectives=[], constraints=[], assumptions=[], metrics=[],
+        algorithm_zh="方法", algorithm_en="Method", algorithm_evidence_ids=["paper:b1"],
+        confidence=1,
+        evidence=[Evidence(id="paper:b1", paper_id="paper", page=2, text="source")],
+    )
+    candidate = CandidatePaper(
+        canonical_id="doi:real", title="Real", url="https://papers.example/real"
+    )
+    idea_values = {
+        "title_zh": "想法", "title_en": "Idea", "idea_zh": "一句话", "idea_en": "One line",
+        "gap_zh": "缺口", "gap_en": "Gap", "approach_zh": "方案", "approach_en": "Approach",
+        "first_experiment_zh": "实验", "first_experiment_en": "Experiment",
+        "expected_outcome_zh": "结果", "expected_outcome_en": "Outcome",
+        "main_risk_zh": "风险", "main_risk_en": "Risk",
+        "recommendation_reason_zh": "推荐", "recommendation_reason_en": "Reason",
+        "feasibility_reason_zh": "可做", "feasibility_reason_en": "Feasible",
+        "impact_reason_zh": "有价值", "impact_reason_en": "Impactful",
+        "uncertainty_reason_zh": "有风险", "uncertainty_reason_en": "Uncertain",
+        "feasibility": .8, "impact": .9, "uncertainty": .3,
+    }
+    presentation = ReportPresentation(
+        headline_zh="结论", headline_en="Headline",
+        executive_summary_zh="摘要", executive_summary_en="Summary",
+        key_findings=[PresentationFinding(
+            title_zh="发现", title_en="Finding", statement_zh="陈述", statement_en="Statement",
+            implication_zh="意义", implication_en="Implication",
+            pdf_evidence_ids=["paper:b1", "invented"],
+            source_urls=["https://invented.example/paper"],
+        )],
+        themes=[ResearchTheme(title_zh=f"主题{i}", title_en=f"Theme {i}", summary_zh="摘要", summary_en="Summary", paper_ids=["doi:real", "invented"]) for i in range(3)],
+        ideas=[PresentationIdea(key=f"idea-{i}", priority=i, evidence_urls=["https://papers.example/real", "https://invented.example/paper"], **idea_values) for i in range(1, 4)],
+    )
+
+    grounded = ground_presentation(presentation, [problem], [candidate], [])
+
+    assert grounded is not None
+    assert grounded.key_findings[0].pdf_evidence_ids == ["paper:b1"]
+    assert grounded.key_findings[0].source_urls == []
+    assert grounded.themes[0].paper_ids == ["doi:real"]
+    assert grounded.ideas[0].evidence_urls == ["https://papers.example/real"]

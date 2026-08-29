@@ -12,6 +12,9 @@
         try { theme = localStorage.getItem("paper-research-theme") === "dark" ? "dark" : "light"; } catch { /* Default to light. */ }
         document.documentElement.dataset.theme = theme;
         document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#152131" : "#F6F8FB");
+        let language = "zh";
+        try { language = localStorage.getItem("paper-research-language") === "en" ? "en" : "zh"; } catch { /* Default to Chinese. */ }
+        document.documentElement.lang = language === "en" ? "en" : "zh-CN";
       })();
     </script>
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>

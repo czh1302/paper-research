@@ -207,6 +207,85 @@ class ResearchOpportunity(BaseModel):
         return [_public_http_url(value) for value in values]
 
 
+class PresentationFinding(BaseModel):
+    title_zh: str = Field(max_length=80)
+    title_en: str = Field(max_length=160)
+    statement_zh: str = Field(max_length=300)
+    statement_en: str = Field(max_length=600)
+    implication_zh: str = Field(max_length=240)
+    implication_en: str = Field(max_length=480)
+    pdf_evidence_ids: list[str] = Field(default_factory=list, max_length=6)
+    source_urls: list[HttpUrlString] = Field(default_factory=list, max_length=4)
+
+    @field_validator("source_urls")
+    @classmethod
+    def validate_source_urls(cls, values: list[str]) -> list[str]:
+        return [_public_http_url(value) for value in values]
+
+
+class ResearchTheme(BaseModel):
+    title_zh: str = Field(max_length=80)
+    title_en: str = Field(max_length=160)
+    summary_zh: str = Field(max_length=300)
+    summary_en: str = Field(max_length=600)
+    paper_ids: list[str] = Field(min_length=1, max_length=4)
+
+
+class PresentationIdea(BaseModel):
+    key: str = Field(min_length=1, max_length=50)
+    priority: int = Field(ge=1, le=3)
+    title_zh: str = Field(max_length=100)
+    title_en: str = Field(max_length=180)
+    idea_zh: str = Field(max_length=260)
+    idea_en: str = Field(max_length=520)
+    gap_zh: str = Field(max_length=300)
+    gap_en: str = Field(max_length=600)
+    approach_zh: str = Field(max_length=300)
+    approach_en: str = Field(max_length=600)
+    first_experiment_zh: str = Field(max_length=360)
+    first_experiment_en: str = Field(max_length=700)
+    expected_outcome_zh: str = Field(max_length=240)
+    expected_outcome_en: str = Field(max_length=480)
+    main_risk_zh: str = Field(max_length=240)
+    main_risk_en: str = Field(max_length=480)
+    recommendation_reason_zh: str = Field(max_length=220)
+    recommendation_reason_en: str = Field(max_length=440)
+    feasibility_reason_zh: str = Field(max_length=180)
+    feasibility_reason_en: str = Field(max_length=360)
+    impact_reason_zh: str = Field(max_length=180)
+    impact_reason_en: str = Field(max_length=360)
+    uncertainty_reason_zh: str = Field(max_length=180)
+    uncertainty_reason_en: str = Field(max_length=360)
+    feasibility: float = Field(ge=0, le=1)
+    impact: float = Field(ge=0, le=1)
+    uncertainty: float = Field(ge=0, le=1)
+    evidence_urls: list[HttpUrlString] = Field(min_length=1, max_length=5)
+
+    @field_validator("evidence_urls")
+    @classmethod
+    def validate_evidence_urls(cls, values: list[str]) -> list[str]:
+        return [_public_http_url(value) for value in values]
+
+
+class ReportPresentation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[2] = 2
+    headline_zh: str = Field(max_length=100)
+    headline_en: str = Field(max_length=200)
+    executive_summary_zh: str = Field(max_length=600)
+    executive_summary_en: str = Field(max_length=1000)
+    key_findings: list[PresentationFinding] = Field(min_length=1, max_length=3)
+    themes: list[ResearchTheme] = Field(min_length=3, max_length=5)
+    ideas: list[PresentationIdea] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def priorities_are_unique(self) -> ReportPresentation:
+        if sorted(item.priority for item in self.ideas) != [1, 2, 3]:
+            raise ValueError("presentation idea priorities must be exactly 1, 2, and 3")
+        return self
+
+
 class RoundAnalysis(BaseModel):
     summary_zh: str = Field(max_length=1500)
     summary_en: str = Field(max_length=2000)
@@ -230,6 +309,7 @@ class AnalysisReport(BaseModel):
     source_coverage: dict[str, Any]
     limitations_zh: str
     limitations_en: str
+    presentation: ReportPresentation | None = None
 
 
 class JobFile(BaseModel):

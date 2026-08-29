@@ -28,6 +28,7 @@ from .models import (
     ProblemStatement,
     ProviderUsage,
     QueryBundle,
+    ReportPresentation,
     RoundAnalysis,
     SearchQuery,
     WebDiscovery,
@@ -38,6 +39,7 @@ from .prompts import (
     merge_problem_prompt,
     problem_statement_prompt,
     query_prompt,
+    report_presentation_prompt,
     round_analysis_prompt,
     web_discovery_prompt,
 )
@@ -145,6 +147,69 @@ def ground_analysis(analysis: RoundAnalysis, candidates: list[CandidatePaper]) -
             "opportunities": grounded_opportunities,
             "high_relevance_ids": sorted(set(analysis.high_relevance_ids) & allowed_ids),
         }
+    )
+
+
+def ground_presentation(
+    presentation: ReportPresentation,
+    problems: list[ProblemStatement],
+    candidates: list[CandidatePaper],
+    rounds: list[RoundAnalysis],
+) -> ReportPresentation | None:
+    allowed_evidence_ids = {
+        evidence.id for problem in problems for evidence in problem.evidence
+    }
+    allowed_paper_ids = {paper.canonical_id for paper in candidates}
+    allowed_urls = {
+        url
+        for paper in candidates
+        for url in (paper.url, paper.pdf_url)
+        if url
+    }
+    allowed_urls.update(
+        url
+        for result in rounds
+        for cell in result.comparison_cells
+        for url in cell.evidence_urls
+    )
+    allowed_urls.update(
+        url
+        for result in rounds
+        for opportunity in result.opportunities
+        for url in opportunity.novelty_evidence
+    )
+
+    findings = []
+    for finding in presentation.key_findings:
+        evidence_ids = list(
+            dict.fromkeys(item for item in finding.pdf_evidence_ids if item in allowed_evidence_ids)
+        )
+        urls = list(dict.fromkeys(item for item in finding.source_urls if item in allowed_urls))
+        if evidence_ids or urls:
+            findings.append(
+                finding.model_copy(
+                    update={"pdf_evidence_ids": evidence_ids, "source_urls": urls}
+                )
+            )
+
+    themes = []
+    for theme in presentation.themes:
+        paper_ids = list(
+            dict.fromkeys(item for item in theme.paper_ids if item in allowed_paper_ids)
+        )
+        if paper_ids:
+            themes.append(theme.model_copy(update={"paper_ids": paper_ids}))
+
+    ideas = []
+    for idea in sorted(presentation.ideas, key=lambda item: item.priority):
+        urls = list(dict.fromkeys(item for item in idea.evidence_urls if item in allowed_urls))
+        if urls:
+            ideas.append(idea.model_copy(update={"evidence_urls": urls}))
+
+    if not findings or not ideas:
+        return None
+    return presentation.model_copy(
+        update={"key_findings": findings, "themes": themes, "ideas": ideas}
     )
 
 
@@ -776,6 +841,30 @@ class AnalysisPipeline:
                 limitations_zh=DISCLAIMER_ZH,
                 limitations_en=DISCLAIMER_EN,
             )
+            await self._event(job.id, "stage", "Synthesizing the readable research brief")
+            try:
+                presentation = await self._call_llm(
+                    report_presentation_prompt(problems, joint, all_candidates, rounds),
+                    ReportPresentation,
+                )
+                presentation = ground_presentation(
+                    presentation, problems, all_candidates, rounds
+                )
+                if presentation:
+                    report = report.model_copy(update={"presentation": presentation})
+                else:
+                    await self._event(
+                        job.id,
+                        "presentation_fallback",
+                        "Readable brief contained no grounded findings; using compatibility view",
+                    )
+            except Exception as error:  # Presentation is optional; core analysis is already complete.
+                LOGGER.warning("Readable report synthesis unavailable: %s", error)
+                await self._event(
+                    job.id,
+                    "presentation_fallback",
+                    "Readable brief synthesis unavailable; using compatibility view",
+                )
             report.source_coverage["visualizations"] = report_visualization_data(report)
             markdown = report_markdown(report)
             if self.repository and persist:

@@ -193,10 +193,18 @@ that command with the credentials exposed in chat.
   than three high-relevance papers and coverage grows by less than five percentage points.
 - DOI, arXiv, OpenReview, OpenAlex and normalized-title identifiers are used for deduplication.
 - Every problem field stores PDF evidence IDs; every comparison cell stores external evidence URLs.
+- After retrieval, one fail-soft structured synthesis turns grounded results into a five-minute
+  brief with key findings, literature themes and three testable Research Ideas. Invalid evidence
+  IDs and URLs are removed before the presentation is saved; synthesis failure falls back to a
+  compact view of the existing analysis without failing the job.
 - “Nobody studied this” is never emitted. The report says only that no evidence was found within the
   recorded sources, queries and retrieval date.
-- Reports support browser Print-to-PDF plus Markdown, JSON and CSV export. Read-only share links are
-  hashed in the database, expire after 30 days, and can be revoked.
+- The report UI uses Overview, Problem, Related Work and Research Ideas sections. Internal evidence
+  IDs, raw audit JSON and long matrices stay out of the human view; citations open as source/page
+  previews and the complete candidate set remains searchable in a paginated drawer.
+- The whole site defaults to Chinese and can switch immediately to English. PDF and Markdown exports
+  use the active language; JSON and CSV preserve the complete bilingual and audit data. Read-only
+  share links are hashed in the database, expire after 30 days, and can be revoked.
 
 ## Verification and benchmark
 

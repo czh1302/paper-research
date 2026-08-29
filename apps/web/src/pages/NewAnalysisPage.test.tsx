@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ThemeProvider } from "../lib/theme";
+import { LanguageProvider } from "../lib/language";
 import { NewAnalysisPage } from "./NewAnalysisPage";
 
 const createAnalysis = vi.hoisted(() => vi.fn());
@@ -17,7 +18,7 @@ vi.mock("../components/TurnstileWidget", () => ({
 }));
 
 function renderPage() {
-  return render(<ThemeProvider><MemoryRouter initialEntries={["/new"]}><Routes><Route path="/new" element={<NewAnalysisPage/>}/><Route path="/jobs/:id" element={<div>任务页面</div>}/></Routes></MemoryRouter></ThemeProvider>);
+  return render(<LanguageProvider><ThemeProvider><MemoryRouter initialEntries={["/new"]}><Routes><Route path="/new" element={<NewAnalysisPage/>}/><Route path="/jobs/:id" element={<div>任务页面</div>}/></Routes></MemoryRouter></ThemeProvider></LanguageProvider>);
 }
 
 function pdf(name: string) { return new File(["pdf"], name, { type: "application/pdf" }); }

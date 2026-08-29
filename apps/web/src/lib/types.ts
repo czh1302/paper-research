@@ -25,15 +25,30 @@ export interface ProblemStatement {
   assumptions: ProblemElement[]; metrics: ProblemElement[]; algorithm_zh: string; algorithm_en: string;
   formalization?: string; confidence: number; evidence: Evidence[];
 }
-export interface CandidatePaper { canonical_id: string; title: string; year?: number; venue?: string; url: string; sources: string[]; relevance_score: number; reference_ids?: string[]; }
+export interface CandidatePaper {
+  canonical_id: string; title: string; abstract?: string; year?: number; authors?: string[]; venue?: string;
+  url: string; pdf_url?: string; doi?: string; arxiv_id?: string; openreview_id?: string; openalex_id?: string;
+  sources: string[]; relevance_score: number; reference_ids?: string[]; citation_count?: number; evidence_grade?: string;
+}
 export interface ComparisonCell { paper_id: string; axis: string; value_zh: string; value_en: string; evidence_urls: string[]; confidence: number; }
 export interface Opportunity { title_zh: string; title_en: string; rationale_zh: string; rationale_en: string; proposed_experiment_zh: string; proposed_experiment_en: string; novelty_evidence: string[]; feasibility: number; impact: number; uncertainty: number; }
 export interface RoundAnalysis { summary_zh: string; summary_en: string; comparison_cells: ComparisonCell[]; opportunities: Opportunity[]; covered_axes: string[]; uncovered_axes: string[]; }
+export interface PresentationFinding { title_zh: string; title_en: string; statement_zh: string; statement_en: string; implication_zh: string; implication_en: string; pdf_evidence_ids: string[]; source_urls: string[]; }
+export interface ResearchTheme { title_zh: string; title_en: string; summary_zh: string; summary_en: string; paper_ids: string[]; }
+export interface PresentationIdea {
+  key: string; priority: number; title_zh: string; title_en: string; idea_zh: string; idea_en: string;
+  gap_zh: string; gap_en: string; approach_zh: string; approach_en: string;
+  first_experiment_zh: string; first_experiment_en: string; expected_outcome_zh: string; expected_outcome_en: string;
+  main_risk_zh: string; main_risk_en: string; recommendation_reason_zh: string; recommendation_reason_en: string;
+  feasibility_reason_zh: string; feasibility_reason_en: string; impact_reason_zh: string; impact_reason_en: string;
+  uncertainty_reason_zh: string; uncertainty_reason_en: string; feasibility: number; impact: number; uncertainty: number; evidence_urls: string[];
+}
+export interface ReportPresentation { version: 2; headline_zh: string; headline_en: string; executive_summary_zh: string; executive_summary_en: string; key_findings: PresentationFinding[]; themes: ResearchTheme[]; ideas: PresentationIdea[]; }
 export interface JointProblemStatement { common_problem_zh: string; common_problem_en: string; aligned_concepts: Record<string, unknown>[]; differences: Record<string, unknown>[]; compatible_assumptions: string[]; conflicting_assumptions: string[]; formalization?: string; }
 export interface GraphNode { id: string; name: string; year?: number; }
 export interface GraphLink { source: string; target: string; }
 export interface VisualizationData { timeline: {year: number; count: number}[]; sources: {source: string; count: number}[]; opportunities: {name_zh: string; name_en: string; feasibility: number; impact: number; uncertainty: number}[]; graph: {nodes: GraphNode[]; links: GraphLink[]}; }
-export interface AnalysisReport { job_id: string; generated_at: string; problem_statements: ProblemStatement[]; joint_problem_statement?: JointProblemStatement; related_papers: CandidatePaper[]; rounds: RoundAnalysis[]; search_audit: Record<string, unknown>[]; parser_audit: {paper_id: string; parser: string; degraded?: boolean; page_count?: number}[]; source_coverage: { counts: Record<string, number>; rounds_completed: number; queries: number; visualizations: VisualizationData }; limitations_zh: string; limitations_en: string; }
+export interface AnalysisReport { job_id: string; generated_at: string; problem_statements: ProblemStatement[]; joint_problem_statement?: JointProblemStatement; related_papers: CandidatePaper[]; rounds: RoundAnalysis[]; search_audit: Record<string, unknown>[]; parser_audit: {paper_id: string; parser: string; degraded?: boolean; page_count?: number}[]; source_coverage: { counts: Record<string, number>; rounds_completed: number; queries: number; visualizations: VisualizationData }; limitations_zh: string; limitations_en: string; presentation?: ReportPresentation; }
 export interface ReportRecord { id: string; job_id: string; content: AnalysisReport; markdown: string; created_at: string; }
 
 export interface AdminUserRow {
