@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -68,11 +68,32 @@ def generate_link(
     )
     response.raise_for_status()
     payload = response.json()
-    action_link = payload.get("action_link")
-    user_id = (payload.get("user") or {}).get("id")
+    properties = payload.get("properties") or {}
+    action_link = payload.get("action_link") or properties.get("action_link")
+    user_id = (payload.get("user") or {}).get("id") or find_user_id(
+        supabase_url, service_role_key, email
+    )
     if not action_link or not user_id:
-        raise RuntimeError("Supabase did not return an action link and user ID")
+        raise RuntimeError("Supabase did not return a usable action link or user ID")
     return str(action_link), str(user_id)
+
+
+def find_user_id(supabase_url: str, service_role_key: str, email: str) -> str | None:
+    for page in range(1, 11):
+        response = httpx.get(
+            f"{supabase_url.rstrip('/')}/auth/v1/admin/users",
+            headers=auth_headers(service_role_key),
+            params={"page": page, "per_page": 1000},
+            timeout=30,
+        )
+        response.raise_for_status()
+        users = response.json().get("users") or []
+        for user in users:
+            if str(user.get("email") or "").strip().lower() == email:
+                return str(user["id"])
+        if len(users) < 1000:
+            break
+    return None
 
 
 def grant_admin(supabase_url: str, service_role_key: str, user_id: str) -> None:
@@ -86,6 +107,15 @@ def grant_admin(supabase_url: str, service_role_key: str, user_id: str) -> None:
         timeout=30,
     )
     response.raise_for_status()
+    verification = httpx.get(
+        f"{supabase_url.rstrip('/')}/rest/v1/admin_users",
+        headers=auth_headers(service_role_key),
+        params={"select": "user_id", "user_id": f"eq.{user_id}"},
+        timeout=30,
+    )
+    verification.raise_for_status()
+    if not verification.json():
+        raise RuntimeError("Administrator grant could not be verified")
 
 
 def write_qr(action_link: str, output: Path) -> None:
@@ -124,7 +154,7 @@ def main() -> None:
     write_qr(action_link, output)
 
     expires_in = magic_link_expiry_seconds(supabase_url)
-    created_at = datetime.now(UTC)
+    created_at = datetime.now(timezone.utc)
     metadata_path = output.with_suffix(".json")
     metadata_path.write_text(
         json.dumps(
