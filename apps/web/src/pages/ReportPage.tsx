@@ -3,9 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { CitationGraph, OpportunityChart, TimelineChart } from "../components/Charts";
 import { EvidenceCitations, SourceCitation, SourceCitations, sourceSiteName } from "../components/ReportCitations";
+import { ReportV3 } from "../components/ReportV3";
 import { createShare, downloadText, getReport, revokeShare } from "../lib/api";
 import { useLanguage } from "../lib/language";
-import { axisLabel, displayPresentation, humanReportMarkdown, localized, reportWarnings, scoreLevel } from "../lib/report";
+import { axisLabel, comparisonCsv, displayPresentation, humanReportMarkdown, isV3Presentation, localized, reportWarnings, scoreLevel } from "../lib/report";
 import type { CandidatePaper, Evidence, PresentationIdea, ProblemElement, ProblemStatement, ReportRecord, ResearchTheme } from "../lib/types";
 
 type ReportTab = "overview" | "problem" | "landscape" | "ideas";
@@ -91,7 +92,7 @@ function PapersDrawer({ open, onClose, papers }: { open: boolean; onClose: () =>
   return <div className="report-drawer-layer" role="presentation"><button className="report-drawer-backdrop" aria-label={text("关闭论文列表", "Close paper list")} onClick={onClose}/><aside className="report-drawer" role="dialog" aria-modal="true" aria-labelledby="all-papers-title"><div className="flex items-start justify-between gap-4 border-b border-line p-5"><div><h2 id="all-papers-title" className="!m-0 !text-xl">{text("全部检索结果", "All retrieval results")}</h2><p className="mt-1 text-xs text-muted">{text(`${filtered.length} 篇去重候选`, `${filtered.length} deduplicated candidates`)}</p></div><button className="button button-secondary !h-9 !min-h-9 !w-9 !p-0" onClick={onClose} aria-label={text("关闭", "Close")}><X className="h-4 w-4"/></button></div><div className="grid gap-3 border-b border-line p-5 sm:grid-cols-[1fr_auto]"><label className="relative"><Search className="absolute left-3 top-3.5 h-4 w-4 text-faint"/><input autoFocus className="input !pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text("搜索标题、作者、会议或来源", "Search title, author, venue, or source")}/></label><select className="input sm:w-40" value={sort} onChange={(event) => setSort(event.target.value as "relevance" | "year")}><option value="relevance">{text("相关性排序", "By relevance")}</option><option value="year">{text("年份排序", "By year")}</option></select></div><div className="flex-1 overflow-y-auto p-5"><div className="space-y-3">{visible.map((paper) => <article className="rounded-xl border border-line p-4" key={paper.canonical_id}><div className="flex items-start justify-between gap-3"><div><h3 className="!m-0 !text-base !text-content">{paper.title}</h3><p className="mt-2 text-xs text-muted">{[paper.year, paper.venue, ...(paper.authors ?? []).slice(0, 3)].filter(Boolean).join(" · ")}</p></div><SourceCitation url={paper.url} papers={[paper]}/></div>{paper.abstract && <p className="mt-3 line-clamp-3 text-sm leading-6 text-muted">{paper.abstract}</p>}</article>)}</div>{!visible.length && <p className="py-12 text-center text-sm text-muted">{text("没有匹配论文", "No matching papers")}</p>}</div><div className="flex items-center justify-between border-t border-line p-4 text-sm text-muted"><span>{page + 1} / {Math.max(1, Math.ceil(filtered.length / pageSize))}</span><div className="flex gap-2"><button className="button button-secondary !min-h-9 !py-1" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>{text("上一页", "Previous")}</button><button className="button button-secondary !min-h-9 !py-1" disabled={(page + 1) * pageSize >= filtered.length} onClick={() => setPage((value) => value + 1)}>{text("下一页", "Next")}</button></div></div></aside></div>;
 }
 
-function ReportView({ record, shared = false }: { record: ReportRecord; shared?: boolean }) {
+function LegacyReportView({ record, shared = false }: { record: ReportRecord; shared?: boolean }) {
   const report = record.content;
   const { language, text, formatDate, formatNumber } = useLanguage();
   const [tab, setTab] = useState<ReportTab>("overview");
@@ -115,7 +116,7 @@ function ReportView({ record, shared = false }: { record: ReportRecord; shared?:
   }, [paperMap, presentation.themes, report.related_papers]);
   const ideaVisuals = ideas.map((idea) => ({ name_zh: idea.title_zh, name_en: idea.title_en, feasibility: idea.feasibility, impact: idea.impact, uncertainty: idea.uncertainty }));
   const referenceUrls = [...new Set([...presentation.key_findings.flatMap((item) => item.source_urls), ...ideas.flatMap((item) => item.evidence_urls), ...(latestRound?.comparison_cells.flatMap((item) => item.evidence_urls) ?? [])])];
-  const csv = useMemo(() => { const rows = [["round", "axis", "paper_id", "value_zh", "value_en", "evidence_urls", "confidence"]]; report.rounds.forEach((round, index) => round.comparison_cells.forEach((cell) => rows.push([String(index + 1), cell.axis, cell.paper_id, cell.value_zh, cell.value_en, cell.evidence_urls.join(" "), String(cell.confidence)]))); return rows.map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(",")).join("\n"); }, [report]);
+  const csv = useMemo(() => comparisonCsv(report), [report]);
 
   async function share() { const result = await createShare(record.id); const url = `${location.origin}${location.pathname}#/share/${result.token}`; setShareId(result.shareId); setShareUrl(url); await navigator.clipboard?.writeText(url); }
   async function revoke() { await revokeShare(shareId); setShareId(""); setShareUrl(""); }
@@ -145,6 +146,11 @@ function ReportView({ record, shared = false }: { record: ReportRecord; shared?:
     <section className="print-only mt-10"><h2>{text("参考来源", "References")}</h2>{referenceUrls.map((url, index) => { const paper = report.related_papers.find((item) => item.url === url || item.pdf_url === url); return <p className="text-xs" key={url}>{index + 1}. {paper?.title ?? sourceSiteName(url)} · {sourceSiteName(url)}</p>; })}</section>
     <PapersDrawer open={papersOpen} onClose={() => setPapersOpen(false)} papers={report.related_papers}/>
   </article>;
+}
+
+function ReportView({ record, shared = false }: { record: ReportRecord; shared?: boolean }) {
+  if (isV3Presentation(record.content.presentation)) return <ReportV3 record={record} presentation={record.content.presentation} shared={shared}/>;
+  return <LegacyReportView record={record} shared={shared}/>;
 }
 
 export function ReportPage({ readOnly = false }: { readOnly?: boolean }) {

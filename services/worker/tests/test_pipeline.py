@@ -1,11 +1,21 @@
 import pytest
 from paper_research.models import (
+    AlgorithmStep,
+    AnalysisReport,
     CandidatePaper,
     ComparisonCell,
     DocumentBlock,
     Evidence,
+    ExperimentPlan,
+    IdeaAssessment,
+    IdeaAssessmentBatch,
+    IdeaDraft,
+    IdeaQueryPlan,
+    IdeaQueryPlanBatch,
     PresentationFinding,
     PresentationIdea,
+    ProblemBrief,
+    ProblemBriefItem,
     ProblemElement,
     ProblemStatement,
     ProviderUsage,
@@ -15,13 +25,19 @@ from paper_research.models import (
     RoundAnalysis,
 )
 from paper_research.pipeline import (
+    build_presentation_v3,
+    candidate_is_computer_science_relevant,
     estimate_usage_cny,
     ground_analysis,
+    ground_idea_assessments,
     ground_presentation,
     ground_problem,
+    query_bundle_from_plan,
+    rank_candidates,
     reconstruct_search_audit,
     should_stop,
 )
+from paper_research.reporting import comparison_csv
 
 
 def round_analysis(ids: list[str], axes: list[str]) -> RoundAnalysis:
@@ -296,3 +312,278 @@ def test_ground_presentation_removes_invented_references() -> None:
     assert grounded.key_findings[0].source_urls == []
     assert grounded.themes[0].paper_ids == ["doi:real"]
     assert grounded.ideas[0].evidence_urls == ["https://papers.example/real"]
+
+
+def idea_draft(key: str = "idea-1") -> IdeaDraft:
+    return IdeaDraft(
+        key=key,
+        axis="method",
+        title_zh="方法改进",
+        title_en="Method improvement",
+        hypothesis_zh="改变方法会提高结果可靠性。",
+        hypothesis_en="Changing the method will improve result reliability.",
+        change_from_target_zh="替换输入论文的验证模块。",
+        change_from_target_en="Replace the validation module in the input paper.",
+        rationale_zh="该模块限制了当前可靠性。",
+        rationale_en="The module limits current reliability.",
+        feasibility_assumption_zh="公开数据和实现可用。",
+        feasibility_assumption_en="Public data and implementations are available.",
+        target_evidence_ids=["paper:b1"],
+    )
+
+
+def experiment() -> ExperimentPlan:
+    return ExperimentPlan(
+        inputs_zh="公开测试集和输入论文实现",
+        inputs_en="A public test set and the input-paper implementation",
+        baseline_zh="输入论文方法",
+        baseline_en="The input-paper method",
+        intervention_zh="只替换目标验证模块",
+        intervention_en="Replace only the target validation module",
+        metrics_zh="准确率和运行时间",
+        metrics_en="Accuracy and wall-clock time",
+        success_criterion_zh="准确率提高至少 5%",
+        success_criterion_en="Improve accuracy by at least five percent",
+        resources_zh="单张 GPU，一周",
+        resources_en="One GPU for one week",
+    )
+
+
+def assessment_for(evidence: list[dict[str, object]]) -> IdeaAssessment:
+    return IdeaAssessment(
+        idea_key="idea-1",
+        axis="method",
+        title_zh="方法改进",
+        title_en="Method improvement",
+        hypothesis_zh="改变方法会提高结果可靠性。",
+        hypothesis_en="Changing the method will improve reliability.",
+        change_from_target_zh="替换验证模块。",
+        change_from_target_en="Replace the validation module.",
+        recommendation_reason_zh="证据显示值得验证。",
+        recommendation_reason_en="The evidence supports testing it.",
+        feasibility_conditions_zh="需要公开数据和基线实现。",
+        feasibility_conditions_en="Public data and a baseline are required.",
+        evidence=evidence,
+        experiment=experiment(),
+        feasibility=0.8,
+        impact=0.8,
+        evidence_confidence=0.8,
+        collision_risk="low",
+        verdict="viable",
+    )
+
+
+def test_idea_query_plan_requires_two_academic_and_one_web_query() -> None:
+    draft = idea_draft()
+    bundle = query_bundle_from_plan(
+        IdeaQueryPlanBatch(
+            plans=[
+                IdeaQueryPlan(
+                    idea_key=draft.key,
+                    academic_queries=["closest method", "feasibility evidence"],
+                    web_queries=["official implementation"],
+                )
+            ]
+        ),
+        [draft],
+        1,
+    )
+
+    assert [query.source_hint for query in bundle.queries] == [
+        "academic",
+        "academic",
+        "web",
+    ]
+    assert all(query.axes == [draft.key] for query in bundle.queries)
+
+
+def test_abstract_academic_result_ranks_above_web_snippet() -> None:
+    bundle = query_bundle_from_plan(
+        IdeaQueryPlanBatch(
+            plans=[
+                IdeaQueryPlan(
+                    idea_key="idea-1",
+                    academic_queries=["reliable module", "public benchmark"],
+                    web_queries=["reliable module code"],
+                )
+            ]
+        ),
+        [idea_draft()],
+        1,
+    )
+    ranked = rank_candidates(
+        [
+            CandidatePaper(
+                title="Reliable Module Code",
+                url="https://web.example/item",
+                sources=["tavily"],
+                evidence_grade="snippet",
+            ),
+            CandidatePaper(
+                title="Reliable Module",
+                abstract="A public benchmark for the reliable module.",
+                url="https://papers.example/item",
+                sources=["arxiv"],
+                evidence_grade="abstract",
+            ),
+        ],
+        bundle,
+    )
+
+    assert ranked[0].sources == ["arxiv"]
+
+
+def test_idea_gate_rejects_snippet_only_or_single_source_support() -> None:
+    candidate = CandidatePaper(
+        canonical_id="doi:one",
+        title="One source",
+        url="https://papers.example/one",
+        sources=["crossref"],
+        evidence_grade="snippet",
+    )
+    raw = assessment_for(
+        [
+            {
+                "paper_id": candidate.canonical_id,
+                "relationship": "support",
+                "claim_zh": "片段显示可能可行。",
+                "claim_en": "The snippet suggests it may be feasible.",
+                "evidence_urls": [candidate.url],
+            }
+        ]
+    )
+    grounded = ground_idea_assessments(
+        IdeaAssessmentBatch(assessments=[raw]), [idea_draft()], [candidate]
+    )
+
+    assert grounded[0].verdict == "rejected"
+    assert "two independent academic sources" in grounded[0].rejection_reason_en
+    assert "abstract or full-text" in grounded[0].rejection_reason_en
+
+
+def test_idea_gate_keeps_evidence_backed_near_miss_as_conditional() -> None:
+    candidates = [
+        CandidatePaper(
+            canonical_id=f"paper-{index}",
+            title=f"Computer system validation {index}",
+            abstract="A software system benchmark and validation protocol.",
+            url=f"https://papers.example/{index}",
+            sources=["arxiv"],
+            evidence_grade="abstract",
+        )
+        for index in range(2)
+    ]
+    raw = assessment_for(
+        [
+            {
+                "paper_id": paper.canonical_id,
+                "relationship": "support",
+                "claim_zh": "摘要支持该系统验证方向。",
+                "claim_en": "The abstract supports this system-validation direction.",
+                "evidence_urls": [paper.url],
+            }
+            for paper in candidates
+        ]
+    ).model_copy(update={"feasibility": 0.6, "evidence_confidence": 0.4})
+
+    grounded = ground_idea_assessments(
+        IdeaAssessmentBatch(assessments=[raw]), [idea_draft()], candidates
+    )
+
+    assert grounded[0].verdict == "conditional"
+    assert "evidence confidence below 0.70" in grounded[0].rejection_reason_en
+
+
+def test_obvious_biomedical_drift_cannot_support_a_computing_idea() -> None:
+    paper = CandidatePaper(
+        canonical_id="medical",
+        title="Clinical cancer patient equivalence study",
+        abstract="A medical oncology disease trial for patients and drug response.",
+        url="https://papers.example/medical",
+        sources=["crossref"],
+        evidence_grade="abstract",
+    )
+    assert not candidate_is_computer_science_relevant(paper)
+    raw = assessment_for(
+        [
+            {
+                "paper_id": paper.canonical_id,
+                "relationship": "support",
+                "claim_zh": "无关证据。",
+                "claim_en": "Irrelevant evidence.",
+                "evidence_urls": [paper.url],
+            }
+        ]
+    )
+
+    grounded = ground_idea_assessments(
+        IdeaAssessmentBatch(assessments=[raw]), [idea_draft()], [paper]
+    )
+
+    assert grounded[0].evidence == []
+    assert grounded[0].verdict == "rejected"
+
+
+def test_v3_presentation_builds_grounded_horizontal_matrix() -> None:
+    brief = ProblemBrief(
+        paper_id="input-paper",
+        title="Input Paper",
+        research_question_zh="如何可靠验证软件系统？",
+        research_question_en="How can a software system be validated reliably?",
+        research_question_evidence_ids=["input:b1"],
+        inputs=[ProblemBriefItem(label_zh="程序", label_en="Program", explanation_zh="待验证程序", explanation_en="Program under test", evidence_ids=["input:b1"])],
+        outputs=[ProblemBriefItem(label_zh="报告", label_en="Report", explanation_zh="验证报告", explanation_en="Validation report", evidence_ids=["input:b2"])],
+        algorithm_steps=[
+            AlgorithmStep(order=index, title_zh=f"步骤{index}", title_en=f"Step {index}", explanation_zh="执行验证", explanation_en="Run validation", evidence_ids=[f"input:b{index}"])
+            for index in range(1, 4)
+        ],
+        constraints=[ProblemBriefItem(label_zh="资源", label_en="Resources", explanation_zh="单张 GPU", explanation_en="One GPU", evidence_ids=["input:b3"])],
+    )
+    candidates = [
+        CandidatePaper(
+            canonical_id=f"paper-{index}", title=f"Software validation {index}",
+            abstract="Computer software system validation.", url=f"https://papers.example/{index}",
+            sources=["arxiv"], evidence_grade="abstract",
+        )
+        for index in range(2)
+    ]
+    raw = assessment_for(
+        [
+            {
+                "paper_id": paper.canonical_id, "relationship": "support",
+                "claim_zh": "该工作支持验证模块可行。", "claim_en": "This work supports feasibility.",
+                "evidence_urls": [paper.url],
+            }
+            for paper in candidates
+        ]
+    ).model_copy(update={"feasibility": 0.6, "evidence_confidence": 0.4})
+    grounded = ground_idea_assessments(
+        IdeaAssessmentBatch(assessments=[raw]), [idea_draft()], candidates
+    )
+
+    presentation = build_presentation_v3([brief], grounded, candidates)
+
+    assert presentation.ideas == []
+    assert [item.idea_key for item in presentation.promising_ideas] == ["idea-1"]
+    assert [row.paper_role for row in presentation.idea_comparisons[0].rows] == [
+        "input", "external", "external"
+    ]
+    assert all(
+        row.evidence_grade in {"input_pdf", "abstract", "full_text"}
+        for row in presentation.idea_comparisons[0].rows
+    )
+    report = AnalysisReport(
+        job_id="job",
+        problem_statements=[],
+        related_papers=candidates,
+        rounds=[],
+        search_audit=[],
+        source_coverage={"counts": {}, "rounds_completed": 1},
+        limitations_zh="范围说明",
+        limitations_en="Scope limitation",
+        presentation=presentation,
+    )
+    csv_text = comparison_csv(report)
+    assert "idea_status" in csv_text
+    assert "difference_to_idea_zh" in csv_text
+    assert "Software validation 0" in csv_text

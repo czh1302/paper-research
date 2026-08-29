@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     BUDGET_GUARD_CNY: float = Field(default=95, gt=0)
     MAX_PROVIDER_CONCURRENCY: int = Field(default=4, ge=1, le=16)
     SEARCH_PROFILE: Literal["academic_only", "academic_web"] = "academic_web"
+    IDEA_PIPELINE_V3: bool = False
 
     CLAUDE_BIN: str = "claude"
     CLAUDE_TIMEOUT_SECONDS: int = Field(default=900, ge=30)
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
     MINERU_MODEL: str = "vlm"
     MINERU_POLL_SECONDS: float = Field(default=5, ge=1)
     MINERU_TIMEOUT_SECONDS: int = Field(default=900, ge=60)
+    EXTERNAL_PDF_TIMEOUT_SECONDS: int = Field(default=180, ge=60, le=600)
 
     ARTIFACT_ROOT: Path = Path(".artifacts")
     MOCK_MODE: bool = False

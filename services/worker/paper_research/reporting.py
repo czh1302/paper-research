@@ -5,7 +5,7 @@ import io
 from collections import Counter
 from typing import Literal
 
-from .models import AnalysisReport
+from .models import AnalysisReport, ReportPresentationV3
 
 DISCLAIMER_ZH = (
     "截至检索日期，本报告仅说明在本次查询和数据源范围内发现的证据，不构成绝对新颖性证明。"
@@ -35,6 +35,219 @@ def report_markdown(
             references[url] = label
             values.append(f"[{label}]({url})")
         return "; ".join(values)
+
+    if isinstance(presentation, ReportPresentationV3):
+        lines.extend(
+            [
+                f"## {'研究问题' if zh else 'Research question'}",
+                "",
+                presentation.headline_zh if zh else presentation.headline_en,
+            ]
+        )
+        for brief in presentation.problem_briefs:
+            lines.extend(["", f"### {brief.title}", ""])
+            lines.append(f"**{'输入' if zh else 'Inputs'}**")
+            for item in brief.inputs:
+                lines.append(
+                    f"- **{item.label_zh if zh else item.label_en}**："
+                    f"{item.explanation_zh if zh else item.explanation_en}"
+                )
+            lines.extend(["", f"**{'输出' if zh else 'Outputs'}**"])
+            for item in brief.outputs:
+                lines.append(
+                    f"- **{item.label_zh if zh else item.label_en}**："
+                    f"{item.explanation_zh if zh else item.explanation_en}"
+                )
+            lines.extend(["", f"**{'算法步骤' if zh else 'Algorithm'}**"])
+            for step in brief.algorithm_steps:
+                lines.append(
+                    f"{step.order}. **{step.title_zh if zh else step.title_en}**："
+                    f"{step.explanation_zh if zh else step.explanation_en}"
+                )
+            lines.extend(["", f"**{'关键约束' if zh else 'Key constraints'}**"])
+            for item in brief.constraints:
+                lines.append(
+                    f"- **{item.label_zh if zh else item.label_en}**："
+                    f"{item.explanation_zh if zh else item.explanation_en}"
+                )
+
+        lines.extend(["", f"## {'已验证的研究 Ideas' if zh else 'Validated Research Ideas'}"])
+        if not presentation.ideas:
+            lines.extend(
+                [
+                    "",
+                    (
+                        "本轮没有候选 Idea 同时通过来源、撞车风险、可行性与证据置信度门槛。"
+                        if zh
+                        else "No idea passed all source, collision, feasibility, and evidence-confidence gates in this round."
+                    ),
+                ]
+            )
+        for index, idea in enumerate(presentation.ideas, start=1):
+            evidence_urls = list(
+                dict.fromkeys(
+                    url for evidence in idea.evidence for url in evidence.evidence_urls
+                )
+            )
+            links = source_links(evidence_urls)
+            experiment = idea.experiment
+            lines.extend(
+                [
+                    "",
+                    f"### {index}. {idea.title_zh if zh else idea.title_en}",
+                    "",
+                    f"**{'可证伪假设' if zh else 'Falsifiable hypothesis'}：** "
+                    + (idea.hypothesis_zh if zh else idea.hypothesis_en),
+                    "",
+                    f"**{'相对输入论文的改动' if zh else 'Change from the input paper'}：** "
+                    + (idea.change_from_target_zh if zh else idea.change_from_target_en),
+                    "",
+                    f"**{'为什么推荐' if zh else 'Why recommend it'}：** "
+                    + (
+                        idea.recommendation_reason_zh
+                        if zh
+                        else idea.recommendation_reason_en
+                    ),
+                    "",
+                    f"**{'首个实验' if zh else 'First experiment'}**",
+                    f"- {'输入' if zh else 'Inputs'}：{experiment.inputs_zh if zh else experiment.inputs_en}",
+                    f"- Baseline：{experiment.baseline_zh if zh else experiment.baseline_en}",
+                    f"- {'改动' if zh else 'Intervention'}：{experiment.intervention_zh if zh else experiment.intervention_en}",
+                    f"- {'指标' if zh else 'Metrics'}：{experiment.metrics_zh if zh else experiment.metrics_en}",
+                    f"- {'成功条件' if zh else 'Success criterion'}：{experiment.success_criterion_zh if zh else experiment.success_criterion_en}",
+                    f"- {'资源' if zh else 'Resources'}：{experiment.resources_zh if zh else experiment.resources_en}",
+                    "",
+                    f"**{'验证结果' if zh else 'Validation'}：** "
+                    + (
+                        f"可行性 {idea.feasibility:.0%}；研究价值 {idea.impact:.0%}；"
+                        f"证据置信度 {idea.evidence_confidence:.0%}；撞车风险 {idea.collision_risk}。"
+                        if zh
+                        else f"Feasibility {idea.feasibility:.0%}; impact {idea.impact:.0%}; "
+                        f"evidence confidence {idea.evidence_confidence:.0%}; collision risk {idea.collision_risk}."
+                    ),
+                ]
+            )
+            if links:
+                lines.append(f"**{'来源' if zh else 'Sources'}：** {links}")
+
+        if presentation.promising_ideas:
+            lines.extend(
+                [
+                    "",
+                    f"## {'值得继续验证的 Ideas' if zh else 'Promising Ideas Needing More Evidence'}",
+                    "",
+                    (
+                        "以下方向尚未通过正式推荐门槛，不应视为已证明的新颖性结论。"
+                        if zh
+                        else "These directions have not passed the recommendation gates and are not proven novelty claims."
+                    ),
+                ]
+            )
+        for index, idea in enumerate(presentation.promising_ideas, start=1):
+            experiment = idea.experiment
+            evidence_urls = list(
+                dict.fromkeys(
+                    url for evidence in idea.evidence for url in evidence.evidence_urls
+                )
+            )
+            lines.extend(
+                [
+                    "",
+                    f"### {index}. {idea.title_zh if zh else idea.title_en}",
+                    "",
+                    f"**{'可证伪假设' if zh else 'Falsifiable hypothesis'}：** "
+                    + (idea.hypothesis_zh if zh else idea.hypothesis_en),
+                    "",
+                    f"**{'相对输入论文的改动' if zh else 'Change from the input paper'}：** "
+                    + (idea.change_from_target_zh if zh else idea.change_from_target_en),
+                    "",
+                    f"**{'仍缺少的验证' if zh else 'Missing validation'}：** "
+                    + (idea.rejection_reason_zh if zh else idea.rejection_reason_en),
+                    "",
+                    f"**{'首个实验' if zh else 'First experiment'}**",
+                    f"- {'输入' if zh else 'Inputs'}：{experiment.inputs_zh if zh else experiment.inputs_en}",
+                    f"- Baseline：{experiment.baseline_zh if zh else experiment.baseline_en}",
+                    f"- {'改动' if zh else 'Intervention'}：{experiment.intervention_zh if zh else experiment.intervention_en}",
+                    f"- {'指标' if zh else 'Metrics'}：{experiment.metrics_zh if zh else experiment.metrics_en}",
+                    f"- {'成功条件' if zh else 'Success criterion'}：{experiment.success_criterion_zh if zh else experiment.success_criterion_en}",
+                    f"- {'资源' if zh else 'Resources'}：{experiment.resources_zh if zh else experiment.resources_en}",
+                ]
+            )
+            links = source_links(evidence_urls)
+            if links:
+                lines.append(f"**{'来源' if zh else 'Sources'}：** {links}")
+
+        lines.extend(["", f"## {'Idea 相关工作' if zh else 'Idea-specific related work'}"])
+        for idea in presentation.ideas + presentation.promising_ideas:
+            lines.extend(["", f"### {idea.title_zh if zh else idea.title_en}"])
+            for evidence in idea.evidence:
+                paper = papers.get(evidence.paper_id)
+                relationship = {
+                    "support": "支持可行性" if zh else "Supports feasibility",
+                    "overlap": "相似或撞车" if zh else "Overlap or collision",
+                    "counterevidence": "反对证据" if zh else "Counterevidence",
+                }[evidence.relationship]
+                claim = evidence.claim_zh if zh else evidence.claim_en
+                links = source_links(evidence.evidence_urls)
+                label = paper.title if paper else evidence.paper_id
+                lines.append(f"- **{relationship} · {label}**：{claim} {links}")
+
+        if presentation.idea_comparisons:
+            lines.extend(["", f"## {'横向差异表' if zh else 'Horizontal comparison'}"])
+        idea_titles = {
+            item.idea_key: item.title_zh if zh else item.title_en
+            for item in presentation.ideas + presentation.promising_ideas
+        }
+        for matrix in presentation.idea_comparisons:
+            if matrix.idea_key not in idea_titles:
+                continue
+            lines.extend(
+                [
+                    "",
+                    f"### {idea_titles[matrix.idea_key]}",
+                    "",
+                    (
+                        "| 工作 | 角色 | 已有能力或证据 | 与 Idea 的差异 | 证据等级 |"
+                        if zh
+                        else "| Work | Role | Existing capability or evidence | Difference from the idea | Evidence grade |"
+                    ),
+                    "|---|---|---|---|---|",
+                ]
+            )
+            for row in matrix.rows:
+                role = (
+                    "输入论文" if row.paper_role == "input" and zh else
+                    "Input paper" if row.paper_role == "input" else
+                    "外部论文" if zh else "External paper"
+                )
+                capability = row.task_or_capability_zh if zh else row.task_or_capability_en
+                difference = row.difference_to_idea_zh if zh else row.difference_to_idea_en
+                links = source_links(row.source_urls)
+                work = row.title if not links else f"[{row.title}]({row.source_urls[0]})"
+                lines.append(
+                    f"| {work} | {role} | {capability} | {difference} | {row.evidence_grade} |"
+                )
+
+        counts = report.source_coverage.get("counts", {})
+        lines.extend(
+            [
+                "",
+                f"## {'检索范围' if zh else 'Retrieval scope'}",
+                "",
+                (
+                    f"完成 {len(report.idea_rounds)} 轮 Idea 验证，获得 {len(report.related_papers)} 篇去重候选，"
+                    f"覆盖 {len(counts)} 个数据源。"
+                    if zh
+                    else f"Completed {len(report.idea_rounds)} idea-validation round(s), with "
+                    f"{len(report.related_papers)} deduplicated candidates across {len(counts)} sources."
+                ),
+            ]
+        )
+        if references:
+            lines.extend(["", f"## {'参考来源' if zh else 'References'}", ""])
+            for index, (url, label) in enumerate(references.items(), start=1):
+                lines.append(f"{index}. [{label}]({url})")
+        return "\n".join(lines)
 
     if presentation:
         lines.extend(
@@ -221,6 +434,57 @@ def report_markdown(
 def comparison_csv(report: AnalysisReport) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
+    presentation = report.presentation
+    if isinstance(presentation, ReportPresentationV3) and presentation.idea_comparisons:
+        writer.writerow(
+            [
+                "idea_key",
+                "idea_status",
+                "paper_role",
+                "paper_id",
+                "title",
+                "relationship",
+                "task_or_capability_zh",
+                "task_or_capability_en",
+                "method_or_change_zh",
+                "method_or_change_en",
+                "output_or_evaluation_zh",
+                "output_or_evaluation_en",
+                "key_constraint_zh",
+                "key_constraint_en",
+                "difference_to_idea_zh",
+                "difference_to_idea_en",
+                "evidence_grade",
+                "source_urls",
+                "input_evidence_ids",
+            ]
+        )
+        for matrix in presentation.idea_comparisons:
+            for row in matrix.rows:
+                writer.writerow(
+                    [
+                        matrix.idea_key,
+                        matrix.status,
+                        row.paper_role,
+                        row.paper_id,
+                        row.title,
+                        row.relationship,
+                        row.task_or_capability_zh,
+                        row.task_or_capability_en,
+                        row.method_or_change_zh,
+                        row.method_or_change_en,
+                        row.output_or_evaluation_zh,
+                        row.output_or_evaluation_en,
+                        row.key_constraint_zh,
+                        row.key_constraint_en,
+                        row.difference_to_idea_zh,
+                        row.difference_to_idea_en,
+                        row.evidence_grade,
+                        " ".join(row.source_urls),
+                        " ".join(row.input_evidence_ids),
+                    ]
+                )
+        return buffer.getvalue()
     writer.writerow(
         ["round", "axis", "paper_id", "value_zh", "value_en", "evidence_urls", "confidence"]
     )

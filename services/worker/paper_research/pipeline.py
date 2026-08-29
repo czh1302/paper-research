@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from .clients.llm import ClaudeCodeClient
 from .clients.mineru import MinerUClient
 from .config import Settings
@@ -22,21 +24,39 @@ from .models import (
     DocumentBlock,
     DocumentIR,
     Evidence,
+    IdeaAssessment,
+    IdeaAssessmentBatch,
+    IdeaComparisonMatrix,
+    IdeaComparisonRow,
+    IdeaDraft,
+    IdeaDraftBatch,
+    IdeaEvidence,
+    IdeaQueryPlanBatch,
+    IdeaResearchRound,
     Job,
     JobStatus,
     JointProblemStatement,
+    ProblemBrief,
     ProblemStatement,
     ProviderUsage,
     QueryBundle,
+    RejectedIdea,
     ReportPresentation,
+    ReportPresentationV3,
+    ResearchOpportunity,
     RoundAnalysis,
     SearchQuery,
     WebDiscovery,
 )
 from .prompts import (
     baseline_report_prompt,
+    brainstorm_ideas_prompt,
+    idea_assessment_prompt,
+    idea_query_plan_prompt,
     joint_problem_prompt,
     merge_problem_prompt,
+    problem_brief_prompt,
+    problem_brief_review_prompt,
     problem_statement_prompt,
     query_prompt,
     report_presentation_prompt,
@@ -44,6 +64,7 @@ from .prompts import (
     web_discovery_prompt,
 )
 from .reporting import DISCLAIMER_EN, DISCLAIMER_ZH, report_markdown, report_visualization_data
+from .security import validate_public_url
 from .sources import LiteratureRetriever, build_sources
 from .sources.retriever import merge_candidates, source_coverage
 from .sources.web import SerperSource, TavilySource
@@ -79,11 +100,17 @@ def rank_candidates(
     for paper in candidates:
         text_tokens = set(re.findall(r"[a-z0-9]{3,}", f"{paper.title} {paper.abstract}".casefold()))
         lexical = len(query_tokens & text_tokens) / max(1, len(query_tokens))
-        source_bonus = min(len(paper.sources) * 0.04, 0.16)
-        abstract_bonus = 0.08 if paper.abstract else 0
-        citation_bonus = min((paper.citation_count or 0) / 1000, 0.08)
+        academic_sources = {
+            "arxiv", "openreview", "openalex", "crossref", "dblp", "serper_scholar"
+        }
+        evidence_bonus = {
+            "metadata": 0.0, "snippet": 0.05, "abstract": 0.20, "full_text": 0.28
+        }[paper.evidence_grade]
+        academic_bonus = 0.12 if set(paper.sources) & academic_sources else 0.0
+        source_bonus = min(len(paper.sources) * 0.02, 0.08)
+        citation_bonus = min((paper.citation_count or 0) / 1500, 0.06)
         paper.relevance_score = min(
-            1, lexical * 0.72 + source_bonus + abstract_bonus + citation_bonus
+            1, lexical * 0.54 + academic_bonus + source_bonus + evidence_bonus + citation_bonus
         )
     return sorted(
         candidates, key=lambda item: (item.relevance_score, item.citation_count or 0), reverse=True
@@ -210,6 +237,458 @@ def ground_presentation(
         return None
     return presentation.model_copy(
         update={"key_findings": findings, "themes": themes, "ideas": ideas}
+    )
+
+
+def ground_problem_brief(brief: ProblemBrief, problem: ProblemStatement) -> ProblemBrief:
+    allowed = {item.id for item in problem.evidence}
+
+    def ids(values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value for value in values if value in allowed))
+
+    def items(values: list[Any]) -> list[Any]:
+        grounded = []
+        for item in values:
+            evidence_ids = ids(item.evidence_ids)
+            if evidence_ids:
+                grounded.append(item.model_copy(update={"evidence_ids": evidence_ids}))
+        return grounded
+
+    updates = {
+        "paper_id": problem.paper_id,
+        "title": problem.title,
+        "research_question_evidence_ids": ids(brief.research_question_evidence_ids),
+        "inputs": items(brief.inputs),
+        "outputs": items(brief.outputs),
+        "constraints": items(brief.constraints),
+        "algorithm_steps": items(sorted(brief.algorithm_steps, key=lambda item: item.order)),
+    }
+    if (
+        not updates["research_question_evidence_ids"]
+        or not updates["inputs"]
+        or not updates["outputs"]
+        or not updates["constraints"]
+        or len(updates["algorithm_steps"]) < 3
+    ):
+        raise ValueError("Problem brief did not retain grounded required fields")
+    updates["algorithm_steps"] = [
+        item.model_copy(update={"order": index})
+        for index, item in enumerate(updates["algorithm_steps"], start=1)
+    ]
+    return brief.model_copy(update=updates)
+
+
+def ground_idea_drafts(
+    batch: IdeaDraftBatch,
+    problems: list[ProblemStatement],
+    *,
+    expected_count: int | None = None,
+) -> list[IdeaDraft]:
+    allowed = {item.id for problem in problems for item in problem.evidence}
+    result: list[IdeaDraft] = []
+    seen: set[str] = set()
+    for item in batch.ideas:
+        if item.key in seen:
+            continue
+        evidence_ids = list(
+            dict.fromkeys(value for value in item.target_evidence_ids if value in allowed)
+        )
+        if not evidence_ids:
+            continue
+        seen.add(item.key)
+        result.append(item.model_copy(update={"target_evidence_ids": evidence_ids}))
+    if expected_count is not None and len(result) != expected_count:
+        raise ValueError(f"Expected {expected_count} grounded ideas, received {len(result)}")
+    if not result:
+        raise ValueError("No grounded research ideas were generated")
+    return result
+
+
+def query_bundle_from_plan(
+    plans: IdeaQueryPlanBatch, ideas: list[IdeaDraft], round_number: int
+) -> QueryBundle:
+    idea_keys = {item.key for item in ideas}
+    rows = {item.idea_key: item for item in plans.plans if item.idea_key in idea_keys}
+    if set(rows) != idea_keys:
+        raise ValueError("Idea query plan omitted or invented idea keys")
+    queries: list[SearchQuery] = []
+    for idea in ideas:
+        plan = rows[idea.key]
+        queries.extend(
+            SearchQuery(
+                query=query.strip(),
+                rationale=f"Validate {idea.key} against academic literature",
+                axes=[idea.key],
+                source_hint="academic",
+            )
+            for query in plan.academic_queries
+            if query.strip()
+        )
+        queries.extend(
+            SearchQuery(
+                query=query.strip(),
+                rationale=f"Find official implementation evidence for {idea.key}",
+                axes=[idea.key],
+                source_hint="web",
+            )
+            for query in plan.web_queries
+            if query.strip()
+        )
+    if len(queries) != len(ideas) * 3:
+        raise ValueError("Every idea requires exactly two academic and one web query")
+    return QueryBundle(round_number=round_number, queries=queries)
+
+
+ACADEMIC_SOURCES = {
+    "arxiv", "openreview", "openalex", "crossref", "dblp", "serper_scholar"
+}
+
+BIOMEDICAL_MARKERS = {
+    "biomedical",
+    "cancer",
+    "clinical",
+    "disease",
+    "drug",
+    "gene",
+    "healthcare",
+    "medical",
+    "oncology",
+    "patient",
+    "protein",
+}
+COMPUTING_MARKERS = {
+    "algorithm",
+    "artificial intelligence",
+    "code",
+    "computer",
+    "database",
+    "dataset",
+    "language model",
+    "machine learning",
+    "network",
+    "programming",
+    "protocol",
+    "software",
+    "system",
+}
+
+
+def candidate_is_computer_science_relevant(paper: CandidatePaper) -> bool:
+    """Reject obvious cross-domain drift without excluding interdisciplinary CS work."""
+    text = f"{paper.title} {paper.abstract} {paper.venue or ''}".casefold()
+    biomedical_hits = sum(marker in text for marker in BIOMEDICAL_MARKERS)
+    computing_hits = sum(marker in text for marker in COMPUTING_MARKERS)
+    return not (biomedical_hits >= 2 and computing_hits == 0)
+
+
+def ground_idea_assessments(
+    batch: IdeaAssessmentBatch,
+    ideas: list[IdeaDraft],
+    candidates: list[CandidatePaper],
+    *,
+    full_text_paper_ids: set[str] | None = None,
+) -> list[IdeaAssessment]:
+    idea_map = {item.key: item for item in ideas}
+    paper_map = {item.canonical_id: item for item in candidates}
+    full_text_paper_ids = full_text_paper_ids or set()
+    seen: set[str] = set()
+    result: list[IdeaAssessment] = []
+    for assessment in batch.assessments:
+        draft = idea_map.get(assessment.idea_key)
+        if not draft or assessment.idea_key in seen:
+            continue
+        seen.add(assessment.idea_key)
+        evidence: list[IdeaEvidence] = []
+        for item in assessment.evidence:
+            paper = paper_map.get(item.paper_id)
+            if not paper or not candidate_is_computer_science_relevant(paper):
+                continue
+            allowed_urls = {value for value in (paper.url, paper.pdf_url) if value}
+            urls = list(dict.fromkeys(value for value in item.evidence_urls if value in allowed_urls))
+            if urls:
+                evidence.append(item.model_copy(update={"evidence_urls": urls}))
+        academic_ids = {
+            item.paper_id
+            for item in evidence
+            if set(paper_map[item.paper_id].sources) & ACADEMIC_SOURCES
+        }
+        strong_evidence = any(
+            paper_map[item.paper_id].evidence_grade in {"abstract", "full_text"}
+            or item.paper_id in full_text_paper_ids
+            for item in evidence
+        )
+        hard_failures = []
+        if len(academic_ids) < 2:
+            hard_failures.append("fewer than two independent academic sources")
+        if not strong_evidence:
+            hard_failures.append("no abstract or full-text evidence")
+        if assessment.collision_risk == "high":
+            hard_failures.append("high collision risk with existing work")
+        if assessment.feasibility < 0.65:
+            hard_failures.append("feasibility below 0.65")
+        if assessment.evidence_confidence < 0.70:
+            hard_failures.append("evidence confidence below 0.70")
+        promising = (
+            len(academic_ids) >= 2
+            and strong_evidence
+            and assessment.collision_risk != "high"
+            and assessment.feasibility >= 0.55
+        )
+        verdict = "viable" if not hard_failures else "conditional" if promising else "rejected"
+        reason_zh = assessment.rejection_reason_zh
+        reason_en = assessment.rejection_reason_en
+        if hard_failures:
+            reason_en = "; ".join(hard_failures)
+            reason_zh = "；".join(
+                {
+                    "fewer than two independent academic sources": "独立学术来源少于 2 个",
+                    "no abstract or full-text evidence": "缺少摘要或正文级证据",
+                    "high collision risk with existing work": "与已有工作高度撞车",
+                    "feasibility below 0.65": "可行性低于 0.65",
+                    "evidence confidence below 0.70": "证据置信度低于 0.70",
+                }[value]
+                for value in hard_failures
+            )
+        else:
+            reason_zh = ""
+            reason_en = ""
+        result.append(
+            assessment.model_copy(
+                update={
+                    "axis": draft.axis,
+                    "title_zh": draft.title_zh,
+                    "title_en": draft.title_en,
+                    "hypothesis_zh": draft.hypothesis_zh,
+                    "hypothesis_en": draft.hypothesis_en,
+                    "change_from_target_zh": draft.change_from_target_zh,
+                    "change_from_target_en": draft.change_from_target_en,
+                    "evidence": evidence,
+                    "verdict": verdict,
+                    "rejection_reason_zh": reason_zh,
+                    "rejection_reason_en": reason_en,
+                }
+            )
+        )
+    if set(seen) != set(idea_map):
+        raise ValueError("Idea assessment omitted one or more candidate ideas")
+    return result
+
+
+def selected_ideas(assessments: list[IdeaAssessment]) -> list[IdeaAssessment]:
+    viable = [item for item in assessments if item.verdict == "viable"]
+    return sorted(
+        viable,
+        key=lambda item: (
+            item.evidence_confidence,
+            item.feasibility,
+            item.impact,
+            item.collision_risk == "low",
+        ),
+        reverse=True,
+    )[:3]
+
+
+def promising_ideas(assessments: list[IdeaAssessment]) -> list[IdeaAssessment]:
+    conditional = [item for item in assessments if item.verdict == "conditional"]
+    return sorted(
+        conditional,
+        key=lambda item: (
+            item.evidence_confidence,
+            item.feasibility,
+            item.impact,
+            item.collision_risk == "low",
+        ),
+        reverse=True,
+    )[:3]
+
+
+def _compact(values: list[str], limit: int = 400) -> str:
+    text = "；".join(value.strip() for value in values if value.strip())
+    return text[:limit]
+
+
+def build_idea_comparisons(
+    briefs: list[ProblemBrief],
+    assessments: list[IdeaAssessment],
+    candidates: list[CandidatePaper],
+) -> list[IdeaComparisonMatrix]:
+    paper_map = {item.canonical_id: item for item in candidates}
+    unavailable_zh = "当前证据未覆盖"
+    unavailable_en = "Not covered by the current evidence"
+    matrices: list[IdeaComparisonMatrix] = []
+    for assessment in assessments:
+        rows: list[IdeaComparisonRow] = []
+        for brief in briefs:
+            evidence_ids = list(
+                dict.fromkeys(
+                    brief.research_question_evidence_ids
+                    + [value for item in brief.inputs for value in item.evidence_ids]
+                    + [value for item in brief.outputs for value in item.evidence_ids]
+                    + [value for item in brief.algorithm_steps for value in item.evidence_ids]
+                    + [value for item in brief.constraints for value in item.evidence_ids]
+                )
+            )[:8]
+            rows.append(
+                IdeaComparisonRow(
+                    paper_role="input",
+                    paper_id=brief.paper_id,
+                    title=brief.title,
+                    relationship="baseline",
+                    task_or_capability_zh=brief.research_question_zh,
+                    task_or_capability_en=brief.research_question_en,
+                    method_or_change_zh=_compact(
+                        [f"{item.title_zh}：{item.explanation_zh}" for item in brief.algorithm_steps]
+                    ),
+                    method_or_change_en=_compact(
+                        [f"{item.title_en}: {item.explanation_en}" for item in brief.algorithm_steps],
+                        780,
+                    ),
+                    output_or_evaluation_zh=_compact(
+                        [f"{item.label_zh}：{item.explanation_zh}" for item in brief.outputs]
+                    ),
+                    output_or_evaluation_en=_compact(
+                        [f"{item.label_en}: {item.explanation_en}" for item in brief.outputs],
+                        780,
+                    ),
+                    key_constraint_zh=_compact(
+                        [f"{item.label_zh}：{item.explanation_zh}" for item in brief.constraints]
+                    ),
+                    key_constraint_en=_compact(
+                        [f"{item.label_en}: {item.explanation_en}" for item in brief.constraints],
+                        780,
+                    ),
+                    difference_to_idea_zh=assessment.change_from_target_zh,
+                    difference_to_idea_en=assessment.change_from_target_en,
+                    evidence_grade="input_pdf",
+                    input_evidence_ids=evidence_ids,
+                )
+            )
+        seen_external: set[str] = set()
+        for evidence in assessment.evidence:
+            paper = paper_map.get(evidence.paper_id)
+            if (
+                not paper
+                or paper.canonical_id in seen_external
+                or paper.evidence_grade not in {"abstract", "full_text"}
+                or not candidate_is_computer_science_relevant(paper)
+            ):
+                continue
+            seen_external.add(paper.canonical_id)
+            difference_zh, difference_en = {
+                "support": (
+                    "支持实现可行性，但没有直接验证本 Idea 的具体改动。",
+                    "Supports feasibility but does not directly validate this idea's concrete change.",
+                ),
+                "overlap": (
+                    "与本 Idea 存在能力重叠，需要进一步核对实现和实验边界。",
+                    "Overlaps with the idea and requires a closer implementation and evaluation comparison.",
+                ),
+                "counterevidence": (
+                    "构成反对证据，首个实验必须检验这一限制是否成立。",
+                    "Provides counterevidence that the first experiment must explicitly test.",
+                ),
+            }[evidence.relationship]
+            rows.append(
+                IdeaComparisonRow(
+                    paper_role="external",
+                    paper_id=paper.canonical_id,
+                    title=paper.title,
+                    relationship=evidence.relationship,
+                    task_or_capability_zh=evidence.claim_zh,
+                    task_or_capability_en=evidence.claim_en,
+                    method_or_change_zh=unavailable_zh,
+                    method_or_change_en=unavailable_en,
+                    output_or_evaluation_zh=unavailable_zh,
+                    output_or_evaluation_en=unavailable_en,
+                    key_constraint_zh=unavailable_zh,
+                    key_constraint_en=unavailable_en,
+                    difference_to_idea_zh=difference_zh,
+                    difference_to_idea_en=difference_en,
+                    evidence_grade=paper.evidence_grade,
+                    source_urls=evidence.evidence_urls,
+                )
+            )
+        matrices.append(
+            IdeaComparisonMatrix(
+                idea_key=assessment.idea_key,
+                status=assessment.verdict,
+                rows=rows,
+            )
+        )
+    return matrices
+
+
+def build_presentation_v3(
+    briefs: list[ProblemBrief],
+    assessments: list[IdeaAssessment],
+    candidates: list[CandidatePaper],
+) -> ReportPresentationV3:
+    chosen = selected_ideas(assessments)
+    pending = promising_ideas(assessments)
+    rejected = [
+        RejectedIdea(
+            idea_key=item.idea_key,
+            title_zh=item.title_zh,
+            title_en=item.title_en,
+            reason_zh=item.rejection_reason_zh or "未通过证据与可行性门槛",
+            reason_en=item.rejection_reason_en or "Did not pass evidence and feasibility gates",
+        )
+        for item in assessments
+        if item.verdict == "rejected"
+    ]
+    return ReportPresentationV3(
+        headline_zh=briefs[0].research_question_zh,
+        headline_en=briefs[0].research_question_en,
+        problem_briefs=briefs,
+        ideas=chosen,
+        promising_ideas=pending,
+        rejected_ideas=rejected,
+        idea_comparisons=build_idea_comparisons(briefs, assessments, candidates),
+    )
+
+
+def compatibility_round(idea_round: IdeaResearchRound) -> RoundAnalysis:
+    chosen = [
+        item for item in idea_round.assessments if item.idea_key in idea_round.selected_idea_keys
+    ]
+    cells = []
+    for assessment in idea_round.assessments:
+        for item in assessment.evidence:
+            cells.append(
+                {
+                    "paper_id": item.paper_id,
+                    "axis": assessment.axis,
+                    "value_zh": item.claim_zh,
+                    "value_en": item.claim_en,
+                    "evidence_urls": item.evidence_urls,
+                    "confidence": assessment.evidence_confidence,
+                }
+            )
+    opportunities = [
+        ResearchOpportunity(
+            title_zh=item.title_zh,
+            title_en=item.title_en,
+            rationale_zh=item.recommendation_reason_zh,
+            rationale_en=item.recommendation_reason_en,
+            novelty_evidence=list(
+                dict.fromkeys(url for evidence in item.evidence for url in evidence.evidence_urls)
+            )[:5],
+            proposed_experiment_zh=item.experiment.intervention_zh,
+            proposed_experiment_en=item.experiment.intervention_en,
+            feasibility=item.feasibility,
+            impact=item.impact,
+            uncertainty=1 - item.evidence_confidence,
+        )
+        for item in chosen
+    ]
+    return RoundAnalysis(
+        summary_zh=f"本轮验证 {len(idea_round.assessments)} 个候选 Idea，{len(chosen)} 个通过硬门槛。",
+        summary_en=f"This round assessed {len(idea_round.assessments)} ideas; {len(chosen)} passed the hard gates.",
+        comparison_cells=cells[:18],
+        opportunities=opportunities,
+        covered_axes=sorted({item.axis for item in idea_round.assessments}),
+        uncovered_axes=[],
+        high_relevance_ids=list(dict.fromkeys(str(item["paper_id"]) for item in cells))[:30],
     )
 
 
@@ -500,6 +979,367 @@ class AnalysisPipeline:
         merged = await self._call_llm(merge_problem_prompt(fragments), ProblemStatement)
         return ground_problem(merged, document.blocks)
 
+    async def extract_problem_brief(self, problem: ProblemStatement) -> ProblemBrief:
+        draft = await self._call_llm(problem_brief_prompt(problem), ProblemBrief)
+        draft = ground_problem_brief(draft, problem)
+        reviewed = await self._call_llm(
+            problem_brief_review_prompt(problem, draft), ProblemBrief
+        )
+        return ground_problem_brief(reviewed, problem)
+
+    @staticmethod
+    def _relevant_external_blocks(
+        document: DocumentIR, ideas: list[IdeaDraft], limit: int = 8
+    ) -> list[dict[str, object]]:
+        tokens = {
+            token
+            for idea in ideas
+            for token in re.findall(
+                r"[a-z0-9]{4,}",
+                f"{idea.title_en} {idea.hypothesis_en} {idea.change_from_target_en}".casefold(),
+            )
+        }
+        ranked = sorted(
+            document.blocks,
+            key=lambda block: sum(
+                token in block.text.casefold() for token in tokens
+            ),
+            reverse=True,
+        )
+        return [
+            {
+                "page": block.page,
+                "section": block.section,
+                "text": block.text[:1200],
+            }
+            for block in ranked[:limit]
+            if block.text.strip()
+        ]
+
+    async def _enrich_external_full_text(
+        self,
+        job_id: str,
+        candidates: list[CandidatePaper],
+        assessments: list[IdeaAssessment],
+        ideas: list[IdeaDraft],
+        workspace: Path,
+    ) -> tuple[list[dict[str, object]], set[str]]:
+        referenced = {
+            evidence.paper_id for item in assessments for evidence in item.evidence
+        }
+        pool = sorted(
+            [item for item in candidates if item.pdf_url],
+            key=lambda item: (
+                item.canonical_id in referenced,
+                item.evidence_grade == "abstract",
+                item.relevance_score,
+            ),
+            reverse=True,
+        )[:6]
+        excerpts: list[dict[str, object]] = []
+        parsed_ids: set[str] = set()
+        download_dir = workspace / "external-pdfs"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        semaphore = asyncio.Semaphore(3)
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(90, connect=20), follow_redirects=True
+        ) as client:
+            async def enrich_one(
+                index: int, paper: CandidatePaper
+            ) -> tuple[dict[str, object] | None, str | None]:
+                await self._cancel_guard(job_id)
+                path: Path | None = None
+                async with semaphore:
+                    try:
+                        url = validate_public_url(
+                            str(paper.pdf_url), resolve_dns=True
+                        )
+                        response = await client.get(url)
+                        response.raise_for_status()
+                        validate_public_url(str(response.url), resolve_dns=True)
+                        if len(response.content) > 50 * 1024 * 1024:
+                            raise ValueError("external PDF exceeds 50 MB")
+                        path = download_dir / f"external-{index}.pdf"
+                        await asyncio.to_thread(path.write_bytes, response.content)
+                        validate_pdf(path)
+                        document = await asyncio.wait_for(
+                            self.parse_document(
+                                path,
+                                "external-"
+                                + hashlib.sha256(
+                                    paper.canonical_id.encode()
+                                ).hexdigest()[:24],
+                                paper.title,
+                                workspace,
+                            ),
+                            timeout=self.settings.EXTERNAL_PDF_TIMEOUT_SECONDS,
+                        )
+                        blocks = self._relevant_external_blocks(document, ideas)
+                        if not blocks:
+                            return None, None
+                        paper.evidence_grade = "full_text"
+                        await self._event(
+                            job_id,
+                            "external_full_text",
+                            f"Parsed external evidence {index + 1}/{len(pool)}",
+                            {"paper_id": paper.canonical_id},
+                        )
+                        return (
+                            {
+                                "paper_id": paper.canonical_id,
+                                "title": paper.title,
+                                "url": paper.url,
+                                "excerpts": blocks,
+                            },
+                            paper.canonical_id,
+                        )
+                    except Exception as error:
+                        LOGGER.warning(
+                            "External full-text enrichment failed for %s: %s",
+                            paper.url,
+                            error,
+                        )
+                        return None, None
+                    finally:
+                        if path and path.exists():
+                            path.unlink(missing_ok=True)
+
+            results = await asyncio.gather(
+                *(enrich_one(index, paper) for index, paper in enumerate(pool))
+            )
+        for excerpt, paper_id in results:
+            if excerpt and paper_id:
+                excerpts.append(excerpt)
+                parsed_ids.add(paper_id)
+        return excerpts, parsed_ids
+
+    async def _assess_ideas(
+        self,
+        ideas: list[IdeaDraft],
+        candidates: list[CandidatePaper],
+        *,
+        full_text_excerpts: list[dict[str, object]] | None = None,
+        full_text_paper_ids: set[str] | None = None,
+    ) -> list[IdeaAssessment]:
+        semaphore = asyncio.Semaphore(min(4, self.settings.MAX_PROVIDER_CONCURRENCY))
+
+        async def assess_one(idea: IdeaDraft) -> IdeaAssessment:
+            async with semaphore:
+                batch = await self._call_llm(
+                    idea_assessment_prompt(
+                        [idea],
+                        candidates,
+                        full_text_excerpts=full_text_excerpts,
+                    ),
+                    IdeaAssessmentBatch,
+                )
+            grounded = ground_idea_assessments(
+                batch,
+                [idea],
+                candidates,
+                full_text_paper_ids=full_text_paper_ids,
+            )
+            return grounded[0]
+
+        return list(await asyncio.gather(*(assess_one(idea) for idea in ideas)))
+
+    async def _idea_research_round(
+        self,
+        job: Job,
+        round_number: int,
+        problems: list[ProblemStatement],
+        briefs: list[ProblemBrief],
+        all_candidates: list[CandidatePaper],
+        workspace: Path,
+        previous_assessments: list[IdeaAssessment] | None,
+        pipeline_checkpoint: dict[str, Any],
+        *,
+        persist: bool,
+    ) -> tuple[IdeaResearchRound, QueryBundle, list[CandidatePaper], list[dict[str, object]]]:
+        checkpoint_key = f"idea_round_{round_number}"
+        round_checkpoint = dict(pipeline_checkpoint.get(checkpoint_key) or {})
+
+        async def save_checkpoint(**values: Any) -> None:
+            round_checkpoint.update(values)
+            pipeline_checkpoint[checkpoint_key] = round_checkpoint
+            if self.repository and persist:
+                await self.repository.save_pipeline_checkpoint(
+                    job.id, pipeline_checkpoint
+                )
+
+        await self._event(job.id, "stage", "Brainstorming testable research ideas")
+        prior = None
+        if previous_assessments:
+            prior = sorted(
+                previous_assessments,
+                key=lambda item: (item.verdict != "rejected", item.evidence_confidence, item.impact),
+                reverse=True,
+            )[:5]
+        if round_checkpoint.get("drafts"):
+            ideas = [
+                IdeaDraft.model_validate(item) for item in round_checkpoint["drafts"]
+            ]
+            await self._event(job.id, "resumed", "Reused checkpointed research ideas")
+        else:
+            batch = await self._call_llm(
+                brainstorm_ideas_prompt(problems, briefs, job.research_brief, prior),
+                IdeaDraftBatch,
+            )
+            ideas = ground_idea_drafts(
+                batch, problems, expected_count=8 if round_number == 1 else None
+            )
+            await save_checkpoint(
+                drafts=[item.model_dump(mode="json") for item in ideas]
+            )
+        if round_checkpoint.get("bundle"):
+            bundle = QueryBundle.model_validate(round_checkpoint["bundle"])
+        else:
+            query_plans = await self._call_llm(
+                idea_query_plan_prompt(ideas, round_number), IdeaQueryPlanBatch
+            )
+            bundle = query_bundle_from_plan(query_plans, ideas, round_number)
+            await save_checkpoint(bundle=bundle.model_dump(mode="json"))
+        await self._event(
+            job.id,
+            "stage",
+            f"Searching evidence for {len(ideas)} research ideas",
+            {"queries": len(bundle.queries)},
+        )
+        if round_checkpoint.get("retrieval_complete") and all_candidates:
+            audit = list(round_checkpoint.get("audit") or [])
+            await self._event(
+                job.id,
+                "resumed",
+                f"Reused {len(all_candidates)} retrieved candidate papers",
+            )
+        else:
+            academic_and_web, web_discovery = await asyncio.gather(
+                self.retriever.retrieve(bundle, per_source_limit=6),
+                self._discover_web(
+                    QueryBundle(
+                        round_number=round_number,
+                        queries=[
+                            item
+                            for item in bundle.queries
+                            if item.source_hint == "web"
+                        ],
+                    )
+                ),
+            )
+            round_candidates, audit = academic_and_web
+            for paper in web_discovery.papers:
+                paper.sources = sorted(
+                    set(paper.sources + ["deepseek_websearch"])
+                )
+                paper.queries = sorted(
+                    set(paper.queries + web_discovery.searched_queries)
+                )
+            round_candidates = merge_candidates(
+                round_candidates + web_discovery.papers
+            )
+            query_to_idea = {
+                query.query.casefold().strip(): query.axes[0]
+                for query in bundle.queries
+                if query.axes
+            }
+            for paper in round_candidates:
+                paper.idea_keys = sorted(
+                    {
+                        query_to_idea[query.casefold().strip()]
+                        for query in paper.queries
+                        if query.casefold().strip() in query_to_idea
+                    }
+                )
+            all_candidates = rank_candidates(
+                merge_candidates(all_candidates + round_candidates), bundle
+            )
+            audit.extend(
+                {
+                    "source": "deepseek_websearch",
+                    "query": query,
+                    "count": len(web_discovery.papers),
+                    "warning": "; ".join(web_discovery.warnings) or None,
+                }
+                for query in web_discovery.searched_queries
+                or [
+                    item.query
+                    for item in bundle.queries
+                    if item.source_hint == "web"
+                ]
+            )
+            if self.repository and persist:
+                await self.repository.save_candidates(
+                    job.id,
+                    [item.model_dump(mode="json") for item in all_candidates],
+                )
+            await save_checkpoint(retrieval_complete=True, audit=audit)
+        await self._event(job.id, "stage", "Screening ideas for collisions")
+        if round_checkpoint.get("preliminary_assessments"):
+            preliminary_assessments = [
+                IdeaAssessment.model_validate(item)
+                for item in round_checkpoint["preliminary_assessments"]
+            ]
+        else:
+            preliminary_assessments = await self._assess_ideas(
+                ideas, all_candidates
+            )
+            await save_checkpoint(
+                preliminary_assessments=[
+                    item.model_dump(mode="json")
+                    for item in preliminary_assessments
+                ]
+            )
+        if round_checkpoint.get("full_text_complete"):
+            excerpts = list(round_checkpoint.get("full_text_excerpts") or [])
+            full_text_ids = set(round_checkpoint.get("full_text_paper_ids") or [])
+        else:
+            excerpts, full_text_ids = await self._enrich_external_full_text(
+                job.id, all_candidates, preliminary_assessments, ideas, workspace
+            )
+            if self.repository and persist:
+                await self.repository.save_candidates(
+                    job.id,
+                    [item.model_dump(mode="json") for item in all_candidates],
+                )
+            await save_checkpoint(
+                full_text_complete=True,
+                full_text_excerpts=excerpts,
+                full_text_paper_ids=sorted(full_text_ids),
+            )
+        await self._event(job.id, "stage", "Challenging and ranking research ideas")
+        if round_checkpoint.get("final_assessments"):
+            assessments = [
+                IdeaAssessment.model_validate(item)
+                for item in round_checkpoint["final_assessments"]
+            ]
+        else:
+            assessments = await self._assess_ideas(
+                ideas,
+                all_candidates,
+                full_text_excerpts=excerpts,
+                full_text_paper_ids=full_text_ids,
+            )
+            await save_checkpoint(
+                final_assessments=[
+                    item.model_dump(mode="json") for item in assessments
+                ]
+            )
+        chosen = selected_ideas(assessments)
+        idea_round = IdeaResearchRound(
+            round_number=round_number,
+            drafts=ideas,
+            assessments=assessments,
+            selected_idea_keys=[item.idea_key for item in chosen],
+            rejected_idea_keys=[
+                item.idea_key
+                for item in assessments
+                if item.idea_key not in {chosen_item.idea_key for chosen_item in chosen}
+            ],
+            full_text_paper_ids=sorted(full_text_ids),
+        )
+        return idea_round, bundle, all_candidates, audit
+
     async def _discover_web(self, bundle: QueryBundle) -> WebDiscovery:
         if self.settings.SEARCH_PROFILE == "academic_only":
             return WebDiscovery(warnings=["Web retrieval disabled by academic_only ablation"])
@@ -588,6 +1428,13 @@ class AnalysisPipeline:
                 await self.repository.load_analysis_state(job.id)
                 if self.repository and persist
                 else {"problems": [], "candidates": [], "rounds": []}
+            )
+            pipeline_checkpoint = (
+                await self.repository.load_pipeline_checkpoint(job.id)
+                if self.repository
+                and persist
+                and hasattr(self.repository, "load_pipeline_checkpoint")
+                else dict(job.checkpoint)
             )
             stored_problem_rows = [
                 row for row in stored_state["problems"] if row["paper_id"] != "__joint__"
@@ -683,15 +1530,77 @@ class AnalysisPipeline:
             await self._update(job.id, JobStatus.PROBLEM_READY, "problem_ready", 30)
             await self._event(job.id, "stage", "Problem statement ready")
 
+            problem_briefs: list[ProblemBrief] = []
+            if self.settings.IDEA_PIPELINE_V3:
+                await self._event(
+                    job.id,
+                    "stage",
+                    "Reviewing the input, output, algorithm, and constraints against PDF evidence",
+                )
+                cached_briefs = pipeline_checkpoint.get("problem_briefs")
+                if cached_briefs:
+                    problem_briefs = [
+                        ProblemBrief.model_validate(item) for item in cached_briefs
+                    ]
+                    await self._event(
+                        job.id, "resumed", "Reused checkpointed problem brief"
+                    )
+                else:
+                    problem_briefs = list(
+                        await asyncio.gather(
+                            *(
+                                self.extract_problem_brief(problem)
+                                for problem in problems
+                            )
+                        )
+                    )
+                    pipeline_checkpoint["problem_briefs"] = [
+                        item.model_dump(mode="json") for item in problem_briefs
+                    ]
+                    if self.repository and persist:
+                        await self.repository.save_pipeline_checkpoint(
+                            job.id, pipeline_checkpoint
+                        )
+
+            stored_round_rows = stored_state["rounds"]
+            if self.settings.IDEA_PIPELINE_V3:
+                v3_round_rows = [
+                    row
+                    for row in stored_round_rows
+                    if (row.get("queries") or {}).get("idea_round")
+                ]
+                # Never treat a legacy round as a completed Idea-first round.
+                if stored_round_rows and not v3_round_rows:
+                    await self._event(
+                        job.id,
+                        "checkpoint_ignored",
+                        "Ignoring legacy search checkpoints for the Idea-first pipeline",
+                    )
+                    stored_round_rows = []
+                    stored_candidate_rows: list[dict[str, Any]] = []
+                else:
+                    stored_round_rows = v3_round_rows
+                    stored_candidate_rows = stored_state["candidates"]
+            else:
+                stored_candidate_rows = stored_state["candidates"]
             all_candidates = [
-                CandidatePaper.model_validate(row["content"]) for row in stored_state["candidates"]
+                CandidatePaper.model_validate(row["content"])
+                for row in stored_candidate_rows
             ]
             rounds = [
-                RoundAnalysis.model_validate(row["analysis"]) for row in stored_state["rounds"]
+                RoundAnalysis.model_validate(row["analysis"])
+                for row in stored_round_rows
+            ]
+            idea_rounds = [
+                IdeaResearchRound.model_validate(idea_round)
+                for row in stored_round_rows
+                if (
+                    idea_round := (row.get("queries") or {}).get("idea_round")
+                )
             ]
             search_audit = [
                 {"round": row["round_number"], **audit_item}
-                for row in stored_state["rounds"]
+                for row in stored_round_rows
                 for audit_item in (row.get("queries") or {}).get("audit", [])
             ]
             total_axes = {
@@ -722,6 +1631,60 @@ class AnalysisPipeline:
                     30 + int((round_number - 1) / job.max_rounds * 45),
                     current_round=round_number,
                 )
+                if self.settings.IDEA_PIPELINE_V3:
+                    previous_ids = {item.canonical_id for item in all_candidates}
+                    idea_round, bundle, all_candidates, audit = (
+                        await self._idea_research_round(
+                            job,
+                            round_number,
+                            problems,
+                            problem_briefs,
+                            all_candidates,
+                            workspace_path,
+                            idea_rounds[-1].assessments if idea_rounds else None,
+                            pipeline_checkpoint,
+                            persist=persist,
+                        )
+                    )
+                    analysis = compatibility_round(idea_round)
+                    rounds.append(analysis)
+                    idea_rounds.append(idea_round)
+                    search_audit.extend(
+                        {"round": round_number, **item} for item in audit
+                    )
+                    if self.repository and persist:
+                        await self.repository.save_candidates(
+                            job.id,
+                            [item.model_dump(mode="json") for item in all_candidates],
+                        )
+                        await self.repository.save_search_round(
+                            job.id,
+                            round_number,
+                            {
+                                "bundle": bundle.model_dump(mode="json"),
+                                "audit": audit,
+                                "idea_round": idea_round.model_dump(mode="json"),
+                            },
+                            analysis.model_dump(mode="json"),
+                        )
+                    await self._event(
+                        job.id,
+                        "round_complete",
+                        f"Idea validation round {round_number} complete",
+                        {
+                            "candidates": len(idea_round.drafts),
+                            "selected": len(idea_round.selected_idea_keys),
+                            "new_papers": len(
+                                [
+                                    item
+                                    for item in all_candidates
+                                    if item.canonical_id not in previous_ids
+                                ]
+                            ),
+                            "full_text_papers": len(idea_round.full_text_paper_ids),
+                        },
+                    )
+                    continue
                 if all_candidates and not rounds and round_number == 1:
                     checkpoint_queries = list(
                         dict.fromkeys(
@@ -840,31 +1803,43 @@ class AnalysisPipeline:
                 },
                 limitations_zh=DISCLAIMER_ZH,
                 limitations_en=DISCLAIMER_EN,
+                idea_rounds=idea_rounds,
             )
-            await self._event(job.id, "stage", "Synthesizing the readable research brief")
-            try:
-                presentation = await self._call_llm(
-                    report_presentation_prompt(problems, joint, all_candidates, rounds),
-                    ReportPresentation,
+            if self.settings.IDEA_PIPELINE_V3:
+                if not idea_rounds:
+                    raise ValueError("Idea-first pipeline completed without a validation round")
+                report = report.model_copy(
+                    update={
+                        "presentation": build_presentation_v3(
+                            problem_briefs, idea_rounds[-1].assessments, all_candidates
+                        )
+                    }
                 )
-                presentation = ground_presentation(
-                    presentation, problems, all_candidates, rounds
-                )
-                if presentation:
-                    report = report.model_copy(update={"presentation": presentation})
-                else:
+            else:
+                await self._event(job.id, "stage", "Synthesizing the readable research brief")
+                try:
+                    presentation = await self._call_llm(
+                        report_presentation_prompt(problems, joint, all_candidates, rounds),
+                        ReportPresentation,
+                    )
+                    presentation = ground_presentation(
+                        presentation, problems, all_candidates, rounds
+                    )
+                    if presentation:
+                        report = report.model_copy(update={"presentation": presentation})
+                    else:
+                        await self._event(
+                            job.id,
+                            "presentation_fallback",
+                            "Readable brief contained no grounded findings; using compatibility view",
+                        )
+                except Exception as error:  # Legacy presentation is optional.
+                    LOGGER.warning("Readable report synthesis unavailable: %s", error)
                     await self._event(
                         job.id,
                         "presentation_fallback",
-                        "Readable brief contained no grounded findings; using compatibility view",
+                        "Readable brief synthesis unavailable; using compatibility view",
                     )
-            except Exception as error:  # Presentation is optional; core analysis is already complete.
-                LOGGER.warning("Readable report synthesis unavailable: %s", error)
-                await self._event(
-                    job.id,
-                    "presentation_fallback",
-                    "Readable brief synthesis unavailable; using compatibility view",
-                )
             report.source_coverage["visualizations"] = report_visualization_data(report)
             markdown = report_markdown(report)
             if self.repository and persist:

@@ -1,5 +1,5 @@
-import { BookOpenText, ExternalLink, FileText, Globe2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { BookOpenText, ExternalLink, FileText, Globe2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useLanguage } from "../lib/language";
 import { sourcePaper } from "../lib/report";
@@ -17,13 +17,22 @@ export function sourceSiteName(url: string) {
 }
 
 function PreviewShell({ open, onOpen, children, button }: { open: boolean; onOpen: (open: boolean) => void; children: ReactNode; button: ReactNode }) {
+  const root = useRef<HTMLSpanElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pinned, setPinned] = useState(false);
+  function cancelClose() { if (timer.current) clearTimeout(timer.current); timer.current = null; }
+  function close() { cancelClose(); setPinned(false); onOpen(false); }
+  function scheduleClose() { cancelClose(); if (!pinned) timer.current = setTimeout(() => onOpen(false), 250); }
   useEffect(() => {
     if (!open) return;
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") onOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    const outside = (event: PointerEvent) => { if (pinned && !root.current?.contains(event.target as Node)) close(); };
     document.addEventListener("keydown", escape);
-    return () => document.removeEventListener("keydown", escape);
-  }, [onOpen, open]);
-  return <span className="citation-wrap" onMouseEnter={() => onOpen(true)} onMouseLeave={() => onOpen(false)}>{button}{open && <span className="citation-popover" role="dialog">{children}</span>}</span>;
+    document.addEventListener("pointerdown", outside);
+    return () => { document.removeEventListener("keydown", escape); document.removeEventListener("pointerdown", outside); };
+  }, [open, pinned]);
+  useEffect(() => () => cancelClose(), []);
+  return <span ref={root} className="citation-wrap" data-pinned={pinned || undefined} onMouseEnter={() => { cancelClose(); onOpen(true); }} onMouseLeave={scheduleClose} onClick={(event) => { if (!(event.target as Element).closest(".source-pill, .evidence-pill")) return; cancelClose(); const next = !pinned; setPinned(next); onOpen(next); }}>{button}{open && <span className="citation-popover" role="dialog" onMouseEnter={cancelClose} onMouseLeave={scheduleClose}><button type="button" className="citation-close" aria-label="Close" onClick={(event) => { event.stopPropagation(); close(); }}><X className="h-3.5 w-3.5"/></button>{children}</span>}</span>;
 }
 
 export function SourceCitation({ url, papers }: { url: string; papers: CandidatePaper[] }) {

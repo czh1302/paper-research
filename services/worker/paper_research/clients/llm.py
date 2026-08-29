@@ -105,7 +105,10 @@ class ClaudeCodeClient:
             "--effort",
             self.effort,
             "--max-turns",
-            "4" if allow_web_search else "1",
+            # Claude Code submits json-schema output as a tool result on a follow-up
+            # turn. One turn can generate valid JSON and still be reported as
+            # error_max_turns before structured_output is emitted.
+            "4",
             "--no-session-persistence",
             "--disable-slash-commands",
             "--permission-mode",

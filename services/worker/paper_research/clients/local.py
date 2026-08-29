@@ -24,6 +24,7 @@ class LocalCheckpointRepository:
             "candidates": [],
             "rounds": [],
             "job": {},
+            "pipeline_checkpoint": {},
         }
 
     def _read(self) -> dict[str, Any]:
@@ -127,6 +128,15 @@ class LocalCheckpointRepository:
             "candidates": self.state["candidates"],
             "rounds": rounds,
         }
+
+    async def load_pipeline_checkpoint(self, job_id: str) -> dict[str, Any]:
+        return dict(self.state.get("pipeline_checkpoint") or {})
+
+    async def save_pipeline_checkpoint(
+        self, job_id: str, checkpoint: dict[str, Any]
+    ) -> None:
+        self.state["pipeline_checkpoint"] = checkpoint
+        await self._write()
 
     async def update_job(self, job_id: str, **values: Any) -> None:
         self.state["job"].update(values)

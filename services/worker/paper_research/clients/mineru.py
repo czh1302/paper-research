@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import zipfile
 from pathlib import Path
@@ -14,6 +15,9 @@ from ..security import safe_filename, validate_public_url
 
 class MinerUError(RuntimeError):
     pass
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MinerUClient:
@@ -96,7 +100,11 @@ class MinerUClient:
         response.raise_for_status()
 
     async def _poll(self, batch_id: str, data_id: str) -> str:
+        started_at = time.monotonic()
         deadline = time.monotonic() + self.timeout_seconds
+        last_state: str | None = None
+        last_log_at = 0.0
+        batch_label = batch_id[:8]
         while time.monotonic() < deadline:
             response = await self._client.get(
                 f"{self.base_url}/api/v4/extract-results/batch/{batch_id}",
@@ -110,7 +118,17 @@ class MinerUClient:
             match = next((item for item in results if item.get("data_id") == data_id), None)
             match = match or (results[0] if len(results) == 1 else None)
             if match:
-                state = match.get("state")
+                state = str(match.get("state") or "unknown")
+                now = time.monotonic()
+                if state != last_state or now - last_log_at >= 30:
+                    LOGGER.info(
+                        "MinerU batch=%s state=%s elapsed=%ss",
+                        batch_label,
+                        state,
+                        round(now - started_at),
+                    )
+                    last_state = state
+                    last_log_at = now
                 if state == "done":
                     url = match.get("full_zip_url")
                     if not url:
@@ -120,6 +138,15 @@ class MinerUClient:
                     raise MinerUError(
                         f"MinerU extraction failed: {match.get('err_msg', 'unknown error')}"
                     )
+            else:
+                now = time.monotonic()
+                if now - last_log_at >= 30:
+                    LOGGER.info(
+                        "MinerU batch=%s state=waiting_for_result elapsed=%ss",
+                        batch_label,
+                        round(now - started_at),
+                    )
+                    last_log_at = now
             await asyncio.sleep(self.poll_seconds)
         raise TimeoutError(f"MinerU extraction timed out after {self.timeout_seconds} seconds")
 

@@ -13,7 +13,9 @@ export function NewAnalysisPage() {
   const fileInput = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<AnalysisMode>("single");
   const [files, setFiles] = useState<File[]>([]);
-  const [rounds, setRounds] = useState(1);
+  const configuredRounds = Number(import.meta.env.VITE_DEFAULT_RESEARCH_ROUNDS ?? 1);
+  const defaultRounds = Number.isInteger(configuredRounds) && configuredRounds >= 1 && configuredRounds <= 5 ? configuredRounds : 1;
+  const [rounds, setRounds] = useState(defaultRounds);
   const [consent, setConsent] = useState(false);
   const [turnstile, setTurnstile] = useState("");
   const [turnstileRevision, setTurnstileRevision] = useState(0);
@@ -121,8 +123,8 @@ export function NewAnalysisPage() {
         </div>
 
         <details className="group mt-6 border-t border-line pt-1">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg py-4 text-sm font-medium text-content"><span>{text("高级设置", "Advanced settings")}</span><span className="flex items-center gap-2 text-xs font-normal text-muted">{rounds === 1 ? text("标准检索", "Standard retrieval") : text("深度检索", "Deep retrieval")} · {text(`${rounds}轮`, `${rounds} round(s)`)}<ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></span></summary>
-          <label className="block rounded-xl bg-subtle/55 p-4"><span className="label">{text("最大循环轮数", "Maximum rounds")}</span><select className="input" aria-label={text("最大循环轮数", "Maximum rounds")} value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((round) => <option key={round} value={round}>{text(`${round} ${round === 1 ? "轮（默认）" : "轮"}`, `${round} round${round === 1 ? " (default)" : "s"}`)}</option>)}</select><span className="mt-2 block text-xs text-muted">{text("检索覆盖率收敛后可能提前停止。", "The loop may stop early when retrieval coverage converges.")}</span></label>
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg py-4 text-sm font-medium text-content"><span>{text("高级设置", "Advanced settings")}</span><span className="flex items-center gap-2 text-xs font-normal text-muted">{rounds === defaultRounds ? text("标准检索", "Standard retrieval") : text("深度检索", "Deep retrieval")} · {text(`${rounds}轮`, `${rounds} round(s)`)}<ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></span></summary>
+          <label className="block rounded-xl bg-subtle/55 p-4"><span className="label">{text("最大循环轮数", "Maximum rounds")}</span><select className="input" aria-label={text("最大循环轮数", "Maximum rounds")} value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((round) => <option key={round} value={round}>{text(`${round} ${round === defaultRounds ? "轮（默认）" : "轮"}`, `${round} round${round === defaultRounds ? " (default)" : "s"}`)}</option>)}</select><span className="mt-2 block text-xs text-muted">{text("检索覆盖率收敛后可能提前停止。", "The loop may stop early when retrieval coverage converges.")}</span></label>
         </details>
 
         <div className="border-t border-line pt-5">

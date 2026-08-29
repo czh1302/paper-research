@@ -52,6 +52,7 @@ def merge_candidates(papers: list[CandidatePaper]) -> list[CandidatePaper]:
                 values[field] = incoming[field]
         values["sources"] = sorted(set(current.sources + paper.sources))
         values["queries"] = sorted(set(current.queries + paper.queries))
+        values["idea_keys"] = sorted(set(current.idea_keys + paper.idea_keys))
         values["authors"] = current.authors or paper.authors
         values["reference_ids"] = sorted(set(current.reference_ids + paper.reference_ids))
         values["citation_count"] = max(
@@ -99,10 +100,22 @@ class LiteratureRetriever:
     async def retrieve(
         self, bundle: QueryBundle, *, per_source_limit: int = 10
     ) -> tuple[list[CandidatePaper], list[dict[str, object]]]:
+        academic_sources = {
+            "arxiv", "openreview", "openalex", "crossref", "dblp", "serper_scholar"
+        }
+
+        def routed(source: LiteratureSource, query: SearchQuery) -> bool:
+            if query.source_hint == "academic":
+                return source.name in academic_sources
+            if query.source_hint == "web":
+                return source.name not in academic_sources
+            return True
+
         tasks = [
             self._run(source, query, per_source_limit)
             for query in bundle.queries
             for source in self.sources
+            if routed(source, query)
         ]
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
         papers: list[CandidatePaper] = []

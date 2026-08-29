@@ -123,6 +123,18 @@ class SupabaseRepository:
             "rounds": rounds.json(),
         }
 
+    async def load_pipeline_checkpoint(self, job_id: str) -> dict[str, Any]:
+        response = await self._request(
+            "GET", f"/rest/v1/jobs?id=eq.{quote(job_id)}&select=checkpoint"
+        )
+        rows = response.json()
+        return dict((rows[0].get("checkpoint") if rows else None) or {})
+
+    async def save_pipeline_checkpoint(
+        self, job_id: str, checkpoint: dict[str, Any]
+    ) -> None:
+        await self.update_job(job_id, checkpoint=checkpoint)
+
     async def cleanup_expired(self) -> dict[str, int]:
         response = await self._request("POST", "/rest/v1/rpc/claim_expired_storage", json={})
         rows = response.json() or []
