@@ -1,5 +1,29 @@
 import { requireSupabase } from "./supabase";
-import type { JobRecord, Quota, ReportRecord } from "./types";
+import type { AdminJobRow, AdminUserRow, JobRecord, Quota, ReportRecord } from "./types";
+
+export async function checkIsAdmin(): Promise<boolean> {
+  const { data, error } = await requireSupabase().rpc("is_admin");
+  if (error) throw error;
+  return data === true;
+}
+
+export async function adminListUsers(limit = 100, offset = 0): Promise<AdminUserRow[]> {
+  const { data, error } = await requireSupabase().rpc("admin_list_users", {
+    p_limit: limit,
+    p_offset: offset,
+  });
+  if (error) throw error;
+  return (data ?? []) as AdminUserRow[];
+}
+
+export async function adminListJobs(limit = 100, offset = 0): Promise<AdminJobRow[]> {
+  const { data, error } = await requireSupabase().rpc("admin_list_jobs", {
+    p_limit: limit,
+    p_offset: offset,
+  });
+  if (error) throw error;
+  return (data ?? []) as AdminJobRow[];
+}
 
 export async function listJobs(): Promise<JobRecord[]> {
   const { data, error } = await requireSupabase().from("jobs").select("*").order("created_at", { ascending: false });

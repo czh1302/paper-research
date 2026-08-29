@@ -1,9 +1,9 @@
-import { BookOpen, FlaskConical, LogOut, Plus } from "lucide-react";
+import { BookOpen, FlaskConical, LogOut, Plus, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { requireSupabase } from "../lib/supabase";
 
-export function Layout({ children, email }: { children: ReactNode; email?: string }) {
+export function Layout({ children, email, isAdmin = false }: { children: ReactNode; email?: string; isAdmin?: boolean }) {
   return (
     <div className="relative min-h-screen">
       <header className="no-print sticky top-0 z-20 border-b border-white/10 bg-ink/85 backdrop-blur-xl">
@@ -14,6 +14,7 @@ export function Layout({ children, email }: { children: ReactNode; email?: strin
           </Link>
           <nav className="flex items-center gap-2">
             <Link className="button button-secondary hidden sm:inline-flex" to="/"><FlaskConical className="h-4 w-4" />任务</Link>
+            {isAdmin && <Link className="button button-secondary" to="/admin"><ShieldCheck className="h-4 w-4" /><span className="hidden md:inline">管理</span></Link>}
             <Link className="button button-primary" to="/new"><Plus className="h-4 w-4" />新建分析</Link>
             {email && <button className="button button-secondary" title={email} onClick={() => requireSupabase().auth.signOut()}><LogOut className="h-4 w-4" /><span className="hidden md:inline">退出</span></button>}
           </nav>
@@ -26,4 +27,3 @@ export function Layout({ children, email }: { children: ReactNode; email?: strin
     </div>
   );
 }
-

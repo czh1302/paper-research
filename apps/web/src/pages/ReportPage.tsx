@@ -38,12 +38,12 @@ function ReportView({ record, shared = false }: { record: ReportRecord; shared?:
   );
 }
 
-export function ReportPage() {
+export function ReportPage({ readOnly = false }: { readOnly?: boolean }) {
   const { id = "" } = useParams(); const [record, setRecord] = useState<ReportRecord | null>(null); const [error, setError] = useState("");
   useEffect(() => { void getReport(id).then(setRecord).catch((cause) => setError(cause instanceof Error ? cause.message : "报告加载失败")); }, [id]);
   if (error) return <div className="panel p-6 text-red-200">{error}</div>;
   if (!record) return <div className="panel p-12 text-center text-slate-400">加载报告…</div>;
-  return <ReportView record={record}/>;
+  return <ReportView record={record} shared={readOnly}/>;
 }
 
 export function SharedReportView({ record }: { record: ReportRecord }) { return <ReportView record={record} shared/>; }

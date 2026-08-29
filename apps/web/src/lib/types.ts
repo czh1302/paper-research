@@ -36,3 +36,40 @@ export interface GraphLink { source: string; target: string; }
 export interface VisualizationData { timeline: {year: number; count: number}[]; sources: {source: string; count: number}[]; opportunities: {name_zh: string; name_en: string; feasibility: number; impact: number; uncertainty: number}[]; graph: {nodes: GraphNode[]; links: GraphLink[]}; }
 export interface AnalysisReport { job_id: string; generated_at: string; problem_statements: ProblemStatement[]; joint_problem_statement?: JointProblemStatement; related_papers: CandidatePaper[]; rounds: RoundAnalysis[]; search_audit: Record<string, unknown>[]; parser_audit: {paper_id: string; parser: string; degraded?: boolean; page_count?: number}[]; source_coverage: { counts: Record<string, number>; rounds_completed: number; queries: number; visualizations: VisualizationData }; limitations_zh: string; limitations_en: string; }
 export interface ReportRecord { id: string; job_id: string; content: AnalysisReport; markdown: string; created_at: string; }
+
+export interface AdminUserRow {
+  total_count: number;
+  user_id: string;
+  email: string;
+  created_at: string;
+  last_sign_in_at: string | null;
+  job_count: number;
+  active_job_count: number;
+  completed_job_count: number;
+  allocation: number;
+  used: number;
+  reserved: number;
+}
+
+export interface AdminJobRow {
+  total_count: number;
+  job_id: string;
+  user_id: string;
+  user_email: string;
+  mode: "single" | "multi";
+  status: JobStatus;
+  stage: string;
+  progress: number;
+  max_rounds: number;
+  current_round: number;
+  reserved_units: number;
+  charged_units: number;
+  cancellation_requested: boolean;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+  file_names: string[];
+  report_id: string | null;
+}

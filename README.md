@@ -103,6 +103,25 @@ units, atomic job reservation, one active job per user, worker leases, early-sto
 usage accounting, 24-hour upload expiry and 30-day revocable share expiry. Private reports remain
 until their owner deletes the corresponding job.
 
+### Administrator dashboard
+
+The `/admin` route is available only to users explicitly listed in `public.admin_users`. It
+provides a read-only, paginated view of every registered user and analysis job; it does not grant
+cross-user mutation or PDF Storage access.
+
+After deploying the latest database migration and web build, install the local QR helper and create
+or refresh the administrator login QR code:
+
+```bash
+.venv/bin/pip install -e '.[admin]'
+.venv/bin/python scripts/create-admin-qr.py
+```
+
+The QR code is written to `.artifacts/admin-login-qr.png` with mode `600`. It contains a single-use
+Supabase Magic Link, not a permanent password. Treat the image as a temporary credential and
+regenerate it by rerunning the command after it is used or expires. Neither the image nor the raw
+link may be committed or sent to a third-party QR service.
+
 ## Frontend
 
 Copy the public-only template and run Vite:
