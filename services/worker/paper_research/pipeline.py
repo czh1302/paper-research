@@ -1148,6 +1148,8 @@ def finalize_v4_ideas(
             decision = "rejected"
         grounded_review = review.model_copy(
             update={
+                "idea_title_zh": draft.title_zh,
+                "idea_title_en": draft.title_en,
                 "decision": decision,
                 "closest_work_ids": closest,
                 "supporting_work_ids": supporting,
@@ -1236,23 +1238,73 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
                 "constraints",
                 "limitations",
             ):
-                for locator in profile[name]["evidence"]:
-                    locator["quote"] = locator["quote"][:500]
+                claim = profile[name]
+                claim["claim_zh"] = claim["claim_zh"][:320]
+                claim["claim_en"] = claim["claim_en"][:600]
+                claim["evidence"] = claim["evidence"][:2]
+                for locator in claim["evidence"]:
+                    locator["quote"] = locator["quote"][:320]
+                    locator["bboxes"] = locator.get("bboxes", [])[:2]
             return profile
+
+        representative_ids: list[str] = []
+        for theme in report.presentation.literature_landscape.themes:
+            for paper_id in theme.paper_ids:
+                if paper_id not in representative_ids:
+                    representative_ids.append(paper_id)
+                if len(representative_ids) >= 8:
+                    break
+            if len(representative_ids) >= 8:
+                break
+        summary_profile_ids = selected_ids or set(representative_ids)
 
         landscape = presentation["literature_landscape"]
         landscape["profiles"] = [
             compact_profile(profile)
             for profile in landscape["profiles"]
-            if profile["role"] == "input" or profile["paper_id"] in selected_ids
+            if profile["role"] == "input"
+            or profile["paper_id"] in summary_profile_ids
         ]
         for board in presentation["comparison_boards"]:
             board["profiles"] = [compact_profile(profile) for profile in board["profiles"]]
-    payload["related_papers"] = [
-        item.model_dump(mode="json")
-        for item in report.related_papers
-        if not selected_ids or item.canonical_id in selected_ids
-    ]
+
+        # The complete candidate set belongs to the on-demand full report. When
+        # no Idea passes the gate there are no comparison-board IDs, so falling
+        # back to every candidate would make the supposedly compact summary
+        # several megabytes. Keep only representative theme papers instead.
+        display_ids = set(selected_ids)
+        if not display_ids:
+            display_ids.update(representative_ids)
+        payload["related_papers"] = [
+            item.model_dump(mode="json")
+            for item in report.related_papers
+            if item.canonical_id in display_ids
+        ][:24]
+
+        brief_evidence_ids = {
+            evidence_id
+            for brief in report.presentation.problem_briefs
+            for evidence_id in (
+                brief.research_question_evidence_ids
+                + [value for item in brief.inputs for value in item.evidence_ids]
+                + [value for item in brief.outputs for value in item.evidence_ids]
+                + [value for item in brief.algorithm_steps for value in item.evidence_ids]
+                + [value for item in brief.constraints for value in item.evidence_ids]
+            )
+        }
+        for problem in payload["problem_statements"]:
+            problem["evidence"] = [
+                evidence
+                for evidence in problem["evidence"]
+                if evidence["id"] in brief_evidence_ids
+            ]
+            for evidence in problem["evidence"]:
+                evidence["text"] = evidence["text"][:500]
+                evidence["bboxes"] = evidence.get("bboxes", [])[:2]
+    else:
+        payload["related_papers"] = [
+            item.model_dump(mode="json") for item in report.related_papers
+        ]
     payload["search_audit"] = []
     payload["rounds"] = payload["rounds"][-1:]
     return payload

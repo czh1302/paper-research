@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { LanguageProvider } from "../lib/language";
 import { ThemeProvider } from "../lib/theme";
-import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfile, PresentationIdea, ReportRecord } from "../lib/types";
+import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfile, PresentationIdea, ReportPresentationV4, ReportRecord } from "../lib/types";
 import { ReportPage } from "./ReportPage";
 
 const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
@@ -267,11 +267,37 @@ describe("ReportPage", () => {
     await user.click(screen.getByRole("button", { name: "关闭" }));
 
     await user.click(screen.getByRole("tab", { name: "研究现状" }));
-    expect(screen.getByText("Evidence Paper paper-0")).toBeInTheDocument();
+    expect(screen.getAllByText("Evidence Paper paper-0").length).toBeGreaterThan(0);
     expect(screen.getByText("Evidence Paper paper-2")).toBeInTheDocument();
     expect(screen.queryByText("Evidence Paper paper-3")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "下一组" }));
     expect(await screen.findByText("Evidence Paper paper-3")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("Not covered");
+  });
+
+  it("keeps representative full-text PDF evidence available when no V4 idea passes", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    const presentation = record.content.presentation as ReportPresentationV4;
+    presentation.ideas = [];
+    presentation.comparison_boards = [];
+    presentation.reviews = [{
+      idea_key: "internal_key_must_not_render",
+      decision: "needs_evidence",
+      rationale_zh: "该方向仍缺少真实论文上的直接验证。",
+      rationale_en: "This direction still lacks direct validation on real papers.",
+      missing_evidence_zh: ["真实论文上的定位准确率"],
+      missing_evidence_en: ["Localization accuracy on real papers"],
+    }];
+    api.getReport.mockResolvedValue(record);
+    renderReport();
+
+    expect(await screen.findByText("最接近门槛的方向")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("internal_key_must_not_render");
+    await user.click(screen.getByRole("tab", { name: "研究现状" }));
+    expect(screen.getByText("Evidence Paper paper-0")).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "原论文 · 第 2 页" })[0]);
+    expect(screen.getByText("外部论文证据")).toBeInTheDocument();
+    expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
   });
 });

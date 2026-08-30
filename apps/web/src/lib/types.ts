@@ -111,7 +111,10 @@ export interface SubmissionIdea {
 }
 export interface IdeaReview {
   idea_key: string; decision: SubmissionIdea["verdict"]; rationale_zh: string; rationale_en: string;
+  idea_title_zh?: string; idea_title_en?: string;
   missing_evidence_zh: string[]; missing_evidence_en: string[];
+  closest_work_ids?: string[]; supporting_work_ids?: string[]; counterevidence_work_ids?: string[];
+  feasibility?: number; submission_value?: number; evidence_confidence?: number; collision_risk?: "low" | "medium" | "high";
 }
 export interface IdeaComparisonBoard { idea_key: string; input_paper_id: string; external_paper_ids: string[]; profiles: PaperEvidenceProfile[]; }
 export interface ReportPresentationV4 {

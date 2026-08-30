@@ -769,6 +769,8 @@ def test_v4_idea_gate_requires_six_complete_full_text_profiles() -> None:
     selected, reviews, boards = finalize_v4_ideas(
         [v4_idea()], [v4_review()], profiles
     )
+    assert reviews[0].idea_title_zh == v4_idea().title_zh
+    assert reviews[0].idea_title_en == v4_idea().title_en
 
     assert [item.verdict for item in selected] == ["recommended"]
     assert reviews[0].decision == "recommended"
@@ -857,3 +859,27 @@ def test_v4_high_collision_is_rejected_and_summary_stays_compact() -> None:
     csv_text = comparison_csv(report)
     assert "Evidence paper paper-0" in csv_text
     assert "output_or_evaluation_zh" in csv_text
+
+    no_idea_presentation = presentation.model_copy(
+        update={"ideas": [], "comparison_boards": []}
+    )
+    many_candidates = [
+        CandidatePaper(
+            canonical_id=f"candidate-{index}",
+            title=f"Candidate paper {index}",
+            abstract="Long candidate abstract. " * 150,
+            url=f"https://papers.example/candidate-{index}",
+        )
+        for index in range(500)
+    ]
+    many_candidates.extend(report.related_papers)
+    no_idea_report = report.model_copy(
+        update={
+            "presentation": no_idea_presentation,
+            "related_papers": many_candidates,
+        }
+    )
+    no_idea_summary = report_summary(no_idea_report)
+    assert len(no_idea_summary["related_papers"]) <= 24
+    assert len(no_idea_summary["presentation"]["literature_landscape"]["profiles"]) == 3
+    assert len(json.dumps(no_idea_summary, ensure_ascii=False).encode()) < 300_000

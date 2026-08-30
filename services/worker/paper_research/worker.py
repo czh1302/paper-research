@@ -37,9 +37,20 @@ class Worker:
         interval = max(30, self.settings.JOB_LEASE_SECONDS // 3)
         while True:
             await asyncio.sleep(interval)
-            await self.repository.renew_lease(
-                job_id, self.settings.WORKER_ID, self.settings.JOB_LEASE_SECONDS
-            )
+            try:
+                await self.repository.renew_lease(
+                    job_id, self.settings.WORKER_ID, self.settings.JOB_LEASE_SECONDS
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # A transient Supabase timeout must not surface after a report
+                # has already completed. The next heartbeat retries the lease.
+                LOGGER.warning(
+                    "Heartbeat renewal failed for job %s: %s",
+                    job_id,
+                    redact(str(error)),
+                )
 
     async def _maybe_cleanup(self) -> None:
         if time.monotonic() - self._last_cleanup < 3600:
@@ -84,7 +95,7 @@ class Worker:
                         )
                     finally:
                         heartbeat.cancel()
-                        with suppress(asyncio.CancelledError):
+                        with suppress(asyncio.CancelledError, Exception):
                             await heartbeat
                 except Exception as error:
                     LOGGER.exception("Worker loop error: %s", redact(str(error)))

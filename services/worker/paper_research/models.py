@@ -636,6 +636,8 @@ class SubmissionIdeaBatch(BaseModel):
 
 class IdeaReview(BaseModel):
     idea_key: str
+    idea_title_zh: str = Field(default="", max_length=120)
+    idea_title_en: str = Field(default="", max_length=220)
     decision: Literal["recommended", "alternative", "needs_evidence", "rejected"]
     rationale_zh: str = Field(min_length=12, max_length=500)
     rationale_en: str = Field(min_length=20, max_length=900)
