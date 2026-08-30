@@ -898,6 +898,20 @@ def _claim_from_problem(
     claim_en: str,
     ids: list[str],
 ) -> GroundedClaim:
+    def fit_text(
+        value: str, limit: int, fallback: str, *, minimum: int = 0
+    ) -> str:
+        compact = " ".join(value.split()) or fallback
+        if len(compact) < minimum:
+            compact = f"{compact} {fallback}".strip()
+        if len(compact) <= limit:
+            return compact
+        clipped = compact[:limit]
+        boundary = max(clipped.rfind(mark) for mark in ("。", "！", "？", ". ", "; "))
+        if boundary >= limit // 2:
+            return clipped[: boundary + 1].rstrip()
+        return f"{clipped[: limit - 1].rstrip()}…"
+
     by_id = {item.id: item for item in problem.evidence}
     locators = [
         EvidenceLocator(
@@ -905,10 +919,12 @@ def _claim_from_problem(
             asset_id=item.asset_id or "unavailable",
             paper_id=item.paper_id,
             page=item.page or 1,
-            quote=item.text,
-            section=item.section,
+            quote=fit_text(
+                item.text, 1800, "See the cited source passage.", minimum=8
+            ),
+            section=fit_text(item.section, 200, "") if item.section else None,
             evidence_type=item.evidence_type or "algorithm",
-            bboxes=item.bboxes,
+            bboxes=item.bboxes[:8],
         )
         for evidence_id in dict.fromkeys(ids)
         if (item := by_id.get(evidence_id)) is not None
@@ -924,13 +940,36 @@ def _claim_from_problem(
                 asset_id=fallback.asset_id or "unavailable",
                 paper_id=fallback.paper_id,
                 page=fallback.page or 1,
-                quote=fallback.text,
-                section=fallback.section,
+                quote=fit_text(
+                    fallback.text,
+                    1800,
+                    "See the cited source passage.",
+                    minimum=8,
+                ),
+                section=(
+                    fit_text(fallback.section, 200, "")
+                    if fallback.section
+                    else None
+                ),
                 evidence_type=fallback.evidence_type or "algorithm",
-                bboxes=fallback.bboxes,
+                bboxes=fallback.bboxes[:8],
             )
         ]
-    return GroundedClaim(claim_zh=claim_zh, claim_en=claim_en, evidence=locators)
+    return GroundedClaim(
+        claim_zh=fit_text(
+            claim_zh,
+            500,
+            "输入论文未单独说明该项，请结合所附原文证据理解。",
+            minimum=8,
+        ),
+        claim_en=fit_text(
+            claim_en,
+            900,
+            "The input paper does not state this item separately; see the linked evidence.",
+            minimum=12,
+        ),
+        evidence=locators,
+    )
 
 
 def build_input_profile(problem: ProblemStatement) -> PaperEvidenceProfile:
@@ -1869,6 +1908,32 @@ class AnalysisPipeline:
         target = self.settings.V4_FULL_TEXT_TARGET
         pool = candidates[: min(len(candidates), target * 2)]
         profiles: list[PaperEvidenceProfile] = []
+        if (
+            self.repository
+            and persist
+            and hasattr(self.repository, "load_external_profiles")
+        ):
+            cached_payloads = await self.repository.load_external_profiles(job.id)
+            cached: dict[str, PaperEvidenceProfile] = {}
+            for payload in cached_payloads:
+                try:
+                    profile = PaperEvidenceProfile.model_validate(payload)
+                except ValueError:
+                    continue
+                if profile.role == "external" and profile.evidence_grade == "full_text":
+                    cached[profile.paper_id] = profile
+            profiles = [
+                cached[paper.canonical_id]
+                for paper in pool
+                if paper.canonical_id in cached
+            ][:target]
+            if profiles:
+                await self._event(
+                    job.id,
+                    "resumed",
+                    f"Reused {len(profiles)} complete full-text evidence profiles",
+                )
+            pool = [paper for paper in pool if paper.canonical_id not in cached]
         download_dir = workspace / "v4-external-pdfs"
         download_dir.mkdir(parents=True, exist_ok=True)
         client = httpx.AsyncClient(
@@ -1935,6 +2000,7 @@ class AnalysisPipeline:
                                 "official_url": paper.url,
                                 "pdf_url": paper.pdf_url,
                                 "evidence_locators": profile_locators(grounded),
+                                "profile": grounded.model_dump(mode="json"),
                             },
                         )
                     paper.evidence_grade = "full_text"

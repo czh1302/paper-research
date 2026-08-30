@@ -305,6 +305,18 @@ class SupabaseRepository:
             json={"metadata": _postgres_json(metadata)},
         )
 
+    async def load_external_profiles(self, job_id: str) -> list[dict[str, Any]]:
+        response = await self._request(
+            "GET",
+            "/rest/v1/report_evidence_assets"
+            f"?job_id=eq.{quote(job_id)}&source_kind=eq.external&select=metadata",
+        )
+        return [
+            profile
+            for row in response.json()
+            if isinstance((profile := (row.get("metadata") or {}).get("profile")), dict)
+        ]
+
     async def save_problem_statement(
         self, job_id: str, paper_id: str, payload: dict[str, Any]
     ) -> None:

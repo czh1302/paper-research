@@ -232,8 +232,8 @@ def test_input_profile_caps_high_level_claim_evidence() -> None:
             )
         ],
         assumptions=[],
-        algorithm_zh="按证据抽取并验证研究任务",
-        algorithm_en="Extract and validate the research task against evidence",
+        algorithm_zh="按证据抽取并验证研究任务。" * 80,
+        algorithm_en="Extract and validate the research task against evidence. " * 80,
         algorithm_evidence_ids=[ids[0]],
         metrics=[],
         confidence=1,
@@ -253,6 +253,10 @@ def test_input_profile_caps_high_level_claim_evidence() -> None:
 
     assert len(profile.task.evidence) == 8
     assert [item.id for item in profile.task.evidence] == ids[:8]
+    assert len(profile.method.claim_zh) <= 500
+    assert len(profile.method.claim_en) <= 900
+    assert profile.method.claim_zh.endswith("。")
+    assert profile.method.claim_en.endswith(".")
 
 
 def test_ground_problem_repairs_evidence_id_from_exact_excerpt() -> None:
