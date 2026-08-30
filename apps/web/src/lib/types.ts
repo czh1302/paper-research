@@ -12,11 +12,18 @@ export interface JobRecord {
   created_at: string;
   completed_at: string | null;
   file_names?: string[];
+  is_favorite?: boolean;
+  report_id?: string | null;
+  total_count?: number;
 }
 
 export interface JobEvent { id: number; kind: string; message: string; data: Record<string, unknown>; created_at: string; }
 
-export interface Evidence { id: string; paper_id: string; page?: number; section?: string; text: string; source_url?: string; }
+export interface Evidence {
+  id: string; paper_id: string; page?: number; section?: string; text: string; source_url?: string;
+  asset_id?: string; bboxes?: number[][]; bbox?: number[];
+  evidence_type?: "input" | "output" | "algorithm" | "constraint" | "external";
+}
 export interface ProblemElement { name: string; symbol?: string; domain?: string; description_zh: string; description_en: string; evidence_ids: string[]; }
 export interface ProblemStatement {
   paper_id: string; title: string; task_zh: string; task_en: string; background_zh: string; background_en: string;
@@ -76,12 +83,51 @@ export interface ReportPresentationV3 {
   version: 3; headline_zh: string; headline_en: string; problem_briefs: ProblemBrief[]; ideas: IdeaAssessment[];
   promising_ideas?: IdeaAssessment[]; rejected_ideas: RejectedIdea[]; idea_comparisons?: IdeaComparisonMatrix[];
 }
+export interface EvidenceLocator {
+  id: string; asset_id: string; paper_id: string; page: number; quote: string; section?: string;
+  evidence_type: "input" | "output" | "algorithm" | "constraint" | "external"; bboxes: number[][];
+}
+export interface GroundedClaim { claim_zh: string; claim_en: string; evidence: EvidenceLocator[]; }
+export interface PaperEvidenceProfile {
+  paper_id: string; title: string; year?: number; venue?: string; source_url?: string; pdf_url?: string;
+  role: "input" | "external"; evidence_grade: "input_pdf" | "full_text" | "abstract";
+  task: GroundedClaim; input_or_data: GroundedClaim; method: GroundedClaim; output_or_evaluation: GroundedClaim;
+  constraints: GroundedClaim; limitations: GroundedClaim;
+}
+export interface LiteratureThemeV4 { key: string; title_zh: string; title_en: string; summary_zh: string; summary_en: string; paper_ids: string[]; }
+export interface LiteratureLandscape {
+  overview_zh: string; overview_en: string; candidate_count: number; screened_count: number; full_text_count: number;
+  source_counts: Record<string, number>; themes: LiteratureThemeV4[]; profiles: PaperEvidenceProfile[];
+}
+export interface SubmissionIdea {
+  key: string; rank: number; title_zh: string; title_en: string; one_sentence_zh: string; one_sentence_en: string;
+  pain_point_zh: string; pain_point_en: string; hypothesis_zh: string; hypothesis_en: string;
+  core_contribution_zh: string; core_contribution_en: string; mechanism_zh: string; mechanism_en: string;
+  change_from_input_zh: string; change_from_input_en: string; experiment: ExperimentPlan;
+  closest_work_ids: string[]; supporting_work_ids: string[]; counterevidence_work_ids: string[];
+  unresolved_questions_zh: string[]; unresolved_questions_en: string[];
+  feasibility: number; submission_value: number; evidence_confidence: number; collision_risk: "low" | "medium" | "high";
+  verdict: "recommended" | "alternative" | "needs_evidence" | "rejected";
+}
+export interface IdeaReview {
+  idea_key: string; decision: SubmissionIdea["verdict"]; rationale_zh: string; rationale_en: string;
+  missing_evidence_zh: string[]; missing_evidence_en: string[];
+}
+export interface IdeaComparisonBoard { idea_key: string; input_paper_id: string; external_paper_ids: string[]; profiles: PaperEvidenceProfile[]; }
+export interface ReportPresentationV4 {
+  version: 4; headline_zh: string; headline_en: string; problem_briefs: ProblemBrief[];
+  literature_landscape: LiteratureLandscape; ideas: SubmissionIdea[]; reviews: IdeaReview[]; comparison_boards: IdeaComparisonBoard[];
+}
 export interface JointProblemStatement { common_problem_zh: string; common_problem_en: string; aligned_concepts: Record<string, unknown>[]; differences: Record<string, unknown>[]; compatible_assumptions: string[]; conflicting_assumptions: string[]; formalization?: string; }
 export interface GraphNode { id: string; name: string; year?: number; }
 export interface GraphLink { source: string; target: string; }
 export interface VisualizationData { timeline: {year: number; count: number}[]; sources: {source: string; count: number}[]; opportunities: {name_zh: string; name_en: string; feasibility: number; impact: number; uncertainty: number}[]; graph: {nodes: GraphNode[]; links: GraphLink[]}; }
-export interface AnalysisReport { job_id: string; generated_at: string; problem_statements: ProblemStatement[]; joint_problem_statement?: JointProblemStatement; related_papers: CandidatePaper[]; rounds: RoundAnalysis[]; search_audit: Record<string, unknown>[]; parser_audit: {paper_id: string; parser: string; degraded?: boolean; page_count?: number}[]; source_coverage: { counts: Record<string, number>; rounds_completed: number; queries: number; visualizations: VisualizationData }; limitations_zh: string; limitations_en: string; presentation?: ReportPresentation | ReportPresentationV3; idea_rounds?: { assessments: IdeaAssessment[] }[]; }
-export interface ReportRecord { id: string; job_id: string; content: AnalysisReport; markdown: string; created_at: string; }
+export interface AnalysisReport { job_id: string; generated_at: string; problem_statements: ProblemStatement[]; joint_problem_statement?: JointProblemStatement; related_papers: CandidatePaper[]; rounds: RoundAnalysis[]; search_audit: Record<string, unknown>[]; parser_audit: {paper_id: string; parser: string; degraded?: boolean; page_count?: number}[]; source_coverage: { counts: Record<string, number>; rounds_completed: number; queries: number; visualizations: VisualizationData }; limitations_zh: string; limitations_en: string; presentation?: ReportPresentation | ReportPresentationV3 | ReportPresentationV4; idea_rounds?: { assessments: IdeaAssessment[] }[]; }
+export interface ReportRecord { id: string; job_id: string; content: AnalysisReport; markdown?: string; created_at: string; }
+export interface SourcePdfResponse {
+  signedUrl: string; expiresIn: number; page: number; bboxes: number[][]; excerpt: string;
+  section: string | null; evidenceType: Evidence["evidence_type"] | null; officialUrl: string | null;
+}
 
 export interface AdminUserRow {
   total_count: number;

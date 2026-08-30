@@ -16,6 +16,7 @@ export function NewAnalysisPage() {
   const configuredRounds = Number(import.meta.env.VITE_DEFAULT_RESEARCH_ROUNDS ?? 1);
   const defaultRounds = Number.isInteger(configuredRounds) && configuredRounds >= 1 && configuredRounds <= 5 ? configuredRounds : 1;
   const [rounds, setRounds] = useState(defaultRounds);
+  const [researchBrief, setResearchBrief] = useState("");
   const [consent, setConsent] = useState(false);
   const [turnstile, setTurnstile] = useState("");
   const [turnstileRevision, setTurnstileRevision] = useState(0);
@@ -75,7 +76,7 @@ export function NewAnalysisPage() {
     setBusy(true);
     setSubmitError("");
     try {
-      const job = await createAnalysis(files, mode, rounds, turnstile);
+      const job = await createAnalysis(files, mode, rounds, turnstile, researchBrief.trim());
       navigate(`/jobs/${job.id}`);
     } catch (cause) {
       setSubmitError(cause instanceof Error ? cause.message : text("任务创建失败", "Could not create the job"));
@@ -124,12 +125,12 @@ export function NewAnalysisPage() {
 
         <details className="group mt-6 border-t border-line pt-1">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg py-4 text-sm font-medium text-content"><span>{text("高级设置", "Advanced settings")}</span><span className="flex items-center gap-2 text-xs font-normal text-muted">{rounds === defaultRounds ? text("标准检索", "Standard retrieval") : text("深度检索", "Deep retrieval")} · {text(`${rounds}轮`, `${rounds} round(s)`)}<ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></span></summary>
-          <label className="block rounded-xl bg-subtle/55 p-4"><span className="label">{text("最大循环轮数", "Maximum rounds")}</span><select className="input" aria-label={text("最大循环轮数", "Maximum rounds")} value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((round) => <option key={round} value={round}>{text(`${round} ${round === defaultRounds ? "轮（默认）" : "轮"}`, `${round} round${round === defaultRounds ? " (default)" : "s"}`)}</option>)}</select><span className="mt-2 block text-xs text-muted">{text("检索覆盖率收敛后可能提前停止。", "The loop may stop early when retrieval coverage converges.")}</span></label>
+          <div className="space-y-4 rounded-xl bg-subtle/55 p-4"><label className="block"><span className="label">{text("最大循环轮数", "Maximum rounds")}</span><select className="input" aria-label={text("最大循环轮数", "Maximum rounds")} value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((round) => <option key={round} value={round}>{text(`${round} ${round === defaultRounds ? "轮（默认）" : "轮"}`, `${round} round${round === defaultRounds ? " (default)" : "s"}`)}</option>)}</select><span className="mt-2 block text-xs text-muted">{text("检索覆盖率收敛后可能提前停止。", "The loop may stop early when retrieval coverage converges.")}</span></label><label className="block"><span className="label">{text("研究简报（可选）", "Research brief (optional)")}</span><textarea className="input min-h-28 resize-y" maxLength={2000} value={researchBrief} onChange={(event) => setResearchBrief(event.target.value)} placeholder={text("例如：希望解决的痛点、可用数据与算力、目标会议、时间约束，以及不考虑的方向。", "For example: target pain points, available data and compute, target venue, time constraints, and excluded directions.")}/><span className="mt-2 flex justify-between gap-3 text-xs text-muted"><span>{text("完整调研完成后，系统会据此筛选论文级 Idea。", "The system uses this after the literature review to select paper-level ideas.")}</span><span>{researchBrief.length}/2000</span></span></label></div>
         </details>
 
         <div className="border-t border-line pt-5">
           <div className="flex items-start gap-3"><input id="data-consent" className="mt-0.5 h-4 w-4 shrink-0 accent-accent" type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><label htmlFor="data-consent" className="text-sm leading-5 text-content">{text("我同意将 PDF 发送至 Supabase 与 MinerU 进行解析", "I agree to send PDFs to Supabase and MinerU for parsing")}</label></div>
-          <details className="group ml-7 mt-2 text-xs text-muted"><summary className="inline-flex cursor-pointer list-none items-center gap-1 font-medium text-accent-strong">{text("查看数据处理详情", "View data processing details")}<ChevronDown className="h-3.5 w-3.5 transition group-open:rotate-180" /></summary><p className="mt-2 max-w-2xl leading-5">{text("本站会在 24 小时内删除存储的 PDF；MinerU 的临时缓存与数据处理遵循其第三方政策。", "This site deletes stored PDFs within 24 hours. MinerU temporary caching and processing follow its third-party policy.")}</p></details>
+          <details className="group ml-7 mt-2 text-xs text-muted"><summary className="inline-flex cursor-pointer list-none items-center gap-1 font-medium text-accent-strong">{text("查看数据处理详情", "View data processing details")}<ChevronDown className="h-3.5 w-3.5 transition group-open:rotate-180" /></summary><p className="mt-2 max-w-2xl leading-5">{text("已绑定任务的 PDF 会在 Supabase 中私有保留，便于你点击引用查看原文与高亮片段；删除任务时会一并永久删除。未创建任务的临时上传会在 24 小时后清理。MinerU 临时缓存遵循其第三方政策。", "PDFs bound to a job are retained privately in Supabase so you can open highlighted source passages. They are permanently removed when you delete the job. Unbound temporary uploads are cleaned after 24 hours. MinerU caching follows its third-party policy.")}</p></details>
         </div>
 
         <div className="mt-4 max-w-full overflow-hidden"><TurnstileWidget key={turnstileRevision} appearance="interaction-only" size="flexible" onToken={onToken} /></div>

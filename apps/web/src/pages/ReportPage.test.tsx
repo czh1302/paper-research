@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { LanguageProvider } from "../lib/language";
 import { ThemeProvider } from "../lib/theme";
-import type { AnalysisReport, IdeaAssessment, PresentationIdea, ReportRecord } from "../lib/types";
+import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfile, PresentationIdea, ReportRecord } from "../lib/types";
 import { ReportPage } from "./ReportPage";
 
-const api = vi.hoisted(() => ({ getReport: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
+const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
 vi.mock("../lib/api", () => api);
+vi.mock("../components/EvidencePdfViewer", () => ({ default: () => <div>secure-pdf-viewer</div> }));
 vi.mock("../components/Charts", () => ({
   TimelineChart: () => <div>timeline-chart</div>, OpportunityChart: () => <div>idea-chart</div>, CitationGraph: () => <div>citation-graph</div>,
 }));
@@ -80,12 +81,70 @@ function v3Assessment(): IdeaAssessment {
   };
 }
 
+function v4Profile(paperId: string, role: "input" | "external"): PaperEvidenceProfile {
+  const evidenceType = role === "input" ? "algorithm" : "external";
+  const claim = (name: string): GroundedClaim => ({
+    claim_zh: `${name}由全文证据支持`, claim_en: `${name} is supported by full-text evidence`,
+    evidence: [{ id: `${paperId}:${name}`, asset_id: `asset-${paperId}`, paper_id: paperId, page: 2, quote: `${name} source passage`, section: "Method", evidence_type: evidenceType, bboxes: [[100, 200, 900, 260]] }],
+  });
+  return {
+    paper_id: paperId, title: role === "input" ? "Target Paper" : `Evidence Paper ${paperId}`,
+    year: 2026, venue: "SIGCOMM", source_url: role === "external" ? `https://papers.example/${paperId}` : undefined,
+    pdf_url: role === "external" ? `https://papers.example/${paperId}.pdf` : undefined,
+    role, evidence_grade: role === "input" ? "input_pdf" : "full_text", task: claim("研究任务"),
+    input_or_data: claim("输入数据"), method: claim("方法"), output_or_evaluation: claim("输出评价"), constraints: claim("约束"), limitations: claim("局限"),
+  };
+}
+
+function v4Fixture(): ReportRecord {
+  const record = fixture();
+  const input = v4Profile("paperhash", "input");
+  const external = Array.from({ length: 6 }, (_, index) => v4Profile(`paper-${index}`, "external"));
+  record.content.problem_statements[0].evidence[0] = { ...record.content.problem_statements[0].evidence[0], asset_id: "asset-paperhash", bboxes: [[100, 200, 900, 260]], evidence_type: "algorithm" };
+  record.content.presentation = {
+    version: 4,
+    headline_zh: "如何验证网络实验复现结果与论文结论的一致性？",
+    headline_en: "How can reproduced network experiments be checked against paper conclusions?",
+    problem_briefs: [{
+      paper_id: "paperhash", title: "Target Paper", research_question_zh: "自动验证网络实验复现忠实度", research_question_en: "Automatically validate network-reproduction fidelity", research_question_evidence_ids: ["paperhash:b1"],
+      inputs: [{ label_zh: "输入论文", label_en: "Input paper", explanation_zh: "包含实验描述的 PDF", explanation_en: "A PDF containing experiment descriptions", evidence_ids: ["paperhash:b1"] }],
+      outputs: [{ label_zh: "忠实度报告", label_en: "Fidelity report", explanation_zh: "带证据的复现判断", explanation_en: "An evidence-backed reproduction verdict", evidence_ids: ["paperhash:b1"] }],
+      algorithm_steps: [1, 2, 3].map((order) => ({ order, title_zh: `步骤 ${order}`, title_en: `Step ${order}`, explanation_zh: "执行有证据的验证步骤", explanation_en: "Run one evidence-backed validation step", evidence_ids: ["paperhash:b1"] })),
+      constraints: [{ label_zh: "公开数据", label_en: "Public data", explanation_zh: "仅使用公开实验数据", explanation_en: "Use public experimental data only", evidence_ids: ["paperhash:b1"] }],
+    }],
+    literature_landscape: {
+      overview_zh: "现有系统多关注代码能否运行，缺少对论文定量结论的自动忠实度验证。", overview_en: "Existing systems focus on runnability and lack fidelity validation for quantitative paper claims.",
+      candidate_count: 240, screened_count: 60, full_text_count: 20, source_counts: { arxiv: 30, openreview: 20 },
+      themes: [
+        { key: "reproduction", title_zh: "论文复现系统", title_en: "Paper reproduction systems", summary_zh: "自动生成并运行论文实现。", summary_en: "Systems that generate and run paper implementations.", paper_ids: ["paper-0"] },
+        { key: "validation", title_zh: "结果验证", title_en: "Result validation", summary_zh: "验证输出与预期结论的一致性。", summary_en: "Methods that compare outputs with expected claims.", paper_ids: ["paper-1"] },
+      ], profiles: [input, ...external],
+    },
+    ideas: [{
+      key: "idea-v4", rank: 1, title_zh: "证据契约驱动的网络实验忠实度验证", title_en: "Evidence-contract fidelity validation for network experiments",
+      one_sentence_zh: "把论文定量结论转成可执行契约并自动定位复现偏差。", one_sentence_en: "Turn quantitative paper claims into executable contracts that localize reproduction drift.",
+      pain_point_zh: "现有复现系统只能判断代码是否运行，不能判断结果是否忠实。", pain_point_en: "Existing systems test runnability but not result fidelity.",
+      hypothesis_zh: "证据契约能够提高错误复现检出率。", hypothesis_en: "Evidence contracts improve invalid-reproduction detection.",
+      core_contribution_zh: "提出证据契约表示、执行器和跨论文基准。", core_contribution_en: "An evidence-contract representation, executor, and cross-paper benchmark.",
+      mechanism_zh: "解析变量与定量结论，并在运行时逐项验证。", mechanism_en: "Extract variables and quantitative claims and validate them at runtime.",
+      change_from_input_zh: "在输入论文流水线后增加契约执行和偏差归因。", change_from_input_en: "Add contract execution and drift attribution to the input pipeline.",
+      experiment: { inputs_zh: "10 篇论文", inputs_en: "Ten papers", baseline_zh: "原系统", baseline_en: "Original system", intervention_zh: "加入证据契约", intervention_en: "Add evidence contracts", metrics_zh: "错误检出率", metrics_en: "Invalid-result detection", success_criterion_zh: "提高 10%", success_criterion_en: "Improve by 10%", resources_zh: "单机一周", resources_en: "One machine for one week" },
+      closest_work_ids: ["paper-0", "paper-1"], supporting_work_ids: ["paper-2", "paper-3"], counterevidence_work_ids: ["paper-4", "paper-5"],
+      unresolved_questions_zh: [], unresolved_questions_en: [], feasibility: .8, submission_value: .85, evidence_confidence: .8, collision_risk: "low", verdict: "recommended",
+    }],
+    reviews: [{ idea_key: "idea-v4", decision: "recommended", rationale_zh: "该方案有明确空白与可证伪实验。", rationale_en: "The proposal has a clear gap and falsifiable experiment.", missing_evidence_zh: [], missing_evidence_en: [] }],
+    comparison_boards: [{ idea_key: "idea-v4", input_paper_id: "paperhash", external_paper_ids: external.map((item) => item.paper_id), profiles: [input, ...external] }],
+  };
+  return record;
+}
+
 describe("ReportPage", () => {
   afterEach(cleanup);
   beforeEach(() => {
     window.localStorage.clear();
     api.getReport.mockReset();
     api.getReport.mockResolvedValue(fixture());
+    api.getFullReport.mockResolvedValue(fixture());
   });
 
   it("renders a concise legacy-compatible report without ids, raw audit, or mixed languages", async () => {
@@ -189,5 +248,30 @@ describe("ReportPage", () => {
     expect(csv).toContain("idea_status");
     expect(csv).toContain("difference_to_idea_zh");
     expect(csv).toContain("Related Paper 0");
+  });
+
+  it("renders V4 after full-text review, paginates complete profiles, and opens PDF evidence", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    api.getReport.mockResolvedValue(record);
+    api.getFullReport.mockResolvedValue(record);
+    renderReport();
+
+    expect(await screen.findByText("如何验证网络实验复现结果与论文结论的一致性？")).toBeInTheDocument();
+    expect(screen.getByText("证据契约驱动的网络实验忠实度验证")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("当前证据未覆盖");
+
+    await user.click(screen.getByRole("tab", { name: "输入论文" }));
+    await user.click(screen.getAllByRole("button", { name: "原论文 · 第 2 页" })[0]);
+    expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+
+    await user.click(screen.getByRole("tab", { name: "研究现状" }));
+    expect(screen.getByText("Evidence Paper paper-0")).toBeInTheDocument();
+    expect(screen.getByText("Evidence Paper paper-2")).toBeInTheDocument();
+    expect(screen.queryByText("Evidence Paper paper-3")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "下一组" }));
+    expect(await screen.findByText("Evidence Paper paper-3")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("Not covered");
   });
 });

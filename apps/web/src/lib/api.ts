@@ -1,5 +1,5 @@
 import { requireSupabase } from "./supabase";
-import type { AdminJobRow, AdminUserRow, JobRecord, ReportRecord } from "./types";
+import type { AdminJobRow, AdminUserRow, JobRecord, ReportRecord, SourcePdfResponse } from "./types";
 
 export async function checkIsAdmin(): Promise<boolean> {
   const { data, error } = await requireSupabase().rpc("is_admin");
@@ -25,20 +25,13 @@ export async function adminListJobs(limit = 100, offset = 0): Promise<AdminJobRo
   return (data ?? []) as AdminJobRow[];
 }
 
-export async function listJobs(): Promise<JobRecord[]> {
-  const { data, error } = await requireSupabase().from("jobs").select("*, job_files(position, uploads(original_name))").order("created_at", { ascending: false });
+export async function listJobs(limit = 20, offset = 0, favoritesOnly = false): Promise<JobRecord[]> {
+  const { data, error } = await requireSupabase().rpc("list_my_jobs", { p_limit: limit, p_offset: offset, p_favorites_only: favoritesOnly });
   if (error) throw error;
-  type JobWithFiles = JobRecord & { job_files?: { position: number; uploads: { original_name: string } | { original_name: string }[] | null }[] };
-  return ((data ?? []) as JobWithFiles[]).map(({ job_files: files, ...job }) => ({
-    ...job,
-    file_names: [...(files ?? [])].sort((a, b) => a.position - b.position).flatMap((item) => {
-      if (Array.isArray(item.uploads)) return item.uploads.map((upload) => upload.original_name);
-      return item.uploads?.original_name ? [item.uploads.original_name] : [];
-    }),
-  }));
+  return (data ?? []) as JobRecord[];
 }
 
-export async function createAnalysis(files: File[], mode: "single" | "multi", maxRounds: number, turnstileToken: string) {
+export async function createAnalysis(files: File[], mode: "single" | "multi", maxRounds: number, turnstileToken: string, researchBrief = "") {
   const client = requireSupabase();
   const { data: uploadData, error: uploadError } = await client.functions.invoke("create-upload", {
     body: { files: files.map((file) => ({ name: file.name, size: file.size, type: file.type })) },
@@ -51,7 +44,7 @@ export async function createAnalysis(files: File[], mode: "single" | "multi", ma
     if (error) throw error;
   }
   const { data, error } = await client.functions.invoke("create-job", {
-    body: { mode, uploadIds: uploads.map((item) => item.uploadId), maxRounds, turnstileToken },
+    body: { mode, uploadIds: uploads.map((item) => item.uploadId), maxRounds, turnstileToken, researchBrief },
   });
   if (error) throw error;
   return data.job as JobRecord;
@@ -64,13 +57,20 @@ export async function getJob(jobId: string): Promise<JobRecord> {
 }
 
 export async function getReportByJob(jobId: string): Promise<ReportRecord | null> {
-  const { data, error } = await requireSupabase().from("reports").select("*").eq("job_id", jobId).maybeSingle();
+  const { data, error } = await requireSupabase().from("reports").select("id,job_id,created_at").eq("job_id", jobId).maybeSingle();
   if (error) throw error;
   return data as ReportRecord | null;
 }
 
 export async function getReport(reportId: string): Promise<ReportRecord> {
-  const { data, error } = await requireSupabase().from("reports").select("*").eq("id", reportId).single();
+  const { data, error } = await requireSupabase().from("reports").select("id,job_id,summary,created_at").eq("id", reportId).single();
+  if (error) throw error;
+  if (data.summary) return { id: data.id, job_id: data.job_id, content: data.summary, created_at: data.created_at } as ReportRecord;
+  return getFullReport(reportId);
+}
+
+export async function getFullReport(reportId: string): Promise<ReportRecord> {
+  const { data, error } = await requireSupabase().from("reports").select("id,job_id,content,markdown,created_at").eq("id", reportId).single();
   if (error) throw error;
   return data as ReportRecord;
 }
@@ -83,6 +83,18 @@ export async function cancelJob(jobId: string) {
 export async function deleteJob(jobId: string) {
   const { error } = await requireSupabase().functions.invoke("delete-job", { body: { jobId } });
   if (error) throw error;
+}
+
+export async function setJobFavorite(jobId: string, isFavorite: boolean) {
+  const { data, error } = await requireSupabase().functions.invoke("set-job-favorite", { body: { jobId, isFavorite } });
+  if (error) throw error;
+  return data as { jobId: string; isFavorite: boolean };
+}
+
+export async function getSourcePdf(reportId: string, assetId: string, evidenceId: string): Promise<SourcePdfResponse> {
+  const { data, error } = await requireSupabase().functions.invoke("get-source-pdf", { body: { reportId, assetId, evidenceId } });
+  if (error) throw error;
+  return data as SourcePdfResponse;
 }
 
 export async function createShare(reportId: string) {

@@ -7,7 +7,7 @@ import { ThemeProvider } from "../lib/theme";
 import type { JobRecord } from "../lib/types";
 import { DashboardPage } from "./DashboardPage";
 
-const api = vi.hoisted(() => ({ listJobs: vi.fn(), cancelJob: vi.fn(), deleteJob: vi.fn() }));
+const api = vi.hoisted(() => ({ listJobs: vi.fn(), cancelJob: vi.fn(), deleteJob: vi.fn(), setJobFavorite: vi.fn() }));
 vi.mock("../lib/api", () => api);
 
 function job(overrides: Partial<JobRecord> = {}): JobRecord {
@@ -28,9 +28,11 @@ describe("DashboardPage", () => {
     api.listJobs.mockReset();
     api.cancelJob.mockReset();
     api.deleteJob.mockReset();
+    api.setJobFavorite.mockReset();
     api.listJobs.mockResolvedValue([job()]);
     api.deleteJob.mockResolvedValue(undefined);
     api.cancelJob.mockResolvedValue(undefined);
+    api.setJobFavorite.mockResolvedValue({ jobId: "job-12345678", isFavorite: true });
   });
 
   it("uses PDF names as task titles and confirms permanent deletion", async () => {

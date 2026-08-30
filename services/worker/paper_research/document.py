@@ -23,12 +23,73 @@ def _page_from_item(item: dict[str, Any]) -> int | None:
     return None
 
 
+def _strings_from_value(value: Any, field: str = "") -> list[str]:
+    if isinstance(value, str):
+        if field not in {"type", "url", "image_path", "img_path", "format"} and value.strip():
+            return [value.strip()]
+        return []
+    if isinstance(value, list):
+        return [text for child in value for text in _strings_from_value(child, field)]
+    if isinstance(value, dict):
+        return [
+            text
+            for child_field, child in value.items()
+            for text in _strings_from_value(child, child_field)
+        ]
+    return []
+
+
 def _text_from_item(item: dict[str, Any]) -> str:
     for key in ("text", "content", "caption", "html", "latex"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+        if isinstance(value, (dict, list)):
+            fragments = _strings_from_value(value, key)
+            if fragments:
+                return " ".join(dict.fromkeys(fragments))
     return ""
+
+
+def _content_items(content: Any) -> list[tuple[dict[str, Any], int | None]]:
+    if isinstance(content, dict):
+        content = content.get("content_list", [])
+    if not isinstance(content, list):
+        return []
+    if content and all(isinstance(page, list) for page in content):
+        return [
+            (item, page_index + 1)
+            for page_index, page in enumerate(content)
+            for item in page
+            if isinstance(item, dict)
+        ]
+    return [
+        (item, _page_from_item(item))
+        for item in content
+        if isinstance(item, dict)
+    ]
+
+
+def _normalized_bbox(item: dict[str, Any]) -> list[float] | None:
+    value = item.get("bbox")
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    try:
+        box = [float(number) for number in value]
+    except (TypeError, ValueError):
+        return None
+    page_size = item.get("page_size") or item.get("page_size_wh")
+    if isinstance(page_size, list) and len(page_size) == 2:
+        try:
+            width, height = float(page_size[0]), float(page_size[1])
+            if width > 0 and height > 0 and (max(box[0], box[2]) > 1000 or max(box[1], box[3]) > 1000):
+                box = [box[0] / width * 1000, box[1] / height * 1000, box[2] / width * 1000, box[3] / height * 1000]
+        except (TypeError, ValueError):
+            pass
+    elif max(abs(number) for number in box) <= 1:
+        box = [number * 1000 for number in box]
+    box = [max(0.0, min(number, 1000.0)) for number in box]
+    return box if box[2] > box[0] and box[3] > box[1] else None
 
 
 def normalize_mineru_zip(zip_path: Path, output_dir: Path, paper_id: str, title: str) -> DocumentIR:
@@ -46,33 +107,34 @@ def normalize_mineru_zip(zip_path: Path, output_dir: Path, paper_id: str, title:
         archive.extractall(output_dir)
 
     markdown_file = _first_matching(output_dir, "full.md") or _first_matching(output_dir, "*.md")
-    content_file = _first_matching(output_dir, "*_content_list.json")
+    content_file = _first_matching(output_dir, "*_content_list_v2.json") or _first_matching(output_dir, "*_content_list.json")
     markdown = markdown_file.read_text(encoding="utf-8", errors="replace") if markdown_file else ""
     blocks: list[DocumentBlock] = []
     page_count: int | None = None
 
     if content_file:
         content = json.loads(content_file.read_text(encoding="utf-8"))
-        items = content if isinstance(content, list) else content.get("content_list", [])
-        for index, item in enumerate(items):
-            if not isinstance(item, dict):
-                continue
+        items = _content_items(content)
+        current_section: str | None = None
+        for index, (item, nested_page) in enumerate(items):
             text = _text_from_item(item)
             if not text:
                 continue
-            page = _page_from_item(item)
+            page = nested_page or _page_from_item(item)
             if page:
                 page_count = max(page_count or 0, page)
-            bbox = item.get("bbox")
+            kind = str(item.get("type", "text"))
+            if kind == "title" or item.get("text_level"):
+                current_section = text[:200]
             blocks.append(
                 DocumentBlock(
                     id=f"{paper_id}:b{index}",
                     paper_id=paper_id,
-                    kind=str(item.get("type", "text")),
+                    kind=kind,
                     text=text,
                     page=page,
-                    section=item.get("section") or item.get("heading"),
-                    bbox=bbox if isinstance(bbox, list) else None,
+                    section=item.get("section") or item.get("heading") or current_section,
+                    bbox=_normalized_bbox(item),
                 )
             )
 

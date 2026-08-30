@@ -185,9 +185,16 @@ class LocalCheckpointRepository:
         self.state["rounds"] = sorted(rows, key=lambda row: row["round_number"])
         await self._write()
 
-    async def save_report(self, job_id: str, payload: dict[str, Any], markdown: str) -> None:
+    async def save_report(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        markdown: str,
+        summary: dict[str, Any] | None = None,
+    ) -> str:
         self.state["report"] = payload
         await self._write()
+        return job_id
 
     async def record_usage(self, job_id: str, usage: ProviderUsage) -> None:
         payload = {

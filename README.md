@@ -192,6 +192,9 @@ that command with the credentials exposed in chat.
 - With `IDEA_PIPELINE_V3=true`, each round extracts an evidence-reviewed Problem Brief, generates
   falsifiable Ideas, runs Idea-specific academic and web queries, parses selected open full text,
   and validates collision risk, feasibility and a first experiment.
+- With `IDEA_PIPELINE_V4=true`, the worker first completes multi-platform retrieval, screens open
+  papers, and builds full-text evidence profiles. Only then does it propose and review paper-core
+  Ideas. V3 and V4 are mutually exclusive.
 - Ideas are presented as validated, promising but needing more evidence, or rejected. A promising
   Idea is never labeled as a recommendation, and reports may legitimately contain no validated Idea.
 - DOI, arXiv, OpenReview, OpenAlex and normalized-title identifiers are used for deduplication.
@@ -224,9 +227,10 @@ generation.
 - Each PDF is at most 50 MB and 100 pages. MinerU Precision currently supports these limits, while
   Flash fallback applies only to files within its smaller service limit.
 - The upload screen requires explicit consent because PDFs are sent to both Supabase and MinerU.
-  Research Atlas deletes its local copy immediately, removes the Supabase source after a successful
-  report, and retains a 24-hour expiry fallback for failed/interrupted work; MinerU's separate
-  temporary cache follows MinerU policy.
+  Research Atlas deletes the worker's temporary copy immediately. PDFs bound to a job remain in
+  private Supabase storage so owners and administrators can open cited pages and highlights; deleting
+  the job permanently removes its input PDFs, cached open-access evidence PDFs, report and citations.
+  Unbound uploads retain a 24-hour expiry; MinerU's separate temporary cache follows MinerU policy.
 - PDF parsing attribution is visible in the site footer as required by the MinerU license.
 - DeepSeek spend is conservatively estimated from returned token usage. New calls stop at CNY 95,
   reserving CNY 5 under the CNY 100 monthly cap. Disable automatic account recharge as a second guard.

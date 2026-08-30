@@ -1,5 +1,5 @@
 import type { Language } from "./language";
-import type { AnalysisReport, CandidatePaper, ComparisonCell, IdeaAssessment, IdeaComparisonMatrix, IdeaComparisonRow, Opportunity, PresentationIdea, ReportPresentation, ReportPresentationV3, ResearchTheme } from "./types";
+import type { AnalysisReport, CandidatePaper, ComparisonCell, IdeaAssessment, IdeaComparisonMatrix, IdeaComparisonRow, Opportunity, PaperEvidenceProfile, PresentationIdea, ReportPresentation, ReportPresentationV3, ReportPresentationV4, ResearchTheme } from "./types";
 
 export function localized(item: object, field: string, language: Language): string {
   return String((item as Record<string, unknown>)[`${field}_${language}`] ?? "");
@@ -81,6 +81,10 @@ export function isV3Presentation(value: AnalysisReport["presentation"]): value i
   return value?.version === 3;
 }
 
+export function isV4Presentation(value: AnalysisReport["presentation"]): value is ReportPresentationV4 {
+  return value?.version === 4;
+}
+
 function uniqueAcademicEvidence(idea: IdeaAssessment, papers: Map<string, CandidatePaper>) {
   const academic = new Set(["arxiv", "openreview", "openalex", "crossref", "dblp", "serper_scholar"]);
   const rows = idea.evidence.map((item) => papers.get(item.paper_id)).filter((item): item is CandidatePaper => Boolean(item));
@@ -147,6 +151,22 @@ export function v3IdeaComparisons(report: AnalysisReport, presentation: ReportPr
 function csvCell(value: unknown) { return `"${String(value ?? "").replaceAll('"', '""')}"`; }
 
 export function comparisonCsv(report: AnalysisReport) {
+  if (isV4Presentation(report.presentation)) {
+    const rows: string[][] = [["idea_key", "idea_status", "paper_role", "paper_id", "title", "year", "venue", "research_task_zh", "research_task_en", "input_or_data_zh", "input_or_data_en", "method_zh", "method_en", "output_or_evaluation_zh", "output_or_evaluation_en", "constraints_zh", "constraints_en", "limitations_zh", "limitations_en", "evidence_grade", "source_url"]];
+    const ideaMap = new Map(report.presentation.ideas.map((item) => [item.key, item]));
+    for (const board of report.presentation.comparison_boards) {
+      const idea = ideaMap.get(board.idea_key);
+      for (const profile of board.profiles) rows.push([
+        board.idea_key, idea?.verdict ?? "", profile.role, profile.paper_id, profile.title,
+        String(profile.year ?? ""), profile.venue ?? "", profile.task.claim_zh, profile.task.claim_en,
+        profile.input_or_data.claim_zh, profile.input_or_data.claim_en, profile.method.claim_zh, profile.method.claim_en,
+        profile.output_or_evaluation.claim_zh, profile.output_or_evaluation.claim_en, profile.constraints.claim_zh,
+        profile.constraints.claim_en, profile.limitations.claim_zh, profile.limitations.claim_en,
+        profile.evidence_grade, profile.source_url ?? "",
+      ]);
+    }
+    return rows.map((row) => row.map(csvCell).join(",")).join("\n");
+  }
   if (isV3Presentation(report.presentation)) {
     const rows: string[][] = [["idea_key", "idea_status", "paper_role", "paper_id", "title", "relationship", "task_or_capability_zh", "task_or_capability_en", "method_or_change_zh", "method_or_change_en", "output_or_evaluation_zh", "output_or_evaluation_en", "key_constraint_zh", "key_constraint_en", "difference_to_idea_zh", "difference_to_idea_en", "evidence_grade", "source_urls", "input_evidence_ids"]];
     for (const matrix of v3IdeaComparisons(report, report.presentation)) for (const row of matrix.rows) rows.push([matrix.idea_key, matrix.status, row.paper_role, row.paper_id, row.title, row.relationship, row.task_or_capability_zh, row.task_or_capability_en, row.method_or_change_zh, row.method_or_change_en, row.output_or_evaluation_zh, row.output_or_evaluation_en, row.key_constraint_zh, row.key_constraint_en, row.difference_to_idea_zh, row.difference_to_idea_en, row.evidence_grade, row.source_urls.join(" "), row.input_evidence_ids.join(" ")]);
@@ -226,7 +246,52 @@ function sourceSiteNameSafe(url: string) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "Source"; }
 }
 
+function v4Markdown(report: AnalysisReport, presentation: ReportPresentationV4, language: Language) {
+  const zh = language === "zh";
+  const lines = [`# ${zh ? "论文调研与研究方案" : "Literature Review and Research Proposals"}`, "", `> ${localized(presentation, "headline", language)}`];
+  const references = new Map<string, string>();
+  for (const brief of presentation.problem_briefs) {
+    lines.push("", `## ${zh ? "输入论文：" : "Input paper: "}${brief.title}`, "", `**${zh ? "研究问题" : "Research question"}：** ${localized(brief, "research_question", language)}`, "", `### ${zh ? "输入" : "Inputs"}`);
+    brief.inputs.forEach((item) => lines.push(`- **${localized(item, "label", language)}**：${localized(item, "explanation", language)}`));
+    lines.push("", `### ${zh ? "输出" : "Outputs"}`);
+    brief.outputs.forEach((item) => lines.push(`- **${localized(item, "label", language)}**：${localized(item, "explanation", language)}`));
+    lines.push("", `### ${zh ? "算法步骤" : "Algorithm steps"}`);
+    brief.algorithm_steps.forEach((item) => lines.push(`${item.order}. **${localized(item, "title", language)}**：${localized(item, "explanation", language)}`));
+    lines.push("", `### ${zh ? "关键约束" : "Key constraints"}`);
+    brief.constraints.forEach((item) => lines.push(`- **${localized(item, "label", language)}**：${localized(item, "explanation", language)}`));
+  }
+  const landscape = presentation.literature_landscape;
+  lines.push("", `## ${zh ? "研究现状" : "Research landscape"}`, "", localized(landscape, "overview", language), "", zh ? `检索到 ${landscape.candidate_count} 篇去重候选，筛选 ${landscape.screened_count} 篇，深读 ${landscape.full_text_count} 篇开放全文。` : `Retrieved ${landscape.candidate_count} deduplicated candidates, screened ${landscape.screened_count}, and reviewed ${landscape.full_text_count} open full texts.`);
+  for (const theme of landscape.themes) lines.push("", `### ${localized(theme, "title", language)}`, "", localized(theme, "summary", language));
+  lines.push("", `## ${zh ? "论文级 Idea" : "Paper-level ideas"}`);
+  if (!presentation.ideas.length) lines.push("", zh ? "本轮没有达到审查门槛的论文级 Idea。" : "No paper-level idea met the review threshold in this run.");
+  const profileMap = new Map(landscape.profiles.map((item) => [item.paper_id, item]));
+  for (const idea of presentation.ideas) {
+    lines.push("", `### ${idea.rank}. ${localized(idea, "title", language)}`, "", localized(idea, "one_sentence", language), "", `- **${zh ? "研究痛点" : "Pain point"}：** ${localized(idea, "pain_point", language)}`, `- **${zh ? "核心贡献" : "Core contribution"}：** ${localized(idea, "core_contribution", language)}`, `- **${zh ? "技术机制" : "Mechanism"}：** ${localized(idea, "mechanism", language)}`, `- **${zh ? "相对输入论文的改变" : "Change from input paper"}：** ${localized(idea, "change_from_input", language)}`, "", `#### ${zh ? "第一个可证伪实验" : "First falsifiable experiment"}`, `- ${zh ? "输入" : "Inputs"}：${localized(idea.experiment, "inputs", language)}`, `- Baseline：${localized(idea.experiment, "baseline", language)}`, `- ${zh ? "改动" : "Intervention"}：${localized(idea.experiment, "intervention", language)}`, `- ${zh ? "指标" : "Metrics"}：${localized(idea.experiment, "metrics", language)}`, `- ${zh ? "成功条件" : "Success criterion"}：${localized(idea.experiment, "success_criterion", language)}`, `- ${zh ? "资源" : "Resources"}：${localized(idea.experiment, "resources", language)}`);
+    for (const id of [...idea.closest_work_ids, ...idea.supporting_work_ids, ...idea.counterevidence_work_ids]) {
+      const profile = profileMap.get(id);
+      if (profile?.source_url) references.set(profile.source_url, profile.title);
+    }
+  }
+  lines.push("", `## ${zh ? "全文证据横向对比" : "Full-text evidence comparison"}`);
+  const fields: [keyof Pick<PaperEvidenceProfile, "task" | "input_or_data" | "method" | "output_or_evaluation" | "constraints" | "limitations">, string, string][] = [["task", "研究任务", "Research task"], ["input_or_data", "输入或数据", "Inputs or data"], ["method", "方法", "Method"], ["output_or_evaluation", "输出与评价", "Outputs and evaluation"], ["constraints", "关键约束", "Key constraints"], ["limitations", "已知局限", "Known limitations"]];
+  for (const board of presentation.comparison_boards) {
+    const idea = presentation.ideas.find((item) => item.key === board.idea_key);
+    lines.push("", `### ${idea ? localized(idea, "title", language) : board.idea_key}`, "", `| ${zh ? "论文" : "Paper"} | ${fields.map(([, z, e]) => zh ? z : e).join(" | ")} |`, `|${fields.map(() => "---").concat("---").join("|")}|`);
+    for (const profile of board.profiles) {
+      lines.push(`| ${profile.title} | ${fields.map(([field]) => localized(profile[field], "claim", language).replaceAll("|", "\\|")).join(" | ")} |`);
+      if (profile.source_url) references.set(profile.source_url, profile.title);
+    }
+  }
+  if (references.size) {
+    lines.push("", `## ${zh ? "参考来源" : "References"}`, "");
+    [...references].forEach(([url, title], index) => lines.push(`${index + 1}. [${title}](${url})`));
+  }
+  return lines.join("\n");
+}
+
 export function humanReportMarkdown(report: AnalysisReport, language: Language) {
+  if (isV4Presentation(report.presentation)) return v4Markdown(report, report.presentation, language);
   if (isV3Presentation(report.presentation)) return v3Markdown(report, report.presentation, language);
   const zh = language === "zh";
   const presentation = displayPresentation(report);

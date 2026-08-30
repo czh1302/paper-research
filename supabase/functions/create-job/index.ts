@@ -9,11 +9,12 @@ Deno.serve(async (request) => {
     const mode = body.mode as "single" | "multi";
     const uploadIds = body.uploadIds as string[];
     const maxRounds = Number(body.maxRounds);
+    const researchBrief = typeof body.researchBrief === "string" ? body.researchBrief.trim() : "";
     if (!Array.isArray(uploadIds) || !["single", "multi"].includes(mode) || !Number.isInteger(maxRounds)) {
       throw new HttpError(400, "Invalid analysis request");
     }
     const expected = mode === "single" ? uploadIds.length === 1 : uploadIds.length >= 2 && uploadIds.length <= 5;
-    if (!expected || maxRounds < 1 || maxRounds > 5) throw new HttpError(400, "Invalid mode, PDF count, or rounds");
+    if (!expected || maxRounds < 1 || maxRounds > 5 || researchBrief.length > 2000) throw new HttpError(400, "Invalid mode, PDF count, rounds, or research brief");
     await verifyTurnstile(body.turnstileToken, request.headers.get("CF-Connecting-IP"));
 
     const { data: uploads, error: uploadsError } = await admin
@@ -41,6 +42,7 @@ Deno.serve(async (request) => {
       p_file_ids: uploadIds,
       p_max_rounds: maxRounds,
       p_languages: ["zh", "en"],
+      p_research_brief: researchBrief,
     });
     if (error) {
       throw new HttpError(409, error.message);

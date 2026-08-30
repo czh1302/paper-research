@@ -24,8 +24,11 @@ from .models import (
     DocumentBlock,
     DocumentIR,
     Evidence,
+    EvidenceLocator,
+    GroundedClaim,
     IdeaAssessment,
     IdeaAssessmentBatch,
+    IdeaComparisonBoard,
     IdeaComparisonMatrix,
     IdeaComparisonRow,
     IdeaDraft,
@@ -33,9 +36,15 @@ from .models import (
     IdeaEvidence,
     IdeaQueryPlanBatch,
     IdeaResearchRound,
+    IdeaReview,
+    IdeaReviewBatch,
     Job,
     JobStatus,
     JointProblemStatement,
+    LiteratureLandscape,
+    LiteratureLandscapeDraft,
+    PaperEvidenceProfile,
+    PaperRankingBatch,
     ProblemBrief,
     ProblemStatement,
     ProviderUsage,
@@ -43,9 +52,12 @@ from .models import (
     RejectedIdea,
     ReportPresentation,
     ReportPresentationV3,
+    ReportPresentationV4,
     ResearchOpportunity,
     RoundAnalysis,
     SearchQuery,
+    SubmissionIdea,
+    SubmissionIdeaBatch,
     WebDiscovery,
 )
 from .prompts import (
@@ -53,14 +65,20 @@ from .prompts import (
     brainstorm_ideas_prompt,
     idea_assessment_prompt,
     idea_query_plan_prompt,
+    idea_review_prompt,
     joint_problem_prompt,
+    landscape_prompt,
+    literature_followup_query_prompt,
     merge_problem_prompt,
+    paper_profile_prompt,
+    paper_ranking_prompt,
     problem_brief_prompt,
     problem_brief_review_prompt,
     problem_statement_prompt,
     query_prompt,
     report_presentation_prompt,
     round_analysis_prompt,
+    submission_ideas_prompt,
     web_discovery_prompt,
 )
 from .reporting import DISCLAIMER_EN, DISCLAIMER_ZH, report_markdown, report_visualization_data
@@ -830,6 +848,358 @@ def ground_problem(problem: ProblemStatement, blocks: list[DocumentBlock]) -> Pr
     return problem.model_copy(update=updates)
 
 
+def _problem_evidence_types(problem: ProblemStatement) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in problem.inputs:
+        result.update({value: "input" for value in item.evidence_ids})
+    for item in problem.outputs:
+        result.update({value: "output" for value in item.evidence_ids})
+    result.update({value: "algorithm" for value in problem.algorithm_evidence_ids})
+    for item in problem.constraints + problem.assumptions:
+        result.update({value: "constraint" for value in item.evidence_ids})
+    return result
+
+
+def attach_problem_asset(problem: ProblemStatement, asset_id: str) -> ProblemStatement:
+    evidence_types = _problem_evidence_types(problem)
+    evidence = [
+        item.model_copy(
+            update={
+                "asset_id": asset_id,
+                "bboxes": [item.bbox] if item.bbox else [],
+                "evidence_type": evidence_types.get(item.id, "algorithm"),
+            }
+        )
+        for item in problem.evidence
+    ]
+    return problem.model_copy(update={"evidence": evidence})
+
+
+def evidence_locators(problem: ProblemStatement) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": item.id,
+            "asset_id": item.asset_id,
+            "paper_id": item.paper_id,
+            "page": item.page,
+            "quote": item.text,
+            "section": item.section,
+            "evidence_type": item.evidence_type,
+            "bboxes": item.bboxes,
+        }
+        for item in problem.evidence
+        if item.asset_id and item.page
+    ]
+
+
+def _claim_from_problem(
+    problem: ProblemStatement,
+    claim_zh: str,
+    claim_en: str,
+    ids: list[str],
+) -> GroundedClaim:
+    by_id = {item.id: item for item in problem.evidence}
+    locators = [
+        EvidenceLocator(
+            id=item.id,
+            asset_id=item.asset_id or "unavailable",
+            paper_id=item.paper_id,
+            page=item.page or 1,
+            quote=item.text,
+            section=item.section,
+            evidence_type=item.evidence_type or "algorithm",
+            bboxes=item.bboxes,
+        )
+        for evidence_id in dict.fromkeys(ids)
+        if (item := by_id.get(evidence_id)) is not None
+    ]
+    if not locators:
+        fallback = problem.evidence[0]
+        locators = [
+            EvidenceLocator(
+                id=fallback.id,
+                asset_id=fallback.asset_id or "unavailable",
+                paper_id=fallback.paper_id,
+                page=fallback.page or 1,
+                quote=fallback.text,
+                section=fallback.section,
+                evidence_type=fallback.evidence_type or "algorithm",
+                bboxes=fallback.bboxes,
+            )
+        ]
+    return GroundedClaim(claim_zh=claim_zh, claim_en=claim_en, evidence=locators)
+
+
+def build_input_profile(problem: ProblemStatement) -> PaperEvidenceProfile:
+    input_ids = [value for item in problem.inputs for value in item.evidence_ids]
+    output_ids = [value for item in problem.outputs + problem.metrics for value in item.evidence_ids]
+    constraint_ids = [
+        value
+        for item in problem.constraints + problem.assumptions
+        for value in item.evidence_ids
+    ]
+    input_zh = "；".join(item.description_zh for item in problem.inputs)
+    input_en = "; ".join(item.description_en for item in problem.inputs)
+    output_zh = "；".join(
+        item.description_zh for item in problem.outputs + problem.metrics
+    )
+    output_en = "; ".join(
+        item.description_en for item in problem.outputs + problem.metrics
+    )
+    constraints_zh = "；".join(item.description_zh for item in problem.constraints)
+    constraints_en = "; ".join(item.description_en for item in problem.constraints)
+    limitations_zh = "；".join(
+        item.description_zh for item in problem.assumptions or problem.constraints
+    )
+    limitations_en = "; ".join(
+        item.description_en for item in problem.assumptions or problem.constraints
+    )
+    return PaperEvidenceProfile(
+        paper_id=problem.paper_id,
+        title=problem.title,
+        role="input",
+        evidence_grade="input_pdf",
+        task=_claim_from_problem(
+            problem, problem.task_zh, problem.task_en, problem.task_evidence_ids
+        ),
+        input_or_data=_claim_from_problem(problem, input_zh, input_en, input_ids),
+        method=_claim_from_problem(
+            problem,
+            problem.algorithm_zh,
+            problem.algorithm_en,
+            problem.algorithm_evidence_ids,
+        ),
+        output_or_evaluation=_claim_from_problem(
+            problem, output_zh, output_en, output_ids
+        ),
+        constraints=_claim_from_problem(
+            problem, constraints_zh, constraints_en, constraint_ids
+        ),
+        limitations=_claim_from_problem(
+            problem, limitations_zh, limitations_en, constraint_ids
+        ),
+    )
+
+
+def ground_paper_profile(
+    profile: PaperEvidenceProfile,
+    paper: CandidatePaper,
+    document: DocumentIR,
+    asset_id: str,
+) -> PaperEvidenceProfile:
+    blocks = {item.id: item for item in document.blocks}
+
+    def ground_claim(claim: GroundedClaim) -> GroundedClaim:
+        locators: list[EvidenceLocator] = []
+        for locator in claim.evidence:
+            block = blocks.get(locator.id)
+            if not block or not block.page or not block.text.strip():
+                continue
+            quote = locator.quote.strip()
+            if quote not in block.text:
+                quote = block.text[:1800]
+            locators.append(
+                locator.model_copy(
+                    update={
+                        "asset_id": asset_id,
+                        "paper_id": paper.canonical_id,
+                        "page": block.page,
+                        "section": block.section,
+                        "quote": quote,
+                        "evidence_type": "external",
+                        "bboxes": [block.bbox] if block.bbox else [],
+                    }
+                )
+            )
+        if not locators:
+            raise ValueError(f"Profile field for {paper.canonical_id} lacks full-text evidence")
+        return claim.model_copy(update={"evidence": locators})
+
+    fields = {
+        name: ground_claim(getattr(profile, name))
+        for name in (
+            "task",
+            "input_or_data",
+            "method",
+            "output_or_evaluation",
+            "constraints",
+            "limitations",
+        )
+    }
+    return profile.model_copy(
+        update={
+            "paper_id": paper.canonical_id,
+            "title": paper.title,
+            "year": paper.year,
+            "venue": paper.venue,
+            "source_url": paper.url,
+            "pdf_url": paper.pdf_url,
+            "role": "external",
+            "evidence_grade": "full_text",
+            **fields,
+        }
+    )
+
+
+def profile_locators(profile: PaperEvidenceProfile) -> list[dict[str, Any]]:
+    return [
+        item.model_dump(mode="json")
+        for name in (
+            "task",
+            "input_or_data",
+            "method",
+            "output_or_evaluation",
+            "constraints",
+            "limitations",
+        )
+        for item in getattr(profile, name).evidence
+    ]
+
+
+def finalize_v4_ideas(
+    drafts: list[SubmissionIdea],
+    reviews: list[IdeaReview],
+    profiles: list[PaperEvidenceProfile],
+) -> tuple[list[SubmissionIdea], list[IdeaReview], list[IdeaComparisonBoard]]:
+    profile_map = {
+        item.paper_id: item for item in profiles if item.role == "external"
+    }
+    input_profile = next(item for item in profiles if item.role == "input")
+    draft_map = {item.key: item for item in drafts}
+    final_reviews: list[IdeaReview] = []
+    eligible: list[SubmissionIdea] = []
+    for review in reviews:
+        draft = draft_map.get(review.idea_key)
+        if not draft:
+            continue
+        closest = [value for value in dict.fromkeys(review.closest_work_ids) if value in profile_map]
+        supporting = [value for value in dict.fromkeys(review.supporting_work_ids) if value in profile_map]
+        counter = [value for value in dict.fromkeys(review.counterevidence_work_ids) if value in profile_map]
+        evidence_ids = list(dict.fromkeys(closest + supporting + counter))
+        passes = (
+            len(evidence_ids) >= 6
+            and len(closest) >= 2
+            and len(supporting) >= 2
+            and review.collision_risk != "high"
+            and review.feasibility >= 0.65
+            and review.evidence_confidence >= 0.70
+            and review.submission_value >= 0.70
+        )
+        decision = review.decision if passes else "needs_evidence"
+        if review.collision_risk == "high":
+            decision = "rejected"
+        grounded_review = review.model_copy(
+            update={
+                "decision": decision,
+                "closest_work_ids": closest,
+                "supporting_work_ids": supporting,
+                "counterevidence_work_ids": counter,
+            }
+        )
+        final_reviews.append(grounded_review)
+        if passes:
+            eligible.append(
+                draft.model_copy(
+                    update={
+                        "closest_work_ids": closest,
+                        "supporting_work_ids": supporting,
+                        "counterevidence_work_ids": counter,
+                        "feasibility": review.feasibility,
+                        "submission_value": review.submission_value,
+                        "evidence_confidence": review.evidence_confidence,
+                        "collision_risk": review.collision_risk,
+                    }
+                )
+            )
+    eligible.sort(
+        key=lambda item: (
+            item.submission_value,
+            item.evidence_confidence,
+            item.feasibility,
+        ),
+        reverse=True,
+    )
+    selected: list[SubmissionIdea] = []
+    boards: list[IdeaComparisonBoard] = []
+    for index, item in enumerate(eligible[:3], start=1):
+        verdict = "recommended" if index == 1 else "alternative"
+        selected_item = item.model_copy(update={"rank": index, "verdict": verdict})
+        selected.append(selected_item)
+        paper_ids = list(
+            dict.fromkeys(
+                selected_item.closest_work_ids
+                + selected_item.supporting_work_ids
+                + selected_item.counterevidence_work_ids
+            )
+        )[:10]
+        boards.append(
+            IdeaComparisonBoard(
+                idea_key=selected_item.key,
+                input_paper_id=input_profile.paper_id,
+                external_paper_ids=paper_ids,
+                profiles=[input_profile] + [profile_map[value] for value in paper_ids],
+            )
+        )
+    selected_keys = {item.key for item in selected}
+    final_reviews = [
+        item.model_copy(
+            update={
+                "decision": (
+                    "recommended"
+                    if item.idea_key == (selected[0].key if selected else None)
+                    else "alternative"
+                    if item.idea_key in selected_keys
+                    else item.decision
+                )
+            }
+        )
+        for item in final_reviews
+    ]
+    return selected, final_reviews, boards
+
+
+def report_summary(report: AnalysisReport) -> dict[str, Any]:
+    selected_ids: set[str] = set()
+    payload = report.model_dump(mode="json")
+    if isinstance(report.presentation, ReportPresentationV4):
+        selected_ids = {
+            paper_id
+            for board in report.presentation.comparison_boards
+            for paper_id in board.external_paper_ids
+        }
+        presentation = payload["presentation"]
+
+        def compact_profile(profile: dict[str, Any]) -> dict[str, Any]:
+            for name in (
+                "task",
+                "input_or_data",
+                "method",
+                "output_or_evaluation",
+                "constraints",
+                "limitations",
+            ):
+                for locator in profile[name]["evidence"]:
+                    locator["quote"] = locator["quote"][:500]
+            return profile
+
+        landscape = presentation["literature_landscape"]
+        landscape["profiles"] = [
+            compact_profile(profile)
+            for profile in landscape["profiles"]
+            if profile["role"] == "input" or profile["paper_id"] in selected_ids
+        ]
+        for board in presentation["comparison_boards"]:
+            board["profiles"] = [compact_profile(profile) for profile in board["profiles"]]
+    payload["related_papers"] = [
+        item.model_dump(mode="json")
+        for item in report.related_papers
+        if not selected_ids or item.canonical_id in selected_ids
+    ]
+    payload["search_audit"] = []
+    payload["rounds"] = payload["rounds"][-1:]
+    return payload
+
+
 class AnalysisPipeline:
     def __init__(self, settings: Settings, repository: Any | None = None) -> None:
         self.settings = settings
@@ -1340,6 +1710,389 @@ class AnalysisPipeline:
         )
         return idea_round, bundle, all_candidates, audit
 
+    async def _v4_retrieve_landscape(
+        self,
+        job: Job,
+        problems: list[ProblemStatement],
+        deadline: float,
+        *,
+        persist: bool,
+    ) -> tuple[list[CandidatePaper], list[dict[str, object]], list[QueryBundle]]:
+        all_candidates: list[CandidatePaper] = []
+        audit: list[dict[str, object]] = []
+        bundles: list[QueryBundle] = []
+        low_gain_batches = 0
+        previous_high: set[str] = set()
+        required_sources = {source.name for source in self.retriever.sources}
+        attempted_sources: set[str] = set()
+        for batch_number in range(1, self.settings.V4_MAX_RETRIEVAL_BATCHES + 1):
+            if asyncio.get_running_loop().time() >= deadline:
+                break
+            await self._cancel_guard(job.id)
+            await self._event(
+                job.id,
+                "stage",
+                f"Building literature landscape: retrieval batch {batch_number}",
+            )
+            if batch_number == 1:
+                bundle = await self._call_llm(
+                    query_prompt(problems, 1, None), QueryBundle
+                )
+            else:
+                bundle = await self._call_llm(
+                    literature_followup_query_prompt(
+                        problems, all_candidates, batch_number
+                    ),
+                    QueryBundle,
+                )
+            bundle.round_number = 1
+            bundles.append(bundle)
+            (batch_candidates, batch_audit), web_discovery = await asyncio.gather(
+                self.retriever.retrieve(bundle, per_source_limit=12),
+                self._discover_web(bundle),
+            )
+            attempted_sources.update(
+                str(item.get("source"))
+                for item in batch_audit
+                if item.get("source")
+            )
+            for paper in web_discovery.papers:
+                paper.sources = sorted(set(paper.sources + ["deepseek_websearch"]))
+                paper.queries = sorted(
+                    set(paper.queries + web_discovery.searched_queries)
+                )
+            attempted_sources.add("deepseek_websearch")
+            batch_candidates = [
+                item
+                for item in merge_candidates(batch_candidates + web_discovery.papers)
+                if candidate_is_computer_science_relevant(item)
+            ]
+            previous_ids = {item.canonical_id for item in all_candidates}
+            all_candidates = rank_candidates(
+                merge_candidates(all_candidates + batch_candidates), bundle
+            )
+            current_high = {
+                item.canonical_id for item in all_candidates[: max(40, len(all_candidates) // 3)]
+            }
+            new_high = current_high - previous_high
+            gain = len(new_high) / max(1, len(current_high))
+            low_gain_batches = low_gain_batches + 1 if gain < 0.05 else 0
+            previous_high |= current_high
+            audit.extend(
+                {"batch": batch_number, **item} for item in batch_audit
+            )
+            audit.extend(
+                {
+                    "batch": batch_number,
+                    "source": "deepseek_websearch",
+                    "query": query,
+                    "count": len(web_discovery.papers),
+                    "warning": "; ".join(web_discovery.warnings) or None,
+                }
+                for query in web_discovery.searched_queries
+                or [item.query for item in bundle.queries]
+            )
+            await self._event(
+                job.id,
+                "retrieval_batch",
+                f"Retrieval batch {batch_number} added {len([item for item in all_candidates if item.canonical_id not in previous_ids])} papers",
+                {
+                    "candidate_count": len(all_candidates),
+                    "new_high_relevance": len(new_high),
+                    "high_relevance_gain": round(gain, 4),
+                    "covered_sources": sorted(attempted_sources),
+                },
+            )
+            if self.repository and persist:
+                await self.repository.save_candidates(
+                    job.id,
+                    [item.model_dump(mode="json") for item in all_candidates],
+                )
+            if low_gain_batches >= 2 and required_sources <= attempted_sources:
+                await self._event(
+                    job.id,
+                    "retrieval_converged",
+                    "Literature retrieval converged after two low-gain batches",
+                )
+                break
+        return all_candidates, audit, bundles
+
+    async def _v4_rank_full_text(
+        self,
+        problems: list[ProblemStatement],
+        candidates: list[CandidatePaper],
+    ) -> list[CandidatePaper]:
+        eligible = [
+            item
+            for item in candidates
+            if item.pdf_url
+            and (
+                item.open_access is True
+                or bool({"arxiv", "openreview"}.intersection(item.sources))
+            )
+            and item.abstract.strip()
+            and item.evidence_grade in {"abstract", "full_text"}
+            and candidate_is_computer_science_relevant(item)
+        ]
+        if not eligible:
+            return []
+        batch = await self._call_llm(
+            paper_ranking_prompt(problems, eligible), PaperRankingBatch
+        )
+        scores = {
+            item.paper_id: item.relevance
+            for item in batch.rankings
+            if item.paper_id in {paper.canonical_id for paper in eligible}
+        }
+        return sorted(
+            eligible,
+            key=lambda item: (
+                scores.get(item.canonical_id, 0),
+                item.relevance_score,
+                item.citation_count or 0,
+            ),
+            reverse=True,
+        )
+
+    async def _v4_external_profiles(
+        self,
+        job: Job,
+        candidates: list[CandidatePaper],
+        workspace: Path,
+        deadline: float,
+        *,
+        persist: bool,
+    ) -> list[PaperEvidenceProfile]:
+        target = self.settings.V4_FULL_TEXT_TARGET
+        pool = candidates[: min(len(candidates), target * 2)]
+        profiles: list[PaperEvidenceProfile] = []
+        download_dir = workspace / "v4-external-pdfs"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(90, connect=20), follow_redirects=True
+        )
+        semaphore = asyncio.Semaphore(3)
+
+        async def profile_one(index: int, paper: CandidatePaper) -> PaperEvidenceProfile | None:
+            if asyncio.get_running_loop().time() >= deadline:
+                return None
+            async with semaphore:
+                path = download_dir / f"{index:03d}.pdf"
+                try:
+                    await self._cancel_guard(job.id)
+                    url = validate_public_url(str(paper.pdf_url), resolve_dns=True)
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    validate_public_url(str(response.url), resolve_dns=True)
+                    if len(response.content) > 50 * 1024 * 1024:
+                        raise ValueError("external PDF exceeds 50 MB")
+                    await asyncio.to_thread(path.write_bytes, response.content)
+                    validate_pdf(path)
+                    document = await asyncio.wait_for(
+                        self.parse_document(
+                            path,
+                            f"external-{hashlib.sha256(paper.canonical_id.encode()).hexdigest()[:24]}",
+                            paper.title,
+                            workspace,
+                        ),
+                        timeout=min(
+                            self.settings.EXTERNAL_PDF_TIMEOUT_SECONDS,
+                            max(60, int(deadline - asyncio.get_running_loop().time())),
+                        ),
+                    )
+                    placeholder = f"pending-{hashlib.sha256(paper.canonical_id.encode()).hexdigest()[:24]}"
+                    draft = await self._call_llm(
+                        paper_profile_prompt(paper, document, placeholder),
+                        PaperEvidenceProfile,
+                    )
+                    grounded = ground_paper_profile(
+                        draft, paper, document, placeholder
+                    )
+                    if self.repository and persist and hasattr(self.repository, "upload_external_asset"):
+                        asset_id = await self.repository.upload_external_asset(
+                            job.id,
+                            paper.canonical_id,
+                            paper.title,
+                            str(paper.url),
+                            path,
+                            {"evidence_locators": []},
+                            license_name=(
+                                "open access; source license not stated"
+                                if paper.open_access
+                                else "publicly accessible source; license not stated"
+                            ),
+                        )
+                        grounded = ground_paper_profile(
+                            draft, paper, document, asset_id
+                        )
+                        await self.repository.update_evidence_asset_metadata(
+                            asset_id,
+                            {
+                                "title": paper.title,
+                                "official_url": paper.url,
+                                "pdf_url": paper.pdf_url,
+                                "evidence_locators": profile_locators(grounded),
+                            },
+                        )
+                    paper.evidence_grade = "full_text"
+                    await self._event(
+                        job.id,
+                        "external_profile",
+                        f"Built complete evidence profile {len(profiles) + 1}/{target}",
+                        {"paper_id": paper.canonical_id},
+                    )
+                    return grounded
+                except Exception as error:
+                    LOGGER.warning(
+                        "V4 full-text profile failed for %s: %s", paper.url, error
+                    )
+                    return None
+                finally:
+                    path.unlink(missing_ok=True)
+
+        try:
+            for start in range(0, len(pool), 3):
+                if len(profiles) >= target or asyncio.get_running_loop().time() >= deadline:
+                    break
+                results = await asyncio.gather(
+                    *(
+                        profile_one(index, paper)
+                        for index, paper in enumerate(
+                            pool[start : start + 3], start=start
+                        )
+                    )
+                )
+                profiles.extend(item for item in results if item is not None)
+        finally:
+            await client.aclose()
+        return profiles[:target]
+
+    async def _run_v4_pipeline(
+        self,
+        job: Job,
+        problems: list[ProblemStatement],
+        briefs: list[ProblemBrief],
+        workspace: Path,
+        *,
+        persist: bool,
+    ) -> tuple[
+        ReportPresentationV4,
+        list[CandidatePaper],
+        list[dict[str, object]],
+        list[QueryBundle],
+    ]:
+        deadline = (
+            asyncio.get_running_loop().time() + self.settings.V4_MAX_MINUTES * 60
+        )
+        candidates, audit, bundles = await self._v4_retrieve_landscape(
+            job, problems, deadline, persist=persist
+        )
+        await self._event(
+            job.id,
+            "stage",
+            "Reranking candidates for open full-text review",
+        )
+        ranked = await self._v4_rank_full_text(problems, candidates)
+        external_profiles = await self._v4_external_profiles(
+            job, ranked, workspace, deadline, persist=persist
+        )
+        input_profiles = [build_input_profile(item) for item in problems]
+        profiles = input_profiles + external_profiles
+        minimum_full_text = min(20, self.settings.V4_FULL_TEXT_TARGET)
+        if len(external_profiles) < minimum_full_text:
+            raise ValueError(
+                "V4 full-text evidence threshold was not met: "
+                f"built {len(external_profiles)} complete profiles, "
+                f"requires {minimum_full_text}"
+            )
+        await self._event(
+            job.id,
+            "stage",
+            f"Synthesizing research landscape from {len(external_profiles)} full-text papers",
+        )
+        landscape_draft = await self._call_llm(
+            landscape_prompt(profiles), LiteratureLandscapeDraft
+        )
+        allowed_ids = {item.paper_id for item in profiles}
+        themes = [
+            item.model_copy(
+                update={
+                    "paper_ids": [
+                        value for value in dict.fromkeys(item.paper_ids) if value in allowed_ids
+                    ]
+                }
+            )
+            for item in landscape_draft.themes
+        ]
+        themes = [item for item in themes if item.paper_ids]
+        if len(themes) < 2:
+            raise ValueError("V4 landscape synthesis did not retain two grounded themes")
+        landscape = LiteratureLandscape(
+            overview_zh=landscape_draft.overview_zh,
+            overview_en=landscape_draft.overview_en,
+            candidate_count=len(candidates),
+            screened_count=len(ranked),
+            full_text_count=len(external_profiles),
+            source_counts=source_coverage(candidates),
+            themes=themes,
+            profiles=profiles,
+        )
+        await self._event(
+            job.id,
+            "stage",
+            "Proposing paper-core Ideas after the literature review",
+        )
+        idea_batch = await self._call_llm(
+            submission_ideas_prompt(
+                problems,
+                briefs,
+                landscape.model_dump(mode="json", exclude={"profiles"}),
+                profiles,
+                job.research_brief,
+            ),
+            SubmissionIdeaBatch,
+        )
+        profile_ids = {item.paper_id for item in external_profiles}
+        grounded_drafts: list[SubmissionIdea] = []
+        for item in idea_batch.ideas:
+            values = item.model_dump(mode="json")
+            for name in (
+                "closest_work_ids",
+                "supporting_work_ids",
+                "counterevidence_work_ids",
+            ):
+                values[name] = [
+                    value
+                    for value in dict.fromkeys(values[name])
+                    if value in profile_ids
+                ]
+            if len(values["closest_work_ids"]) >= 2 and len(values["supporting_work_ids"]) >= 2:
+                grounded_drafts.append(SubmissionIdea.model_validate(values))
+        if not grounded_drafts:
+            raise ValueError("V4 Idea generation did not retain any grounded proposal")
+        review_batch = await self._call_llm(
+            idea_review_prompt(
+                [item.model_dump(mode="json") for item in grounded_drafts],
+                profiles,
+            ),
+            IdeaReviewBatch,
+        )
+        selected, reviews, boards = finalize_v4_ideas(
+            grounded_drafts, review_batch.reviews, profiles
+        )
+        headline_zh = briefs[0].research_question_zh
+        headline_en = briefs[0].research_question_en
+        presentation = ReportPresentationV4(
+            headline_zh=headline_zh,
+            headline_en=headline_en,
+            problem_briefs=briefs,
+            literature_landscape=landscape,
+            ideas=selected,
+            reviews=reviews,
+            comparison_boards=boards,
+        )
+        return presentation, candidates, audit, bundles
+
     async def _discover_web(self, bundle: QueryBundle) -> WebDiscovery:
         if self.settings.SEARCH_PROFILE == "academic_only":
             return WebDiscovery(warnings=["Web retrieval disabled by academic_only ablation"])
@@ -1511,6 +2264,31 @@ class AnalysisPipeline:
                     )
 
             joint: JointProblemStatement | None = None
+            grounded_with_assets: list[ProblemStatement] = []
+            for job_file, problem in zip(job.files, problems, strict=True):
+                if self.repository and persist and hasattr(self.repository, "register_input_asset"):
+                    asset_id = await self.repository.register_input_asset(
+                        job.id, job_file, problem.paper_id, {"evidence_locators": []}
+                    )
+                else:
+                    asset_id = f"unavailable-{problem.paper_id[:24]}"
+                problem = attach_problem_asset(problem, asset_id)
+                if self.repository and persist and hasattr(self.repository, "update_evidence_asset_metadata"):
+                    await self.repository.update_evidence_asset_metadata(
+                        asset_id,
+                        {
+                            "title": problem.title,
+                            "evidence_locators": evidence_locators(problem),
+                        },
+                    )
+                    await self.repository.save_problem_statement(
+                        job.id,
+                        problem.paper_id,
+                        problem.model_dump(mode="json"),
+                    )
+                grounded_with_assets.append(problem)
+            problems = grounded_with_assets
+
             if job.mode == AnalysisMode.MULTI:
                 stored_joint = next(
                     (row for row in stored_state["problems"] if row["paper_id"] == "__joint__"),
@@ -1531,7 +2309,7 @@ class AnalysisPipeline:
             await self._event(job.id, "stage", "Problem statement ready")
 
             problem_briefs: list[ProblemBrief] = []
-            if self.settings.IDEA_PIPELINE_V3:
+            if self.settings.IDEA_PIPELINE_V3 or self.settings.IDEA_PIPELINE_V4:
                 await self._event(
                     job.id,
                     "stage",
@@ -1561,6 +2339,81 @@ class AnalysisPipeline:
                         await self.repository.save_pipeline_checkpoint(
                             job.id, pipeline_checkpoint
                         )
+
+            if self.settings.IDEA_PIPELINE_V4:
+                await self._update(
+                    job.id, JobStatus.SEARCHING, "v4_literature_landscape", 35, current_round=1
+                )
+                presentation_v4, all_candidates, search_audit, bundles = (
+                    await self._run_v4_pipeline(
+                        job,
+                        problems,
+                        problem_briefs,
+                        workspace_path,
+                        persist=persist,
+                    )
+                )
+                external_ids = {
+                    item.paper_id
+                    for item in presentation_v4.literature_landscape.profiles
+                    if item.role == "external"
+                }
+                round_result = RoundAnalysis(
+                    summary_zh=presentation_v4.literature_landscape.overview_zh,
+                    summary_en=presentation_v4.literature_landscape.overview_en,
+                    comparison_cells=[],
+                    opportunities=[],
+                    covered_axes=[
+                        "task", "input", "method", "output", "evaluation", "constraints", "limitations"
+                    ],
+                    uncovered_axes=[],
+                    high_relevance_ids=list(external_ids)[:30],
+                )
+                if self.repository and persist:
+                    await self.repository.save_candidates(
+                        job.id,
+                        [item.model_dump(mode="json") for item in all_candidates],
+                    )
+                    await self.repository.save_search_round(
+                        job.id,
+                        1,
+                        {
+                            "v4": True,
+                            "bundles": [item.model_dump(mode="json") for item in bundles],
+                            "audit": search_audit,
+                        },
+                        round_result.model_dump(mode="json"),
+                    )
+                await self._update(job.id, JobStatus.RENDERING, "rendering", 92)
+                report = AnalysisReport(
+                    job_id=job.id,
+                    problem_statements=problems,
+                    joint_problem_statement=joint,
+                    related_papers=all_candidates,
+                    rounds=[round_result],
+                    search_audit=search_audit,
+                    parser_audit=parser_audit,
+                    source_coverage={
+                        "counts": source_coverage(all_candidates),
+                        "queries": len(search_audit),
+                        "rounds_completed": 1,
+                        "visualizations": {},
+                    },
+                    limitations_zh=DISCLAIMER_ZH,
+                    limitations_en=DISCLAIMER_EN,
+                    presentation=presentation_v4,
+                )
+                report.source_coverage["visualizations"] = report_visualization_data(report)
+                markdown = report_markdown(report)
+                if self.repository and persist:
+                    await self.repository.save_report(
+                        job.id,
+                        report.model_dump(mode="json"),
+                        markdown,
+                        report_summary(report),
+                    )
+                await self._event(job.id, "completed", "V4 evidence-first report generated")
+                return report
 
             stored_round_rows = stored_state["rounds"]
             if self.settings.IDEA_PIPELINE_V3:

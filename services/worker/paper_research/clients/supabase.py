@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -74,6 +75,7 @@ class SupabaseRepository:
             status=row["status"],
             current_round=row.get("current_round", 0),
             stage=row.get("stage", "queued"),
+            research_brief=row.get("research_brief") or "",
             checkpoint=row.get("checkpoint") or {},
             files=files,
         )
@@ -139,7 +141,14 @@ class SupabaseRepository:
         response = await self._request("POST", "/rest/v1/rpc/claim_expired_storage", json={})
         rows = response.json() or []
         upload_rows = [row for row in rows if row.get("kind") == "upload"]
-        paths = [row["storage_path"] for row in upload_rows if row.get("storage_path")]
+        orphan_rows = [row for row in rows if row.get("kind") == "orphan"]
+        paths = list(
+            dict.fromkeys(
+                row["storage_path"]
+                for row in upload_rows + orphan_rows
+                if row.get("storage_path")
+            )
+        )
         if paths:
             await self._request("DELETE", "/storage/v1/object/papers", json={"prefixes": paths})
             ids = ",".join(quote(row["record_id"]) for row in upload_rows)
@@ -149,8 +158,16 @@ class SupabaseRepository:
                 headers={"Prefer": "return=minimal"},
                 json={"status": "deleted"},
             )
+        if orphan_rows:
+            ids = ",".join(quote(row["record_id"]) for row in orphan_rows)
+            await self._request(
+                "DELETE",
+                f"/rest/v1/storage_deletion_queue?id=in.({ids})",
+                headers={"Prefer": "return=minimal"},
+            )
         return {
-            "uploads": len(paths),
+            "uploads": len(upload_rows),
+            "orphans": len(orphan_rows),
             "reports": sum(1 for row in rows if row.get("kind") == "report"),
         }
 
@@ -193,6 +210,79 @@ class SupabaseRepository:
                 json={"status": "deleted"},
             )
 
+    async def register_input_asset(
+        self,
+        job_id: str,
+        file: JobFile,
+        paper_id: str,
+        metadata: dict[str, Any],
+    ) -> str:
+        response = await self._request(
+            "POST",
+            "/rest/v1/report_evidence_assets?on_conflict=job_id,paper_id,source_kind",
+            headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+            json={
+                "job_id": job_id,
+                "upload_id": file.id,
+                "paper_id": paper_id,
+                "source_kind": "input",
+                "storage_path": file.storage_path,
+                "original_name": file.original_name,
+                "sha256": paper_id,
+                "metadata": metadata,
+            },
+        )
+        return str(response.json()[0]["id"])
+
+    async def upload_external_asset(
+        self,
+        job_id: str,
+        paper_id: str,
+        title: str,
+        source_url: str,
+        pdf_path: Path,
+        metadata: dict[str, Any],
+        *,
+        license_name: str | None = None,
+    ) -> str:
+        content = pdf_path.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        storage_path = f"evidence/{job_id}/{digest}.pdf"
+        encoded_path = "/".join(quote(part, safe="") for part in storage_path.split("/"))
+        await self._request(
+            "POST",
+            f"/storage/v1/object/papers/{encoded_path}",
+            headers={"Content-Type": "application/pdf", "x-upsert": "true"},
+            content=content,
+        )
+        response = await self._request(
+            "POST",
+            "/rest/v1/report_evidence_assets?on_conflict=job_id,paper_id,source_kind",
+            headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+            json={
+                "job_id": job_id,
+                "paper_id": paper_id,
+                "source_kind": "external",
+                "storage_path": storage_path,
+                "original_name": f"{title[:140]}.pdf",
+                "sha256": digest,
+                "source_url": source_url,
+                "license": license_name,
+                "metadata": metadata,
+            },
+        )
+        return str(response.json()[0]["id"])
+
+    async def update_evidence_asset_metadata(
+        self, asset_id: str, metadata: dict[str, Any]
+    ) -> None:
+        await self._request(
+            "PATCH",
+            f"/rest/v1/report_evidence_assets?id=eq.{quote(asset_id)}",
+            headers={"Prefer": "return=minimal"},
+            json={"metadata": metadata},
+        )
+
     async def save_problem_statement(
         self, job_id: str, paper_id: str, payload: dict[str, Any]
     ) -> None:
@@ -232,13 +322,27 @@ class SupabaseRepository:
             json=rows,
         )
 
-    async def save_report(self, job_id: str, payload: dict[str, Any], markdown: str) -> None:
-        await self._request(
+    async def save_report(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        markdown: str,
+        summary: dict[str, Any] | None = None,
+    ) -> str:
+        response = await self._request(
             "POST",
             "/rest/v1/reports?on_conflict=job_id",
-            headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
-            json={"job_id": job_id, "content": payload, "markdown": markdown},
+            headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+            json={"job_id": job_id, "content": payload, "markdown": markdown, "summary": summary},
         )
+        report_id = str(response.json()[0]["id"])
+        await self._request(
+            "PATCH",
+            f"/rest/v1/report_evidence_assets?job_id=eq.{quote(job_id)}",
+            headers={"Prefer": "return=minimal"},
+            json={"report_id": report_id},
+        )
+        return report_id
 
     async def record_usage(self, job_id: str, usage: ProviderUsage) -> None:
         await self._request(

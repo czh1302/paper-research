@@ -5,7 +5,7 @@ import io
 from collections import Counter
 from typing import Literal
 
-from .models import AnalysisReport, ReportPresentationV3
+from .models import AnalysisReport, ReportPresentationV3, ReportPresentationV4
 
 DISCLAIMER_ZH = (
     "截至检索日期，本报告仅说明在本次查询和数据源范围内发现的证据，不构成绝对新颖性证明。"
@@ -35,6 +35,67 @@ def report_markdown(
             references[url] = label
             values.append(f"[{label}]({url})")
         return "; ".join(values)
+
+    if isinstance(presentation, ReportPresentationV4):
+        lines.extend([
+            f"## {'研究问题' if zh else 'Research question'}", "",
+            presentation.headline_zh if zh else presentation.headline_en,
+        ])
+        for brief in presentation.problem_briefs:
+            lines.extend(["", f"### {brief.title}", "", f"**{'输入' if zh else 'Inputs'}**"])
+            for item in brief.inputs:
+                lines.append(f"- **{item.label_zh if zh else item.label_en}**：{item.explanation_zh if zh else item.explanation_en}")
+            lines.extend(["", f"**{'输出' if zh else 'Outputs'}**"])
+            for item in brief.outputs:
+                lines.append(f"- **{item.label_zh if zh else item.label_en}**：{item.explanation_zh if zh else item.explanation_en}")
+            lines.extend(["", f"**{'算法与关键约束' if zh else 'Algorithm and constraints'}**"])
+            for step in brief.algorithm_steps:
+                lines.append(f"{step.order}. **{step.title_zh if zh else step.title_en}**：{step.explanation_zh if zh else step.explanation_en}")
+            for item in brief.constraints:
+                lines.append(f"- {item.label_zh if zh else item.label_en}：{item.explanation_zh if zh else item.explanation_en}")
+
+        landscape = presentation.literature_landscape
+        lines.extend([
+            "", f"## {'完整研究现状' if zh else 'Literature landscape'}", "",
+            landscape.overview_zh if zh else landscape.overview_en, "",
+            (f"候选 {landscape.candidate_count} 篇，筛选 {landscape.screened_count} 篇，全文深读 {landscape.full_text_count} 篇。" if zh else f"{landscape.candidate_count} candidates, {landscape.screened_count} screened, and {landscape.full_text_count} full-text papers reviewed."),
+        ])
+        profile_map = {item.paper_id: item for item in landscape.profiles}
+        for theme in landscape.themes:
+            lines.extend(["", f"### {theme.title_zh if zh else theme.title_en}", "", theme.summary_zh if zh else theme.summary_en])
+            for paper_id in theme.paper_ids:
+                profile = profile_map.get(paper_id)
+                if not profile or profile.role == "input" or not profile.source_url:
+                    continue
+                references[profile.source_url] = profile.title
+                lines.append(f"- [{profile.title}]({profile.source_url})" + (f" ({profile.year})" if profile.year else ""))
+
+        lines.extend(["", f"## {'论文级 Ideas' if zh else 'Paper-level Ideas'}"])
+        if not presentation.ideas:
+            lines.extend(["", "完整调研后没有方案通过撞车、可行性、证据和投稿价值门槛。" if zh else "No proposal passed all collision, feasibility, evidence, and submission-value gates after the full review."])
+        for idea in presentation.ideas:
+            experiment = idea.experiment
+            lines.extend([
+                "", f"### {idea.rank}. {idea.title_zh if zh else idea.title_en}", "",
+                idea.one_sentence_zh if zh else idea.one_sentence_en, "",
+                f"- **{'当前痛点' if zh else 'Pain point'}：** {idea.pain_point_zh if zh else idea.pain_point_en}",
+                f"- **{'可证伪假设' if zh else 'Falsifiable hypothesis'}：** {idea.hypothesis_zh if zh else idea.hypothesis_en}",
+                f"- **{'核心贡献' if zh else 'Core contribution'}：** {idea.core_contribution_zh if zh else idea.core_contribution_en}",
+                f"- **{'技术机制' if zh else 'Mechanism'}：** {idea.mechanism_zh if zh else idea.mechanism_en}",
+                f"- **{'相对输入论文的变化' if zh else 'Change from input paper'}：** {idea.change_from_input_zh if zh else idea.change_from_input_en}",
+                "", f"**{'首个实验' if zh else 'First experiment'}**",
+                f"- {'输入' if zh else 'Inputs'}：{experiment.inputs_zh if zh else experiment.inputs_en}",
+                f"- Baseline：{experiment.baseline_zh if zh else experiment.baseline_en}",
+                f"- {'改动' if zh else 'Intervention'}：{experiment.intervention_zh if zh else experiment.intervention_en}",
+                f"- {'指标' if zh else 'Metrics'}：{experiment.metrics_zh if zh else experiment.metrics_en}",
+                f"- {'成功条件' if zh else 'Success criterion'}：{experiment.success_criterion_zh if zh else experiment.success_criterion_en}",
+                f"- {'资源' if zh else 'Resources'}：{experiment.resources_zh if zh else experiment.resources_en}",
+            ])
+        if references:
+            lines.extend(["", f"## {'参考来源' if zh else 'References'}", ""])
+            for index, (url, label) in enumerate(references.items(), start=1):
+                lines.append(f"{index}. [{label}]({url})")
+        return "\n".join(lines)
 
     if isinstance(presentation, ReportPresentationV3):
         lines.extend(
@@ -435,6 +496,27 @@ def comparison_csv(report: AnalysisReport) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     presentation = report.presentation
+    if isinstance(presentation, ReportPresentationV4):
+        writer.writerow([
+            "idea_key", "idea_status", "paper_role", "paper_id", "title", "task_zh", "task_en",
+            "input_or_data_zh", "input_or_data_en", "method_zh", "method_en",
+            "output_or_evaluation_zh", "output_or_evaluation_en", "constraints_zh", "constraints_en",
+            "limitations_zh", "limitations_en", "evidence_grade", "source_url",
+        ])
+        idea_status = {item.key: item.verdict for item in presentation.ideas}
+        for board in presentation.comparison_boards:
+            for profile in board.profiles:
+                writer.writerow([
+                    board.idea_key, idea_status.get(board.idea_key, "needs_evidence"), profile.role,
+                    profile.paper_id, profile.title, profile.task.claim_zh, profile.task.claim_en,
+                    profile.input_or_data.claim_zh, profile.input_or_data.claim_en,
+                    profile.method.claim_zh, profile.method.claim_en,
+                    profile.output_or_evaluation.claim_zh, profile.output_or_evaluation.claim_en,
+                    profile.constraints.claim_zh, profile.constraints.claim_en,
+                    profile.limitations.claim_zh, profile.limitations.claim_en,
+                    profile.evidence_grade, profile.source_url or "",
+                ])
+        return buffer.getvalue()
     if isinstance(presentation, ReportPresentationV3) and presentation.idea_comparisons:
         writer.writerow(
             [

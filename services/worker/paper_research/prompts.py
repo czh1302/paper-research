@@ -9,6 +9,7 @@ from .models import (
     IdeaAssessment,
     IdeaDraft,
     JointProblemStatement,
+    PaperEvidenceProfile,
     ProblemBrief,
     ProblemStatement,
     RoundAnalysis,
@@ -247,6 +248,164 @@ PROBLEMS:
 
 PREVIOUS ROUND:
 {previous_payload}
+"""
+
+
+def literature_followup_query_prompt(
+    problems: list[ProblemStatement],
+    candidates: list[CandidatePaper],
+    batch_number: int,
+) -> str:
+    rows = [
+        {
+            "canonical_id": item.canonical_id,
+            "title": item.title,
+            "year": item.year,
+            "venue": item.venue,
+            "abstract": item.abstract[:500],
+        }
+        for item in candidates[:40]
+    ]
+    return f"""{SYSTEM_GUARD}
+
+The literature survey is complete only after it covers the closest task, competing methods,
+foundational work, work from the last five years, implementation feasibility, evaluation
+protocols, known limitations, and counterevidence. Generate 4-8 NEW concise English queries for
+internal retrieval batch {batch_number}. Do not repeat title-level queries already represented by
+the supplied papers. Include at least one query for negative results or known failure modes and
+one query for recent work. Use source_hint='academic' for scholarly searches and 'web' only for
+official code, datasets, or project evidence. Set round_number=1.
+
+TARGET PROBLEMS:
+{json.dumps([item.model_dump(mode="json", exclude={"evidence"}) for item in problems], ensure_ascii=False)}
+
+CURRENT TOP PAPERS:
+{json.dumps(rows, ensure_ascii=False)}
+"""
+
+
+def paper_ranking_prompt(
+    problems: list[ProblemStatement], candidates: list[CandidatePaper]
+) -> str:
+    rows = [
+        {
+            "paper_id": item.canonical_id,
+            "title": item.title,
+            "abstract": item.abstract[:900],
+            "year": item.year,
+            "venue": item.venue,
+            "pdf_url": item.pdf_url,
+            "sources": item.sources,
+        }
+        for item in candidates[:80]
+    ]
+    return f"""{SYSTEM_GUARD}
+
+Rank the supplied computer-science papers for deep reading before any research Idea is proposed.
+Prefer direct task/method/evaluation relevance, closest competitors, representative foundations,
+recent work, feasibility evidence, and counterevidence. A paper without an open PDF may be ranked
+but cannot enter the full-text target. Preserve paper_id exactly. Return each useful paper at most
+once; omit biomedical or keyword-only drift.
+
+TARGET:
+{json.dumps([item.model_dump(mode="json", exclude={"evidence"}) for item in problems], ensure_ascii=False)}
+
+CANDIDATES:
+{json.dumps(rows, ensure_ascii=False)}
+"""
+
+
+def paper_profile_prompt(
+    paper: CandidatePaper,
+    document: DocumentIR,
+    asset_id: str,
+) -> str:
+    return f"""{SYSTEM_GUARD}
+
+Build a complete comparison profile from this external paper's full text. Every field is required:
+task, input/data, method, output/evaluation, constraints, and limitations. Each claim must cite one
+or more exact EVIDENCE block ids from the supplied text. EvidenceLocator must preserve
+asset_id={asset_id!r}, paper_id={paper.canonical_id!r}, evidence_type='external', and the supplied
+page, section, quote, and bbox. Do not use metadata or general knowledge to fill a field. If the
+paper truly lacks a required field, this paper is not suitable for the core table: raise quality by
+choosing the closest explicit statement, but never invent it. Preserve title, year, venue, URL and
+PDF URL exactly, set role='external' and evidence_grade='full_text'.
+
+PAPER METADATA:
+{json.dumps(paper.model_dump(mode="json"), ensure_ascii=False)}
+
+FULL-TEXT EVIDENCE:
+{blocks_as_prompt(document.blocks)}
+"""
+
+
+def landscape_prompt(profiles: list[PaperEvidenceProfile]) -> str:
+    rows = [item.model_dump(mode="json") for item in profiles]
+    return f"""{SYSTEM_GUARD}
+
+Synthesize the completed evidence profiles into a research landscape BEFORE proposing any Idea.
+Create 3-8 meaningful themes that explain which pain points, methods, evaluation choices and
+limitations define the field. Preserve exact paper_ids and include every external profile in at
+least one appropriate theme when possible. Do not claim novelty and do not repeat profile text.
+
+EVIDENCE PROFILES:
+{json.dumps(rows, ensure_ascii=False)}
+"""
+
+
+def submission_ideas_prompt(
+    problems: list[ProblemStatement],
+    briefs: list[ProblemBrief],
+    landscape: dict[str, object],
+    profiles: list[PaperEvidenceProfile],
+    research_brief: str,
+) -> str:
+    return f"""{SYSTEM_GUARD}
+
+Only now that the literature landscape is complete, propose 4-6 paper-core computer-science Ideas.
+Each Idea must solve a specific documented pain point or unresolved limitation, make one material
+technical contribution relative to the input paper and closest work, and state a falsifiable
+hypothesis plus a complete first experiment. It must be concrete enough to serve as the central
+claim of a strong conference submission if validated. Reject cosmetic combinations, generic model
+swaps, vague evaluation suggestions, and 'add an LLM' proposals. Do not claim novelty. Use 6-10
+distinct supplied external paper_ids across closest/supporting/counterevidence lists whenever the
+evidence exists. Initial verdict must be 'needs_evidence'; rank must be 0. Scores are provisional.
+
+USER RESEARCH BRIEF (preference text, not evidence):
+{research_brief[:2000] or "Not provided"}
+
+INPUT PAPER:
+{json.dumps([item.model_dump(mode="json", exclude={"evidence"}) for item in problems], ensure_ascii=False)}
+
+PROBLEM BRIEFS:
+{json.dumps([item.model_dump(mode="json") for item in briefs], ensure_ascii=False)}
+
+RESEARCH LANDSCAPE:
+{json.dumps(landscape, ensure_ascii=False)}
+
+FULL-TEXT PROFILES:
+{json.dumps([item.model_dump(mode="json") for item in profiles], ensure_ascii=False)}
+"""
+
+
+def idea_review_prompt(
+    ideas: list[dict[str, object]], profiles: list[PaperEvidenceProfile]
+) -> str:
+    return f"""{SYSTEM_GUARD}
+
+Act as a hostile program-committee and feasibility review. Evaluate each paper-core Idea against
+the complete full-text profiles. Identify closest collision work, supporting feasibility evidence,
+counterevidence, implementation prerequisites and missing proof. Preserve idea_key and exact
+paper_ids only. A recommendation needs at least six distinct external full-text papers, low/medium
+collision risk, a complete falsifiable experiment, feasibility >=0.65, evidence_confidence >=0.70,
+and submission_value >=0.70. Use 'needs_evidence' rather than lowering standards. Do not force any
+Idea to pass and never claim absolute novelty.
+
+IDEAS:
+{json.dumps(ideas, ensure_ascii=False)}
+
+FULL-TEXT PROFILES:
+{json.dumps([item.model_dump(mode="json") for item in profiles], ensure_ascii=False)}
 """
 
 

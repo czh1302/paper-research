@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from paper_research.models import (
     AlgorithmStep,
@@ -6,12 +8,18 @@ from paper_research.models import (
     ComparisonCell,
     DocumentBlock,
     Evidence,
+    EvidenceLocator,
     ExperimentPlan,
+    GroundedClaim,
     IdeaAssessment,
     IdeaAssessmentBatch,
     IdeaDraft,
     IdeaQueryPlan,
     IdeaQueryPlanBatch,
+    IdeaReview,
+    LiteratureLandscape,
+    LiteratureThemeV4,
+    PaperEvidenceProfile,
     PresentationFinding,
     PresentationIdea,
     ProblemBrief,
@@ -20,14 +28,17 @@ from paper_research.models import (
     ProblemStatement,
     ProviderUsage,
     ReportPresentation,
+    ReportPresentationV4,
     ResearchOpportunity,
     ResearchTheme,
     RoundAnalysis,
+    SubmissionIdea,
 )
 from paper_research.pipeline import (
     build_presentation_v3,
     candidate_is_computer_science_relevant,
     estimate_usage_cny,
+    finalize_v4_ideas,
     ground_analysis,
     ground_idea_assessments,
     ground_presentation,
@@ -35,6 +46,7 @@ from paper_research.pipeline import (
     query_bundle_from_plan,
     rank_candidates,
     reconstruct_search_audit,
+    report_summary,
     should_stop,
 )
 from paper_research.reporting import comparison_csv
@@ -587,3 +599,179 @@ def test_v3_presentation_builds_grounded_horizontal_matrix() -> None:
     assert "idea_status" in csv_text
     assert "difference_to_idea_zh" in csv_text
     assert "Software validation 0" in csv_text
+
+
+def v4_profile(paper_id: str, role: str = "external") -> PaperEvidenceProfile:
+    locator = EvidenceLocator(
+        id=f"{paper_id}:b1",
+        asset_id=f"asset-{paper_id}",
+        paper_id=paper_id,
+        page=2,
+        quote="This full-text passage directly supports the structured comparison field.",
+        section="Method",
+        evidence_type="algorithm" if role == "input" else "external",
+        bboxes=[[100, 200, 800, 260]],
+    )
+
+    def claim(label: str) -> GroundedClaim:
+        return GroundedClaim(
+            claim_zh=f"{label}字段由论文正文证据直接支持。",
+            claim_en=f"The {label} field is directly supported by full-text evidence.",
+            evidence=[locator],
+        )
+
+    return PaperEvidenceProfile(
+        paper_id=paper_id,
+        title=f"Evidence paper {paper_id}",
+        year=2026,
+        venue="SIGCOMM",
+        source_url=None if role == "input" else f"https://papers.example/{paper_id}",
+        pdf_url=None if role == "input" else f"https://papers.example/{paper_id}.pdf",
+        role=role,
+        evidence_grade="input_pdf" if role == "input" else "full_text",
+        task=claim("任务"),
+        input_or_data=claim("输入数据"),
+        method=claim("方法"),
+        output_or_evaluation=claim("输出评价"),
+        constraints=claim("约束"),
+        limitations=claim("局限"),
+    )
+
+
+def v4_idea() -> SubmissionIdea:
+    return SubmissionIdea(
+        key="submission-idea",
+        title_zh="面向网络实验复现的证据契约执行框架",
+        title_en="Evidence-contract execution for reproducible network experiments",
+        one_sentence_zh="通过可执行证据契约定位论文报告结果与复现输出之间的系统性偏差。",
+        one_sentence_en="Executable evidence contracts identify systematic drift between reported and reproduced network results.",
+        pain_point_zh="现有复现系统通常只验证代码能否运行，无法判断输出是否忠实于论文结论。",
+        pain_point_en="Existing reproduction systems usually test only runnability and cannot establish fidelity to reported conclusions.",
+        hypothesis_zh="将论文结论转成可执行契约能够显著提高错误复现的检出率并降低误判。",
+        hypothesis_en="Turning paper claims into executable contracts will improve invalid-reproduction detection while reducing false decisions.",
+        core_contribution_zh="提出从论文证据到可执行断言的表示、运行时验证机制和跨论文复现基准。",
+        core_contribution_en="A representation from paper evidence to executable assertions, a runtime validator, and a cross-paper benchmark.",
+        mechanism_zh="系统联合解析变量、边界条件与定量结论，在复现实验运行时逐项核验并归因偏差。",
+        mechanism_en="The system extracts variables, boundary conditions, and quantitative claims, then verifies and attributes drift at runtime.",
+        change_from_input_zh="在输入论文的代码生成与运行流水线后增加证据契约生成、执行和偏差归因层。",
+        change_from_input_en="Add evidence-contract generation, execution, and drift attribution after the input paper's generation pipeline.",
+        experiment=experiment(),
+        closest_work_ids=["paper-0", "paper-1"],
+        supporting_work_ids=["paper-2", "paper-3"],
+        counterevidence_work_ids=["paper-4", "paper-5"],
+    )
+
+
+def v4_review(**updates: object) -> IdeaReview:
+    values: dict[str, object] = {
+        "idea_key": "submission-idea",
+        "decision": "recommended",
+        "rationale_zh": "该方案针对明确研究空白，技术机制和首个实验均可证伪。",
+        "rationale_en": "The proposal targets a clear gap with a falsifiable mechanism and first experiment.",
+        "closest_work_ids": ["paper-0", "paper-1"],
+        "supporting_work_ids": ["paper-2", "paper-3"],
+        "counterevidence_work_ids": ["paper-4", "paper-5"],
+        "feasibility": 0.8,
+        "submission_value": 0.85,
+        "evidence_confidence": 0.8,
+        "collision_risk": "low",
+    }
+    values.update(updates)
+    return IdeaReview.model_validate(values)
+
+
+def test_v4_idea_gate_requires_six_complete_full_text_profiles() -> None:
+    profiles = [v4_profile("input", "input")] + [
+        v4_profile(f"paper-{index}") for index in range(6)
+    ]
+    selected, reviews, boards = finalize_v4_ideas(
+        [v4_idea()], [v4_review()], profiles
+    )
+
+    assert [item.verdict for item in selected] == ["recommended"]
+    assert reviews[0].decision == "recommended"
+    assert len(boards[0].profiles) == 7
+    assert all(
+        getattr(profile, field).evidence
+        for profile in boards[0].profiles
+        for field in (
+            "task",
+            "input_or_data",
+            "method",
+            "output_or_evaluation",
+            "constraints",
+            "limitations",
+        )
+    )
+
+    selected, reviews, boards = finalize_v4_ideas(
+        [v4_idea()], [v4_review(counterevidence_work_ids=[])], profiles[:6]
+    )
+    assert selected == []
+    assert boards == []
+    assert reviews[0].decision == "needs_evidence"
+
+
+def test_v4_high_collision_is_rejected_and_summary_stays_compact() -> None:
+    profiles = [v4_profile("input", "input")] + [
+        v4_profile(f"paper-{index}") for index in range(6)
+    ]
+    selected, reviews, _ = finalize_v4_ideas(
+        [v4_idea()], [v4_review(collision_risk="high")], profiles
+    )
+    assert selected == []
+    assert reviews[0].decision == "rejected"
+
+    selected, reviews, boards = finalize_v4_ideas(
+        [v4_idea()], [v4_review()], profiles
+    )
+    brief = ProblemBrief(
+        paper_id="input",
+        title="Input paper",
+        research_question_zh="如何自动验证网络实验复现结果是否忠实于论文结论？",
+        research_question_en="How can reproduced network experiments be checked against reported conclusions?",
+        research_question_evidence_ids=["input:b1"],
+        inputs=[ProblemBriefItem(label_zh="论文", label_en="Paper", explanation_zh="待复现网络论文", explanation_en="Network paper to reproduce", evidence_ids=["input:b1"])],
+        outputs=[ProblemBriefItem(label_zh="验证报告", label_en="Validation report", explanation_zh="带证据的复现结论", explanation_en="Evidence-backed reproduction conclusion", evidence_ids=["input:b1"])],
+        algorithm_steps=[AlgorithmStep(order=index, title_zh=f"步骤{index}", title_en=f"Step {index}", explanation_zh="解析并验证论文实验描述", explanation_en="Parse and validate experiment descriptions", evidence_ids=["input:b1"]) for index in range(1, 4)],
+        constraints=[ProblemBriefItem(label_zh="公开数据", label_en="Public data", explanation_zh="仅使用公开数据", explanation_en="Use public data only", evidence_ids=["input:b1"])],
+    )
+    landscape = LiteratureLandscape(
+        overview_zh="现有工作覆盖代码生成和可运行性检查，但缺少面向论文定量结论的可执行忠实度验证。",
+        overview_en="Existing work covers code generation and runnability checks but lacks executable fidelity validation for quantitative paper claims.",
+        candidate_count=240,
+        screened_count=60,
+        full_text_count=20,
+        source_counts={"arxiv": 40, "openreview": 20},
+        themes=[
+            LiteratureThemeV4(key="reproduction", title_zh="论文复现", title_en="Paper reproduction", summary_zh="自动生成并运行论文实现的系统。", summary_en="Systems that generate and execute paper implementations.", paper_ids=["paper-0"]),
+            LiteratureThemeV4(key="validation", title_zh="结果验证", title_en="Result validation", summary_zh="验证系统输出与预期行为的一致性。", summary_en="Methods that validate system outputs against expected behavior.", paper_ids=["paper-1"]),
+        ],
+        profiles=profiles,
+    )
+    presentation = ReportPresentationV4(
+        headline_zh="如何自动验证网络实验复现结果是否忠实于论文结论？",
+        headline_en="How can reproduced network experiments be checked against reported conclusions?",
+        problem_briefs=[brief],
+        literature_landscape=landscape,
+        ideas=selected,
+        reviews=reviews,
+        comparison_boards=boards,
+    )
+    report = AnalysisReport(
+        job_id="job",
+        problem_statements=[],
+        related_papers=[CandidatePaper(canonical_id=f"paper-{index}", title=f"Paper {index}", url=f"https://papers.example/paper-{index}") for index in range(6)],
+        rounds=[],
+        search_audit=[{"raw": "x" * 100_000}],
+        source_coverage={"counts": {"arxiv": 6}, "rounds_completed": 1},
+        limitations_zh="检索范围限制。",
+        limitations_en="Retrieval scope limitation.",
+        presentation=presentation,
+    )
+    summary = report_summary(report)
+    assert summary["search_audit"] == []
+    assert len(json.dumps(summary, ensure_ascii=False).encode()) < 300_000
+    csv_text = comparison_csv(report)
+    assert "Evidence paper paper-0" in csv_text
+    assert "output_or_evaluation_zh" in csv_text

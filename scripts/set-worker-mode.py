@@ -37,10 +37,19 @@ def replace_value(path: Path, name: str, value: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--idea-pipeline-v3", choices=("true", "false"), required=True)
+    parser.add_argument("--idea-pipeline-v3", choices=("true", "false"))
+    parser.add_argument("--idea-pipeline-v4", choices=("true", "false"))
     args = parser.parse_args()
-    replace_value(SECRETS_FILE, "IDEA_PIPELINE_V3", args.idea_pipeline_v3)
-    print(f"IDEA_PIPELINE_V3={args.idea_pipeline_v3}")
+    if args.idea_pipeline_v3 is None and args.idea_pipeline_v4 is None:
+        parser.error("at least one pipeline switch is required")
+    if args.idea_pipeline_v3 == "true" and args.idea_pipeline_v4 == "true":
+        parser.error("V3 and V4 cannot both be enabled")
+    if args.idea_pipeline_v3 is not None:
+        replace_value(SECRETS_FILE, "IDEA_PIPELINE_V3", args.idea_pipeline_v3)
+        print(f"IDEA_PIPELINE_V3={args.idea_pipeline_v3}")
+    if args.idea_pipeline_v4 is not None:
+        replace_value(SECRETS_FILE, "IDEA_PIPELINE_V4", args.idea_pipeline_v4)
+        print(f"IDEA_PIPELINE_V4={args.idea_pipeline_v4}")
 
 
 if __name__ == "__main__":

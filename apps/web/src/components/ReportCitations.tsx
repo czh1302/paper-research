@@ -1,5 +1,5 @@
 import { BookOpenText, ExternalLink, FileText, Globe2, X } from "lucide-react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useLanguage } from "../lib/language";
@@ -9,15 +9,18 @@ import type { CandidatePaper, Evidence } from "../lib/types";
 interface CitationRegistry {
   evidenceNumbers: Map<string, number>;
   sourceNumbers: Map<string, number>;
+  reportId?: string;
+  pdfEnabled: boolean;
 }
 
 const CitationContext = createContext<CitationRegistry | null>(null);
+const EvidencePdfViewer = lazy(() => import("./EvidencePdfViewer"));
 
 function evidenceKey(evidence: Pick<Evidence, "paper_id" | "page">) {
   return `${evidence.paper_id}:${evidence.page ?? "unknown"}`;
 }
 
-export function ReportCitationProvider({ evidence, papers, children }: { evidence: Evidence[]; papers: CandidatePaper[]; children: ReactNode }) {
+export function ReportCitationProvider({ evidence, papers, reportId, pdfEnabled = false, children }: { evidence: Evidence[]; papers: CandidatePaper[]; reportId?: string; pdfEnabled?: boolean; children: ReactNode }) {
   const registry = useMemo<CitationRegistry>(() => {
     const evidenceNumbers = new Map<string, number>();
     const sourceNumbers = new Map<string, number>();
@@ -30,8 +33,8 @@ export function ReportCitationProvider({ evidence, papers, children }: { evidenc
         if (url && !sourceNumbers.has(url.replace(/\/$/, ""))) sourceNumbers.set(url.replace(/\/$/, ""), sourceNumbers.size + 1);
       }
     }
-    return { evidenceNumbers, sourceNumbers };
-  }, [evidence, papers]);
+    return { evidenceNumbers, sourceNumbers, reportId, pdfEnabled };
+  }, [evidence, papers, pdfEnabled, reportId]);
   return <CitationContext.Provider value={registry}>{children}</CitationContext.Provider>;
 }
 
@@ -116,6 +119,8 @@ export function PaperEvidenceCitation({ evidence, paperTitle }: { evidence: Evid
   const pages = [...new Set(evidence.map((item) => item.page).filter((page): page is number => typeof page === "number"))];
   const label = pages.length ? text(`原论文 · 第 ${pages.join("、")} 页`, `Source paper · p. ${pages.join(", ")}`) : text("原论文摘录", "Source paper excerpt");
   const number = registry?.evidenceNumbers.get(evidenceKey(evidence[0]));
+  const pdfEvidence = evidence.find((item) => item.asset_id);
+  const canOpenPdf = Boolean(registry?.pdfEnabled && registry.reportId && pdfEvidence?.asset_id);
   useEffect(() => {
     if (!open) return;
     const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
@@ -124,7 +129,7 @@ export function PaperEvidenceCitation({ evidence, paperTitle }: { evidence: Evid
   }, [open]);
   return <>
     <button type="button" className="evidence-reference" aria-label={label} aria-expanded={open} onClick={() => setOpen(true)}><BookOpenText className="h-3.5 w-3.5" />{number ? `[${number}]` : "[·]"}</button>
-    {open && createPortal(<div className="evidence-drawer-layer" role="presentation"><button type="button" className="evidence-drawer-backdrop" aria-label={text("关闭证据", "Close evidence")} onClick={() => setOpen(false)}/><aside className="evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="evidence-drawer-title"><header className="border-b border-line p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><span className="flex items-center gap-2 text-xs font-medium text-muted"><FileText className="h-4 w-4" />{text("输入论文证据", "Input-paper evidence")}</span><h2 id="evidence-drawer-title" className="!mt-2 !text-xl !text-content">{paperTitle}</h2><p className="mt-2 text-sm text-muted">{label}</p></div><button type="button" className="citation-close !static shrink-0" aria-label={text("关闭", "Close")} onClick={() => setOpen(false)}><X className="h-4 w-4"/></button></div></header><div className="flex-1 overflow-y-auto p-5 sm:p-6"><div className="rounded-xl border border-warning/25 bg-warning/[.07] p-4"><strong className="text-sm text-content">{text("原 PDF 当前不可用", "The original PDF is currently unavailable")}</strong><p className="mt-1 text-xs leading-5 text-muted">{text("这份历史报告生成后已按旧隐私策略删除 PDF。当前只能查看保存的页码与原文摘录，不会伪造高亮位置。", "This historical report's PDF was deleted under the previous privacy policy. Only saved pages and excerpts are available; no highlight location is fabricated.")}</p></div><div className="mt-5 space-y-4">{evidence.map((item, index) => <article className="rounded-xl border border-line bg-subtle/45 p-4" key={`${item.page}-${index}`}><div className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-muted"><span>{item.section || text("未标注章节", "Section not labeled")}</span>{typeof item.page === "number" && <span>{text(`第 ${item.page} 页`, `Page ${item.page}`)}</span>}</div><blockquote className="mt-3 border-l-2 border-info/45 pl-4 text-sm leading-7 text-content">{item.text}</blockquote></article>)}</div></div></aside></div>, document.body)}
+    {open && createPortal(<div className="evidence-drawer-layer" role="presentation"><button type="button" className="evidence-drawer-backdrop" aria-label={text("关闭证据", "Close evidence")} onClick={() => setOpen(false)}/><aside className={`evidence-drawer ${canOpenPdf ? "evidence-drawer-pdf" : ""}`} role="dialog" aria-modal="true" aria-labelledby="evidence-drawer-title"><header className="border-b border-line p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><span className="flex items-center gap-2 text-xs font-medium text-muted"><FileText className="h-4 w-4" />{text("输入论文证据", "Input-paper evidence")}</span><h2 id="evidence-drawer-title" className="!mt-2 !text-xl !text-content">{paperTitle}</h2><p className="mt-2 text-sm text-muted">{label}</p></div><button type="button" className="citation-close !static shrink-0" aria-label={text("关闭", "Close")} onClick={() => setOpen(false)}><X className="h-4 w-4"/></button></div></header>{canOpenPdf ? <Suspense fallback={<div className="grid flex-1 place-items-center text-sm text-muted">{text("正在加载 PDF 阅读器…", "Loading PDF viewer…")}</div>}><EvidencePdfViewer reportId={registry!.reportId!} assetId={pdfEvidence!.asset_id!} evidenceId={pdfEvidence!.id}/></Suspense> : <div className="flex-1 overflow-y-auto p-5 sm:p-6"><div className="rounded-xl border border-warning/25 bg-warning/[.07] p-4"><strong className="text-sm text-content">{text("原 PDF 当前不可用", "The original PDF is currently unavailable")}</strong><p className="mt-1 text-xs leading-5 text-muted">{text("这份历史报告生成后已按旧隐私策略删除 PDF。当前只能查看保存的页码与原文摘录，不会伪造高亮位置。", "This historical report's PDF was deleted under the previous privacy policy. Only saved pages and excerpts are available; no highlight location is fabricated.")}</p></div><div className="mt-5 space-y-4">{evidence.map((item, index) => <article className="rounded-xl border border-line bg-subtle/45 p-4" key={`${item.page}-${index}`}><div className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-muted"><span>{item.section || text("未标注章节", "Section not labeled")}</span>{typeof item.page === "number" && <span>{text(`第 ${item.page} 页`, `Page ${item.page}`)}</span>}</div><blockquote className="mt-3 border-l-2 border-info/45 pl-4 text-sm leading-7 text-content">{item.text}</blockquote></article>)}</div></div>}</aside></div>, document.body)}
   </>;
 }
 

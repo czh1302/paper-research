@@ -49,7 +49,7 @@ describe("NewAnalysisPage", () => {
     await user.click(screen.getByRole("button", { name: "完成安全验证" }));
     await user.click(screen.getByRole("button", { name: "开始分析" }));
 
-    expect(createAnalysis).toHaveBeenCalledWith([paper], "single", 1, "verified-token");
+    expect(createAnalysis).toHaveBeenCalledWith([paper], "single", 1, "verified-token", "");
     expect(await screen.findByText("任务页面")).toBeInTheDocument();
   });
 
@@ -96,7 +96,7 @@ describe("NewAnalysisPage", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("网络暂时不可用");
     expect(screen.getByText("retry.pdf")).toBeInTheDocument();
-    expect(createAnalysis).toHaveBeenCalledWith([paper], "single", 3, "verified-token");
+    expect(createAnalysis).toHaveBeenCalledWith([paper], "single", 3, "verified-token", "");
     expect(screen.getByRole("button", { name: "正在进行安全验证…" })).toBeDisabled();
   });
 });

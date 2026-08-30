@@ -21,6 +21,51 @@ def test_normalize_mineru_content_list(tmp_path: Path) -> None:
     assert document.blocks[0].bbox == [1, 2, 3, 4]
 
 
+def test_normalize_mineru_v2_content_list_with_highlight_bbox(tmp_path: Path) -> None:
+    archive_path = tmp_path / "result-v2.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("full.md", "# Method\n\nEvidence-backed method")
+        archive.writestr(
+            "paper_content_list_v2.json",
+            json.dumps(
+                [
+                    [
+                        {
+                            "type": "title",
+                            "content": {
+                                "title_content": [
+                                    {"type": "text", "content": "Method"}
+                                ],
+                                "level": 1,
+                            },
+                            "bbox": [80, 100, 920, 150],
+                        },
+                        {
+                            "type": "paragraph",
+                            "content": {
+                                "paragraph_content": [
+                                    {
+                                        "type": "text",
+                                        "content": "Evidence-backed method",
+                                    }
+                                ]
+                            },
+                            "bbox": [100, 200, 900, 260],
+                        },
+                    ]
+                ]
+            ),
+        )
+
+    document = normalize_mineru_zip(archive_path, tmp_path / "v2-out", "paper", "Paper")
+
+    assert document.page_count == 1
+    assert [block.page for block in document.blocks] == [1, 1]
+    assert document.blocks[1].text == "Evidence-backed method"
+    assert document.blocks[1].section == "Method"
+    assert document.blocks[1].bbox == [100, 200, 900, 260]
+
+
 def test_rejects_zip_path_traversal(tmp_path: Path) -> None:
     archive_path = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:

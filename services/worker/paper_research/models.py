@@ -49,6 +49,11 @@ class Evidence(BaseModel):
     section: str | None = None
     text: str = Field(min_length=1, max_length=4000)
     bbox: list[float] | None = None
+    bboxes: list[list[float]] = Field(default_factory=list)
+    asset_id: str | None = None
+    evidence_type: Literal[
+        "input", "output", "algorithm", "constraint", "external"
+    ] | None = None
     source_url: HttpUrlString | None = None
 
 
@@ -489,6 +494,186 @@ class ReportPresentationV3(BaseModel):
     idea_comparisons: list[IdeaComparisonMatrix] = Field(default_factory=list, max_length=8)
 
 
+class EvidenceLocator(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    asset_id: str
+    paper_id: str
+    page: int = Field(ge=1)
+    quote: str = Field(min_length=8, max_length=1800)
+    section: str | None = Field(default=None, max_length=200)
+    evidence_type: Literal[
+        "input", "output", "algorithm", "constraint", "external"
+    ]
+    bboxes: list[list[float]] = Field(default_factory=list, max_length=8)
+
+    @field_validator("bboxes")
+    @classmethod
+    def validate_bboxes(cls, values: list[list[float]]) -> list[list[float]]:
+        output: list[list[float]] = []
+        for value in values:
+            if len(value) != 4:
+                continue
+            box = [max(0.0, min(float(item), 1000.0)) for item in value]
+            if box[2] > box[0] and box[3] > box[1]:
+                output.append(box)
+        return output
+
+
+class GroundedClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_zh: str = Field(min_length=8, max_length=500)
+    claim_en: str = Field(min_length=12, max_length=900)
+    evidence: list[EvidenceLocator] = Field(min_length=1, max_length=8)
+
+
+class PaperEvidenceProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    paper_id: str
+    title: str
+    year: int | None = None
+    venue: str | None = None
+    source_url: HttpUrlString | None = None
+    pdf_url: HttpUrlString | None = None
+    role: Literal["input", "external"]
+    evidence_grade: Literal["input_pdf", "full_text", "abstract"]
+    task: GroundedClaim
+    input_or_data: GroundedClaim
+    method: GroundedClaim
+    output_or_evaluation: GroundedClaim
+    constraints: GroundedClaim
+    limitations: GroundedClaim
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_profile_url(cls, value: str | None) -> str | None:
+        return _public_http_url(value) if value else None
+
+    @field_validator("pdf_url")
+    @classmethod
+    def validate_profile_pdf_url(cls, value: str | None) -> str | None:
+        return _public_http_url(value) if value else None
+
+
+class LiteratureThemeV4(BaseModel):
+    key: str = Field(min_length=1, max_length=60)
+    title_zh: str = Field(min_length=2, max_length=100)
+    title_en: str = Field(min_length=3, max_length=180)
+    summary_zh: str = Field(min_length=12, max_length=420)
+    summary_en: str = Field(min_length=20, max_length=800)
+    paper_ids: list[str] = Field(min_length=1, max_length=12)
+
+
+class LiteratureLandscape(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    overview_zh: str = Field(min_length=30, max_length=900)
+    overview_en: str = Field(min_length=50, max_length=1600)
+    candidate_count: int = Field(ge=0)
+    screened_count: int = Field(ge=0)
+    full_text_count: int = Field(ge=0)
+    source_counts: dict[str, int]
+    themes: list[LiteratureThemeV4] = Field(min_length=2, max_length=8)
+    profiles: list[PaperEvidenceProfile] = Field(min_length=1, max_length=31)
+
+
+class LiteratureLandscapeDraft(BaseModel):
+    overview_zh: str = Field(min_length=30, max_length=900)
+    overview_en: str = Field(min_length=50, max_length=1600)
+    themes: list[LiteratureThemeV4] = Field(min_length=2, max_length=8)
+
+
+class PaperRanking(BaseModel):
+    paper_id: str
+    relevance: float = Field(ge=0, le=1)
+    reason: str = Field(max_length=240)
+
+
+class PaperRankingBatch(BaseModel):
+    rankings: list[PaperRanking] = Field(min_length=1, max_length=80)
+
+
+class SubmissionIdea(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=60)
+    rank: int = Field(default=0, ge=0, le=3)
+    title_zh: str = Field(min_length=4, max_length=120)
+    title_en: str = Field(min_length=8, max_length=220)
+    one_sentence_zh: str = Field(min_length=20, max_length=300)
+    one_sentence_en: str = Field(min_length=30, max_length=600)
+    pain_point_zh: str = Field(min_length=20, max_length=500)
+    pain_point_en: str = Field(min_length=30, max_length=900)
+    hypothesis_zh: str = Field(min_length=20, max_length=420)
+    hypothesis_en: str = Field(min_length=30, max_length=800)
+    core_contribution_zh: str = Field(min_length=20, max_length=500)
+    core_contribution_en: str = Field(min_length=30, max_length=900)
+    mechanism_zh: str = Field(min_length=20, max_length=600)
+    mechanism_en: str = Field(min_length=30, max_length=1000)
+    change_from_input_zh: str = Field(min_length=20, max_length=500)
+    change_from_input_en: str = Field(min_length=30, max_length=900)
+    experiment: ExperimentPlan
+    closest_work_ids: list[str] = Field(min_length=2, max_length=10)
+    supporting_work_ids: list[str] = Field(min_length=2, max_length=10)
+    counterevidence_work_ids: list[str] = Field(default_factory=list, max_length=6)
+    unresolved_questions_zh: list[str] = Field(default_factory=list, max_length=5)
+    unresolved_questions_en: list[str] = Field(default_factory=list, max_length=5)
+    feasibility: float = Field(default=0, ge=0, le=1)
+    submission_value: float = Field(default=0, ge=0, le=1)
+    evidence_confidence: float = Field(default=0, ge=0, le=1)
+    collision_risk: Literal["low", "medium", "high"] = "medium"
+    verdict: Literal[
+        "recommended", "alternative", "needs_evidence", "rejected"
+    ] = "needs_evidence"
+
+
+class SubmissionIdeaBatch(BaseModel):
+    ideas: list[SubmissionIdea] = Field(min_length=4, max_length=6)
+
+
+class IdeaReview(BaseModel):
+    idea_key: str
+    decision: Literal["recommended", "alternative", "needs_evidence", "rejected"]
+    rationale_zh: str = Field(min_length=12, max_length=500)
+    rationale_en: str = Field(min_length=20, max_length=900)
+    closest_work_ids: list[str] = Field(min_length=2, max_length=10)
+    supporting_work_ids: list[str] = Field(min_length=2, max_length=10)
+    counterevidence_work_ids: list[str] = Field(default_factory=list, max_length=6)
+    missing_evidence_zh: list[str] = Field(default_factory=list, max_length=5)
+    missing_evidence_en: list[str] = Field(default_factory=list, max_length=5)
+    feasibility: float = Field(ge=0, le=1)
+    submission_value: float = Field(ge=0, le=1)
+    evidence_confidence: float = Field(ge=0, le=1)
+    collision_risk: Literal["low", "medium", "high"]
+
+
+class IdeaReviewBatch(BaseModel):
+    reviews: list[IdeaReview] = Field(min_length=1, max_length=6)
+
+
+class IdeaComparisonBoard(BaseModel):
+    idea_key: str
+    input_paper_id: str
+    external_paper_ids: list[str] = Field(min_length=1, max_length=10)
+    profiles: list[PaperEvidenceProfile] = Field(min_length=2, max_length=11)
+
+
+class ReportPresentationV4(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[4] = 4
+    headline_zh: str = Field(min_length=12, max_length=220)
+    headline_en: str = Field(min_length=20, max_length=420)
+    problem_briefs: list[ProblemBrief] = Field(min_length=1, max_length=5)
+    literature_landscape: LiteratureLandscape
+    ideas: list[SubmissionIdea] = Field(default_factory=list, max_length=3)
+    reviews: list[IdeaReview] = Field(default_factory=list, max_length=6)
+    comparison_boards: list[IdeaComparisonBoard] = Field(default_factory=list, max_length=3)
+
+
 class RoundAnalysis(BaseModel):
     summary_zh: str = Field(max_length=1500)
     summary_en: str = Field(max_length=2000)
@@ -512,7 +697,7 @@ class AnalysisReport(BaseModel):
     source_coverage: dict[str, Any]
     limitations_zh: str
     limitations_en: str
-    presentation: ReportPresentation | ReportPresentationV3 | None = None
+    presentation: ReportPresentation | ReportPresentationV3 | ReportPresentationV4 | None = None
     idea_rounds: list[IdeaResearchRound] = Field(default_factory=list)
 
 

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     MAX_PROVIDER_CONCURRENCY: int = Field(default=4, ge=1, le=16)
     SEARCH_PROFILE: Literal["academic_only", "academic_web"] = "academic_web"
     IDEA_PIPELINE_V3: bool = False
+    IDEA_PIPELINE_V4: bool = False
+    V4_MAX_MINUTES: int = Field(default=90, ge=10, le=180)
+    V4_FULL_TEXT_TARGET: int = Field(default=20, ge=6, le=30)
+    V4_MAX_RETRIEVAL_BATCHES: int = Field(default=3, ge=1, le=5)
 
     CLAUDE_BIN: str = "claude"
     CLAUDE_TIMEOUT_SECONDS: int = Field(default=900, ge=30)
@@ -56,6 +60,8 @@ class Settings(BaseSettings):
     def validate_budget(self) -> Settings:
         if self.BUDGET_GUARD_CNY >= self.MAX_MONTHLY_CNY:
             raise ValueError("BUDGET_GUARD_CNY must be lower than MAX_MONTHLY_CNY")
+        if self.IDEA_PIPELINE_V3 and self.IDEA_PIPELINE_V4:
+            raise ValueError("IDEA_PIPELINE_V3 and IDEA_PIPELINE_V4 cannot both be enabled")
         return self
 
     def require_worker_secrets(self) -> None:

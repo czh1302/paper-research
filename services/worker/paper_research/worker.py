@@ -46,7 +46,7 @@ class Worker:
             return
         counts = await self.repository.cleanup_expired()
         self._last_cleanup = time.monotonic()
-        if counts["uploads"] or counts["reports"]:
+        if counts["uploads"] or counts["reports"] or counts.get("orphans"):
             LOGGER.info("Expired data cleanup: %s", counts)
 
     async def run_forever(self) -> None:
@@ -77,18 +77,11 @@ class Worker:
                         await self.repository.finish_job(job.id, JobStatus.FAILED, safe_error)
                     else:
                         await self.repository.finish_job(job.id, JobStatus.COMPLETED)
-                        try:
-                            await self.repository.delete_uploads(job.files)
-                            await self.repository.add_event(
-                                job.id,
-                                "privacy_cleanup",
-                                "Source PDFs deleted after completion",
-                            )
-                        except Exception as error:
-                            LOGGER.warning(
-                                "Immediate source-PDF cleanup failed; expiry cleanup will retry: %s",
-                                redact(str(error)),
-                            )
+                        await self.repository.add_event(
+                            job.id,
+                            "source_retained",
+                            "Source PDFs retained privately until the task is deleted",
+                        )
                     finally:
                         heartbeat.cancel()
                         with suppress(asyncio.CancelledError):

@@ -5,7 +5,7 @@ import { EvidenceCitations, ReportCitationProvider, SourceCitation, SourceCitati
 import { ReportV3 } from "../components/ReportV3";
 import { createShare, downloadText, getReport, revokeShare } from "../lib/api";
 import { useLanguage } from "../lib/language";
-import { axisLabel, comparisonCsv, displayPresentation, humanReportMarkdown, isV3Presentation, localized, reportWarnings, scoreLevel } from "../lib/report";
+import { axisLabel, comparisonCsv, displayPresentation, humanReportMarkdown, isV3Presentation, isV4Presentation, localized, reportWarnings, scoreLevel } from "../lib/report";
 import type { CandidatePaper, Evidence, PresentationIdea, ProblemElement, ProblemStatement, ReportRecord, ResearchTheme } from "../lib/types";
 
 type ReportTab = "overview" | "problem" | "landscape" | "ideas";
@@ -13,6 +13,7 @@ type ReportTab = "overview" | "problem" | "landscape" | "ideas";
 const TimelineChart = lazy(() => import("../components/Charts").then((module) => ({ default: module.TimelineChart })));
 const OpportunityChart = lazy(() => import("../components/Charts").then((module) => ({ default: module.OpportunityChart })));
 const CitationGraph = lazy(() => import("../components/Charts").then((module) => ({ default: module.CitationGraph })));
+const ReportV4 = lazy(() => import("../components/ReportV4").then((module) => ({ default: module.ReportV4 })));
 
 function ChartFallback() { return <div className="mt-4 h-56 animate-pulse rounded-xl bg-subtle"/>; }
 
@@ -153,10 +154,18 @@ function LegacyReportView({ record, shared = false }: { record: ReportRecord; sh
   </article>;
 }
 
-function ReportView({ record, shared = false }: { record: ReportRecord; shared?: boolean }) {
+function ReportView({ record, publicShare = false, hideShare = false }: { record: ReportRecord; publicShare?: boolean; hideShare?: boolean }) {
   const evidence = record.content.problem_statements.flatMap((problem) => problem.evidence);
-  return <ReportCitationProvider evidence={evidence} papers={record.content.related_papers}>
-    {isV3Presentation(record.content.presentation) ? <ReportV3 record={record} presentation={record.content.presentation} shared={shared}/> : <LegacyReportView record={record} shared={shared}/>}
+  if (isV4Presentation(record.content.presentation)) {
+    for (const profile of record.content.presentation.literature_landscape.profiles) {
+      for (const claim of [profile.task, profile.input_or_data, profile.method, profile.output_or_evaluation, profile.constraints, profile.limitations]) {
+        evidence.push(...claim.evidence.map((item) => ({ id: item.id, asset_id: item.asset_id, paper_id: item.paper_id, page: item.page, section: item.section, text: item.quote, bboxes: item.bboxes, evidence_type: item.evidence_type })));
+      }
+    }
+  }
+  const sharedUi = publicShare || hideShare;
+  return <ReportCitationProvider evidence={evidence} papers={record.content.related_papers} reportId={record.id} pdfEnabled={!publicShare}>
+    {isV4Presentation(record.content.presentation) ? <Suspense fallback={<div className="report-loading mx-auto max-w-6xl"><div className="h-56 animate-pulse rounded-2xl bg-subtle"/></div>}><ReportV4 record={record} presentation={record.content.presentation} publicShare={publicShare} hideShare={hideShare}/></Suspense> : isV3Presentation(record.content.presentation) ? <ReportV3 record={record} presentation={record.content.presentation} shared={sharedUi}/> : <LegacyReportView record={record} shared={sharedUi}/>}
   </ReportCitationProvider>;
 }
 
@@ -168,7 +177,7 @@ export function ReportPage({ readOnly = false }: { readOnly?: boolean }) {
   useEffect(() => { void getReport(id).then(setRecord).catch((cause) => setError(cause instanceof Error ? cause.message : text("报告加载失败", "Could not load report"))); }, [id, text]);
   if (error) return <div className="panel p-6 text-danger">{error}</div>;
   if (!record) return <div className="report-loading mx-auto max-w-6xl" aria-label={text("加载报告", "Loading report")}><div className="h-5 w-36 animate-pulse rounded bg-subtle"/><div className="mt-4 h-10 max-w-3xl animate-pulse rounded-lg bg-subtle"/><div className="mt-8 grid gap-4 lg:grid-cols-3"><div className="h-48 animate-pulse rounded-2xl bg-subtle"/><div className="h-48 animate-pulse rounded-2xl bg-subtle"/><div className="h-48 animate-pulse rounded-2xl bg-subtle"/></div><p className="mt-6 text-sm text-muted">{text("正在整理报告内容…", "Preparing the report…")}</p></div>;
-  return <ReportView record={record} shared={readOnly}/>;
+  return <ReportView record={record} hideShare={readOnly}/>;
 }
 
-export function SharedReportView({ record }: { record: ReportRecord }) { return <ReportView record={record} shared/>; }
+export function SharedReportView({ record }: { record: ReportRecord }) { return <ReportView record={record} publicShare/>; }
