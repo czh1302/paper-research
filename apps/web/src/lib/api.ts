@@ -26,9 +26,16 @@ export async function adminListJobs(limit = 100, offset = 0): Promise<AdminJobRo
 }
 
 export async function listJobs(): Promise<JobRecord[]> {
-  const { data, error } = await requireSupabase().from("jobs").select("*").order("created_at", { ascending: false });
+  const { data, error } = await requireSupabase().from("jobs").select("*, job_files(position, uploads(original_name))").order("created_at", { ascending: false });
   if (error) throw error;
-  return data as JobRecord[];
+  type JobWithFiles = JobRecord & { job_files?: { position: number; uploads: { original_name: string } | { original_name: string }[] | null }[] };
+  return ((data ?? []) as JobWithFiles[]).map(({ job_files: files, ...job }) => ({
+    ...job,
+    file_names: [...(files ?? [])].sort((a, b) => a.position - b.position).flatMap((item) => {
+      if (Array.isArray(item.uploads)) return item.uploads.map((upload) => upload.original_name);
+      return item.uploads?.original_name ? [item.uploads.original_name] : [];
+    }),
+  }));
 }
 
 export async function createAnalysis(files: File[], mode: "single" | "multi", maxRounds: number, turnstileToken: string) {

@@ -113,8 +113,11 @@ describe("ReportPage", () => {
     await screen.findAllByText("中文摘要结论。");
     await user.click(screen.getByRole("tab", { name: "相关工作" }));
     const sourceButton = screen.getAllByRole("button", { name: "papers.example" })[0];
-    await user.click(sourceButton);
-    expect(screen.getByRole("link", { name: /打开原文/ })).toHaveAttribute("href", "https://papers.example/0");
+    await user.hover(sourceButton);
+    const sourceLink = screen.getByRole("link", { name: /打开原文/ });
+    await user.hover(sourceLink);
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    expect(sourceLink).toHaveAttribute("href", "https://papers.example/0");
     expect(document.body.textContent).not.toContain("https://papers.example/0");
 
     await user.click(screen.getByRole("button", { name: "查看全部 30 篇结果" }));
@@ -148,6 +151,7 @@ describe("ReportPage", () => {
     const record = fixture();
     const assessment = v3Assessment();
     record.content.related_papers[0].evidence_grade = "abstract";
+    record.content.related_papers[1].evidence_grade = "abstract";
     record.content.presentation = {
       version: 3, headline_zh: "如何更可靠地复现网络研究结果？", headline_en: "How can network research be reproduced more reliably?",
       problem_briefs: [{
@@ -161,6 +165,7 @@ describe("ReportPage", () => {
       idea_comparisons: [{ idea_key: assessment.idea_key, status: "conditional", rows: [
         { paper_role: "input", paper_id: "paperhash", title: "Target Paper", relationship: "baseline", task_or_capability_zh: "自动复现网络实验", task_or_capability_en: "Automate network experiments", method_or_change_zh: "现有流水线", method_or_change_en: "Existing pipeline", output_or_evaluation_zh: "复现结果", output_or_evaluation_en: "Reproduced result", key_constraint_zh: "单机", key_constraint_en: "One machine", difference_to_idea_zh: "增加契约检查", difference_to_idea_en: "Add contract checks", evidence_grade: "input_pdf", source_urls: [], input_evidence_ids: ["paperhash:b1"] },
         { paper_role: "external", paper_id: "paper-0", title: "Related Paper 0", relationship: "support", task_or_capability_zh: "支持契约检查", task_or_capability_en: "Supports contract checking", method_or_change_zh: "当前证据未覆盖", method_or_change_en: "Not covered", output_or_evaluation_zh: "当前证据未覆盖", output_or_evaluation_en: "Not covered", key_constraint_zh: "当前证据未覆盖", key_constraint_en: "Not covered", difference_to_idea_zh: "没有直接验证该改动", difference_to_idea_en: "Does not directly validate the change", evidence_grade: "abstract", source_urls: ["https://papers.example/0"], input_evidence_ids: [] },
+        { paper_role: "external", paper_id: "paper-1", title: "Related Paper 1", relationship: "overlap", task_or_capability_zh: "检测运行时偏差", task_or_capability_en: "Detect runtime drift", method_or_change_zh: "使用运行时契约", method_or_change_en: "Use runtime contracts", output_or_evaluation_zh: "报告偏差检出率", output_or_evaluation_en: "Report drift detection rate", key_constraint_zh: "需要可执行程序", key_constraint_en: "Requires executable programs", difference_to_idea_zh: "未覆盖论文复现流水线", difference_to_idea_en: "Does not cover paper reproduction pipelines", evidence_grade: "abstract", source_urls: ["https://papers.example/1"], input_evidence_ids: [] },
       ] }],
     };
     record.content.idea_rounds = [{ assessments: [assessment] }];
@@ -168,14 +173,16 @@ describe("ReportPage", () => {
 
     renderReport();
     expect(await screen.findByText("如何更可靠地复现网络研究结果？")).toBeInTheDocument();
-    expect(screen.getByText("值得继续验证，但证据还不足以正式推荐。")).toBeInTheDocument();
+    expect(screen.getByText(/V4 完整调研前不视为论文级推荐/)).toBeInTheDocument();
     expect(screen.getAllByText("输入论文").length).toBeGreaterThan(0);
     expect(screen.getAllByText("复现结果").length).toBeGreaterThan(0);
     expect(document.body.textContent).not.toContain("paperhash:b1");
 
-    await user.click(screen.getByRole("tab", { name: "相关工作" }));
-    expect(screen.getByRole("columnheader", { name: "已有能力或证据" })).toBeInTheDocument();
-    expect(screen.getByText("支持契约检查")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "研究现状" }));
+    expect(screen.getAllByText("研究任务与能力").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("检测运行时偏差").length).toBeGreaterThan(0);
+    expect(document.body.textContent).not.toContain("当前证据未覆盖");
+    expect(document.body.textContent).not.toContain("支持契约检查");
 
     await user.click(screen.getByRole("button", { name: "CSV" }));
     const csv = String(api.downloadText.mock.calls.at(-1)?.[1]);

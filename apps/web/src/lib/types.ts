@@ -11,6 +11,7 @@ export interface JobRecord {
   error: string | null;
   created_at: string;
   completed_at: string | null;
+  file_names?: string[];
 }
 
 export interface JobEvent { id: number; kind: string; message: string; data: Record<string, unknown>; created_at: string; }
