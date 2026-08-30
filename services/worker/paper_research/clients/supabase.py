@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -9,6 +10,20 @@ from urllib.parse import quote
 import httpx
 
 from ..models import Job, JobFile, JobStatus, ProviderUsage
+from ..security import redact
+
+
+def _postgres_json(value: Any) -> Any:
+    """Remove values that PostgreSQL jsonb cannot safely accept."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _postgres_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_postgres_json(item) for item in value]
+    return value
 
 
 class SupabaseRepository:
@@ -39,7 +54,14 @@ class SupabaseRepository:
         response = await self._client.request(
             method, f"{self.url}{path}", headers=headers, **kwargs
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            diagnostic = redact(response.text.strip())[-800:]
+            detail = f"; response={diagnostic}" if diagnostic else ""
+            raise httpx.HTTPStatusError(
+                f"{error}{detail}", request=response.request, response=response
+            ) from error
         return response
 
     async def claim_next_job(self, worker_id: str, lease_seconds: int) -> Job | None:
@@ -229,7 +251,7 @@ class SupabaseRepository:
                 "storage_path": file.storage_path,
                 "original_name": file.original_name,
                 "sha256": paper_id,
-                "metadata": metadata,
+                "metadata": _postgres_json(metadata),
             },
         )
         return str(response.json()[0]["id"])
@@ -268,7 +290,7 @@ class SupabaseRepository:
                 "sha256": digest,
                 "source_url": source_url,
                 "license": license_name,
-                "metadata": metadata,
+                "metadata": _postgres_json(metadata),
             },
         )
         return str(response.json()[0]["id"])
@@ -280,7 +302,7 @@ class SupabaseRepository:
             "PATCH",
             f"/rest/v1/report_evidence_assets?id=eq.{quote(asset_id)}",
             headers={"Prefer": "return=minimal"},
-            json={"metadata": metadata},
+            json={"metadata": _postgres_json(metadata)},
         )
 
     async def save_problem_statement(

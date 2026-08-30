@@ -29,6 +29,8 @@ def test_analysis_command_uses_supported_permission_mode_and_disables_tools() ->
     assert "--allowedTools" not in command
     assert "--safe-mode" in command
     assert "--strict-mcp-config" in command
+    max_turns_index = command.index("--max-turns")
+    assert command[max_turns_index + 1] == "4"
 
 
 def test_web_command_only_allows_web_search() -> None:
@@ -40,3 +42,5 @@ def test_web_command_only_allows_web_search() -> None:
     allowed_tools_index = command.index("--allowedTools")
     assert command[tools_index + 1] == "WebSearch"
     assert command[allowed_tools_index + 1] == "WebSearch"
+    max_turns_index = command.index("--max-turns")
+    assert command[max_turns_index + 1] == "8"

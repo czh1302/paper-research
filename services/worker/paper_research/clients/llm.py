@@ -102,7 +102,9 @@ class ClaudeCodeClient:
             # Claude Code submits json-schema output as a tool result on a follow-up
             # turn. One turn can generate valid JSON and still be reported as
             # error_max_turns before structured_output is emitted.
-            "4",
+            # WebSearch can require several tool-result turns before the model
+            # gets a final turn to emit the requested structured output.
+            "8" if allow_web_search else "4",
             "--no-session-persistence",
             "--disable-slash-commands",
             "--permission-mode",
