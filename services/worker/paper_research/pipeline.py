@@ -913,6 +913,9 @@ def _claim_from_problem(
         for evidence_id in dict.fromkeys(ids)
         if (item := by_id.get(evidence_id)) is not None
     ]
+    # A problem statement can cite many blocks for one high-level claim, while
+    # GroundedClaim intentionally keeps the report interaction compact.
+    locators = locators[:8]
     if not locators:
         fallback = problem.evidence[0]
         locators = [

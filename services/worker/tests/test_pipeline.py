@@ -35,6 +35,7 @@ from paper_research.models import (
     SubmissionIdea,
 )
 from paper_research.pipeline import (
+    build_input_profile,
     build_presentation_v3,
     candidate_is_computer_science_relevant,
     estimate_usage_cny,
@@ -197,6 +198,61 @@ def test_ground_problem_replaces_invented_excerpt_with_pdf_block() -> None:
     grounded = ground_problem(problem, [block])
     assert grounded.evidence[0].page == 3
     assert grounded.evidence[0].text == block.text
+
+
+def test_input_profile_caps_high_level_claim_evidence() -> None:
+    ids = [f"paper:b{index}" for index in range(12)]
+    element = ProblemElement(
+        name="input",
+        description_zh="输入论文及其研究材料",
+        description_en="The input paper and its research artifacts",
+        evidence_ids=[ids[0]],
+    )
+    problem = ProblemStatement(
+        paper_id="paper",
+        title="Paper",
+        is_computer_science=True,
+        computer_science_confidence=1,
+        background_zh="计算机研究背景说明",
+        background_en="Computer-science research background",
+        background_evidence_ids=[ids[0]],
+        task_zh="从论文证据建立可验证的研究任务定义",
+        task_en="Build a verifiable research task definition from paper evidence",
+        task_evidence_ids=ids,
+        inputs=[element],
+        outputs=[element.model_copy(update={"name": "output"})],
+        objectives=[],
+        constraints=[
+            element.model_copy(
+                update={
+                    "name": "constraint",
+                    "description_zh": "必须保留可定位的论文原文证据",
+                    "description_en": "Every claim must retain locatable paper evidence",
+                }
+            )
+        ],
+        assumptions=[],
+        algorithm_zh="按证据抽取并验证研究任务",
+        algorithm_en="Extract and validate the research task against evidence",
+        algorithm_evidence_ids=[ids[0]],
+        metrics=[],
+        confidence=1,
+        evidence=[
+            Evidence(
+                id=evidence_id,
+                paper_id="paper",
+                page=index + 1,
+                text=f"Grounded evidence excerpt number {index}.",
+                asset_id="asset",
+            )
+            for index, evidence_id in enumerate(ids)
+        ],
+    )
+
+    profile = build_input_profile(problem)
+
+    assert len(profile.task.evidence) == 8
+    assert [item.id for item in profile.task.evidence] == ids[:8]
 
 
 def test_ground_problem_repairs_evidence_id_from_exact_excerpt() -> None:
