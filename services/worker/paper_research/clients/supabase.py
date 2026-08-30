@@ -317,6 +317,30 @@ class SupabaseRepository:
             if isinstance((profile := (row.get("metadata") or {}).get("profile")), dict)
         ]
 
+    async def prune_external_assets(
+        self, job_id: str, keep_paper_ids: set[str]
+    ) -> int:
+        """Queue cached external PDFs not used by the final evidence landscape."""
+        response = await self._request(
+            "GET",
+            "/rest/v1/report_evidence_assets"
+            f"?job_id=eq.{quote(job_id)}&source_kind=eq.external&select=id,paper_id",
+        )
+        stale_ids = [
+            str(row["id"])
+            for row in response.json()
+            if str(row.get("paper_id") or "") not in keep_paper_ids
+        ]
+        if not stale_ids:
+            return 0
+        encoded_ids = ",".join(quote(asset_id) for asset_id in stale_ids)
+        await self._request(
+            "DELETE",
+            f"/rest/v1/report_evidence_assets?id=in.({encoded_ids})",
+            headers={"Prefer": "return=minimal"},
+        )
+        return len(stale_ids)
+
     async def save_problem_statement(
         self, job_id: str, paper_id: str, payload: dict[str, Any]
     ) -> None:

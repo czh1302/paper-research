@@ -2496,6 +2496,20 @@ class AnalysisPipeline:
                     for item in presentation_v4.literature_landscape.profiles
                     if item.role == "external"
                 }
+                if (
+                    self.repository
+                    and persist
+                    and hasattr(self.repository, "prune_external_assets")
+                ):
+                    pruned = await self.repository.prune_external_assets(
+                        job.id, external_ids
+                    )
+                    if pruned:
+                        await self._event(
+                            job.id,
+                            "evidence_pruned",
+                            f"Removed {pruned} unused external PDF caches",
+                        )
                 round_result = RoundAnalysis(
                     summary_zh=presentation_v4.literature_landscape.overview_zh,
                     summary_en=presentation_v4.literature_landscape.overview_en,
