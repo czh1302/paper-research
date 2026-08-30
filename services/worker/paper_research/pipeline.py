@@ -84,7 +84,7 @@ from .prompts import (
 from .reporting import DISCLAIMER_EN, DISCLAIMER_ZH, report_markdown, report_visualization_data
 from .security import validate_public_url
 from .sources import LiteratureRetriever, build_sources
-from .sources.retriever import merge_candidates, source_coverage
+from .sources.retriever import merge_candidates, normalize_title, source_coverage
 from .sources.web import SerperSource, TavilySource
 
 LOGGER = logging.getLogger(__name__)
@@ -397,6 +397,22 @@ def candidate_is_computer_science_relevant(paper: CandidatePaper) -> bool:
     biomedical_hits = sum(marker in text for marker in BIOMEDICAL_MARKERS)
     computing_hits = sum(marker in text for marker in COMPUTING_MARKERS)
     return not (biomedical_hits >= 2 and computing_hits == 0)
+
+
+def candidate_matches_input_paper(
+    paper: CandidatePaper, problems: list[ProblemStatement]
+) -> bool:
+    """Keep the uploaded paper out of the external comparison pool.
+
+    Providers can assign an arXiv/DOI ID that differs from the private input
+    asset ID. The normalized title is the stable identifier available before
+    bibliographic enrichment.
+    """
+
+    candidate_title = normalize_title(paper.title)
+    return bool(candidate_title) and any(
+        candidate_title == normalize_title(problem.title) for problem in problems
+    )
 
 
 def ground_idea_assessments(
@@ -1868,6 +1884,7 @@ class AnalysisPipeline:
             item
             for item in candidates
             if item.pdf_url
+            and not candidate_matches_input_paper(item, problems)
             and (
                 item.open_access is True
                 or bool({"arxiv", "openreview"}.intersection(item.sources))

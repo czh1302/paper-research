@@ -38,6 +38,7 @@ from paper_research.pipeline import (
     build_input_profile,
     build_presentation_v3,
     candidate_is_computer_science_relevant,
+    candidate_matches_input_paper,
     estimate_usage_cny,
     finalize_v4_ideas,
     ground_analysis,
@@ -96,6 +97,27 @@ def test_conservative_cost_estimate() -> None:
         output_tokens=100_000,
     )
     assert estimate_usage_cny(pro) == pytest.approx(3 * estimate_usage_cny(usage))
+
+
+def test_v4_external_pool_excludes_uploaded_paper_by_normalized_title() -> None:
+    problem = ProblemStatement.model_construct(
+        paper_id="private-upload-sha256",
+        title="RepLLM: Toward Automatically Reproducing Network Research Results",
+    )
+    same_paper = CandidatePaper(
+        canonical_id="arxiv:2509.21074",
+        title="RepLLM — Toward Automatically Reproducing Network Research Results",
+        url="https://arxiv.org/abs/2509.21074",
+    )
+    other_paper = same_paper.model_copy(
+        update={
+            "canonical_id": "arxiv:2504.00255",
+            "title": "A Different Network Research Reproduction System",
+        }
+    )
+
+    assert candidate_matches_input_paper(same_paper, [problem])
+    assert not candidate_matches_input_paper(other_paper, [problem])
 
 
 def test_ground_analysis_removes_model_invented_urls_and_ids() -> None:
