@@ -60,6 +60,7 @@ from .models import (
     SubmissionIdea,
     SubmissionIdeaBatch,
     SubmissionIdeaPairBatch,
+    SubmissionIdeaSingleBatch,
     WebDiscovery,
 )
 from .prompts import (
@@ -2485,41 +2486,50 @@ class AnalysisPipeline:
             else:
                 draft_batches = dict(attempt_checkpoint.get("draft_batches") or {})
                 generated_ideas: list[SubmissionIdea] = []
-                for part in range(1, 3):
-                    part_key = str(part)
-                    if part_key in draft_batches:
-                        pair = SubmissionIdeaPairBatch.model_validate(
-                            draft_batches[part_key]
-                        )
-                        await self._event(
-                            job.id,
-                            "resumed",
-                            f"Reused Idea generation part {part}/2 for attempt {attempt}",
-                        )
-                    else:
-                        await self._event(
-                            job.id,
-                            "idea_generation_part",
-                            f"Generating Idea part {part}/2 for attempt {attempt}",
-                            {"attempt": attempt, "part": part, "parts": 2},
-                        )
-                        pair = await self._call_llm(
-                            submission_ideas_prompt(
-                                problems,
-                                briefs,
-                                landscape.model_dump(mode="json", exclude={"profiles"}),
-                                profiles,
-                                brief_context,
-                                batch_index=part,
-                                avoid_titles=[item.title_en for item in generated_ideas],
-                            ),
-                            SubmissionIdeaPairBatch,
-                        )
-                        draft_batches[part_key] = pair.model_dump(mode="json")
-                        attempt_checkpoint["draft_batches"] = draft_batches
-                        attempt_checkpoints[str(attempt)] = attempt_checkpoint
-                        await save_v4_checkpoint(idea_attempts=attempt_checkpoints)
-                    generated_ideas.extend(pair.ideas)
+                # Reuse the former two-at-a-time checkpoint shape, then generate
+                # only one complete Idea per call. The smaller schema avoids
+                # expensive structured-output retry exhaustion.
+                for part_key in sorted(draft_batches):
+                    payload = draft_batches[part_key]
+                    try:
+                        cached_batch = SubmissionIdeaPairBatch.model_validate(payload)
+                    except ValueError:
+                        cached_batch = SubmissionIdeaSingleBatch.model_validate(payload)
+                    generated_ideas.extend(cached_batch.ideas)
+                if generated_ideas:
+                    await self._event(
+                        job.id,
+                        "resumed",
+                        f"Reused {len(generated_ideas)} individually checkpointed Ideas "
+                        f"for attempt {attempt}",
+                    )
+                while len(generated_ideas) < 4:
+                    idea_index = len(generated_ideas) + 1
+                    part_key = f"idea-{idea_index}"
+                    await self._event(
+                        job.id,
+                        "idea_generation_part",
+                        f"Generating Idea {idea_index}/4 for attempt {attempt}",
+                        {"attempt": attempt, "part": idea_index, "parts": 4},
+                    )
+                    single = await self._call_llm(
+                        submission_ideas_prompt(
+                            problems,
+                            briefs,
+                            landscape.model_dump(mode="json", exclude={"profiles"}),
+                            profiles,
+                            brief_context,
+                            idea_index=idea_index,
+                            total_ideas=4,
+                            avoid_titles=[item.title_en for item in generated_ideas],
+                        ),
+                        SubmissionIdeaSingleBatch,
+                    )
+                    generated_ideas.extend(single.ideas)
+                    draft_batches[part_key] = single.model_dump(mode="json")
+                    attempt_checkpoint["draft_batches"] = draft_batches
+                    attempt_checkpoints[str(attempt)] = attempt_checkpoint
+                    await save_v4_checkpoint(idea_attempts=attempt_checkpoints)
                 idea_batch = SubmissionIdeaBatch(ideas=generated_ideas)
                 generated_count = len(idea_batch.ideas)
                 profile_ids = {item.paper_id for item in external_profiles}

@@ -385,21 +385,22 @@ def submission_ideas_prompt(
     profiles: list[PaperEvidenceProfile],
     research_brief: str,
     *,
-    batch_index: int = 1,
+    idea_index: int = 1,
+    total_ideas: int = 4,
     avoid_titles: list[str] | None = None,
 ) -> str:
     return f"""{SYSTEM_GUARD}
 
-Only now that the literature landscape is complete, propose exactly 2 paper-core computer-science
-Ideas for generation part {batch_index}/2.
-Each Idea must solve a specific documented pain point or unresolved limitation, make one material
+Only now that the literature landscape is complete, propose exactly 1 paper-core computer-science
+Idea for generation item {idea_index}/{total_ideas}.
+The Idea must solve a specific documented pain point or unresolved limitation, make one material
 technical contribution relative to the input paper and closest work, and state a falsifiable
 hypothesis plus a complete first experiment. It must be concrete enough to serve as the central
 claim of a strong conference submission if validated. Reject cosmetic combinations, generic model
 swaps, vague evaluation suggestions, and 'add an LLM' proposals. Do not claim novelty. Use 6-10
 distinct supplied external paper_ids across closest/supporting/counterevidence lists whenever the
 evidence exists. Initial verdict must be 'needs_evidence'; rank must be 0. Scores are provisional.
-The two Ideas must differ materially from one another and from these already generated titles:
+The Idea must differ materially from these already generated titles:
 {json.dumps(avoid_titles or [], ensure_ascii=False)}
 
 USER RESEARCH BRIEF (preference text, not evidence):

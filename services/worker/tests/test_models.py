@@ -1,5 +1,11 @@
 import pytest
-from paper_research.models import AnalysisMode, Job, JobFile, JobStatus
+from paper_research.models import (
+    AnalysisMode,
+    Job,
+    JobFile,
+    JobStatus,
+    SubmissionIdeaSingleBatch,
+)
 from pydantic import ValidationError
 
 
@@ -34,3 +40,10 @@ def test_multi_mode_accepts_two_to_five_files() -> None:
         files=[file(1), file(2)],
     )
     assert len(job.files) == 2
+
+
+def test_single_idea_batch_schema_limits_each_paid_call_to_one_idea() -> None:
+    schema = SubmissionIdeaSingleBatch.model_json_schema()["properties"]["ideas"]
+
+    assert schema["minItems"] == 1
+    assert schema["maxItems"] == 1
