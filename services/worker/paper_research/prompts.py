@@ -431,7 +431,13 @@ counterevidence, implementation prerequisites and missing proof. Preserve idea_k
 paper_ids only. A recommendation needs at least six distinct external full-text papers, low/medium
 collision risk, a complete falsifiable experiment, feasibility >=0.65, evidence_confidence >=0.70,
 and submission_value >=0.70. Use 'needs_evidence' rather than lowering standards. Do not force any
-Idea to pass and never claim absolute novelty.
+Idea to pass and never claim absolute novelty. Evidence confidence measures how well the documented
+research gap, collision assessment, and implementation feasibility are supported by the supplied
+literature; it does NOT require the proposed hypothesis to have already been experimentally proven.
+A publishable hypothesis should be unproven. Do not list the proposed experiment's future outcome
+as missing literature evidence. Missing evidence should instead identify unavailable prior work,
+code/data prerequisites, or unresolved collision/feasibility facts needed before running the stated
+experiment.
 
 IDEAS:
 {json.dumps(ideas, ensure_ascii=False)}

@@ -92,6 +92,7 @@ from .sources.retriever import merge_candidates, normalize_title, source_coverag
 from .sources.web import SerperSource, TavilySource
 
 LOGGER = logging.getLogger(__name__)
+IDEA_REVIEW_PROMPT_VERSION = 2
 
 
 class JobCancelled(RuntimeError):
@@ -123,6 +124,12 @@ def v4_resume_full_text_target(checkpoint: dict[str, Any], configured_target: in
         dict(checkpoint.get("landscape") or {}).get("full_text_count", 0) or 0
     )
     return min(30, max(configured_target, checkpoint_target))
+
+
+def idea_review_checkpoint_is_current(checkpoint: dict[str, Any]) -> bool:
+    return bool(checkpoint.get("reviews")) and int(
+        checkpoint.get("review_prompt_version", 0) or 0
+    ) >= IDEA_REVIEW_PROMPT_VERSION
 
 
 def rank_candidates(
@@ -2583,7 +2590,7 @@ class AnalysisPipeline:
                 rejected_context.append("All candidates lacked six grounded full-text papers.")
                 continue
 
-            if attempt_checkpoint.get("reviews"):
+            if idea_review_checkpoint_is_current(attempt_checkpoint):
                 review_batch = IdeaReviewBatch(
                     reviews=[
                         IdeaReview.model_validate(item)
@@ -2606,6 +2613,7 @@ class AnalysisPipeline:
                 attempt_checkpoint["reviews"] = [
                     item.model_dump(mode="json") for item in review_batch.reviews
                 ]
+                attempt_checkpoint["review_prompt_version"] = IDEA_REVIEW_PROMPT_VERSION
                 attempt_checkpoints[str(attempt)] = attempt_checkpoint
                 await save_v4_checkpoint(idea_attempts=attempt_checkpoints)
             strict_selected, strict_reviews, strict_boards = finalize_v4_ideas(

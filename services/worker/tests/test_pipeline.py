@@ -47,6 +47,7 @@ from paper_research.pipeline import (
     ground_idea_assessments,
     ground_presentation,
     ground_problem,
+    idea_review_checkpoint_is_current,
     query_bundle_from_plan,
     rank_candidates,
     reconstruct_search_audit,
@@ -115,6 +116,13 @@ def test_v4_runtime_budget_and_full_text_target_resume_from_checkpoint() -> None
     assert v4_resume_full_text_target(
         {"landscape": {"full_text_count": 42}}, 20
     ) == 30
+
+
+def test_v4_old_review_checkpoint_is_reaudited_after_prompt_fix() -> None:
+    assert not idea_review_checkpoint_is_current({"reviews": [{"idea_key": "old"}]})
+    assert idea_review_checkpoint_is_current(
+        {"reviews": [{"idea_key": "new"}], "review_prompt_version": 2}
+    )
 
 
 async def test_pipeline_checkpoint_survives_remote_write_failure(
