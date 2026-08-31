@@ -1,5 +1,5 @@
 import { requireSupabase } from "./supabase";
-import type { AdminJobRow, AdminUserRow, JobRecord, ReportRecord, SourcePdfResponse } from "./types";
+import type { AdminJobRow, AdminUserRow, JobRecord, ReportRecord, ReportSectionName, ReportSectionResponse, SourcePdfResponse } from "./types";
 
 export async function checkIsAdmin(): Promise<boolean> {
   const { data, error } = await requireSupabase().rpc("is_admin");
@@ -51,9 +51,10 @@ export async function createAnalysis(files: File[], mode: "single" | "multi", ma
 }
 
 export async function getJob(jobId: string): Promise<JobRecord> {
-  const { data, error } = await requireSupabase().from("jobs").select("*").eq("id", jobId).single();
+  const { data, error } = await requireSupabase().from("jobs").select("*,job_files(position,upload:uploads(original_name))").eq("id", jobId).single();
   if (error) throw error;
-  return data as JobRecord;
+  const files = ((data as any).job_files ?? []).sort((a: any, b: any) => a.position - b.position);
+  return { ...data, file_names: files.map((item: any) => item.upload?.original_name).filter(Boolean) } as JobRecord;
 }
 
 export async function getReportByJob(jobId: string): Promise<ReportRecord | null> {
@@ -91,10 +92,27 @@ export async function setJobFavorite(jobId: string, isFavorite: boolean) {
   return data as { jobId: string; isFavorite: boolean };
 }
 
-export async function getSourcePdf(reportId: string, assetId: string, evidenceId: string): Promise<SourcePdfResponse> {
-  const { data, error } = await requireSupabase().functions.invoke("get-source-pdf", { body: { reportId, assetId, evidenceId } });
+const sourcePdfCache = new Map<string, { expiresAt: number; value: Promise<SourcePdfResponse> }>();
+export function getSourcePdf(reportId: string, assetId: string, evidenceId: string): Promise<SourcePdfResponse> {
+  const key = `${reportId}:${assetId}:${evidenceId}`;
+  const cached = sourcePdfCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = requireSupabase().functions.invoke("get-source-pdf", { body: { reportId, assetId, evidenceId } }).then(({ data, error }) => {
+    if (error) { sourcePdfCache.delete(key); throw error; }
+    return data as SourcePdfResponse;
+  });
+  sourcePdfCache.set(key, { expiresAt: Date.now() + 240_000, value });
+  return value;
+}
+
+export function prefetchSourcePdf(reportId: string, assetId: string, evidenceId: string) {
+  void getSourcePdf(reportId, assetId, evidenceId).catch(() => undefined);
+}
+
+export async function getReportSection(reportId: string, section: ReportSectionName, shareToken?: string): Promise<ReportSectionResponse> {
+  const { data, error } = await requireSupabase().functions.invoke("get-report-section", { body: { reportId, section, shareToken } });
   if (error) throw error;
-  return data as SourcePdfResponse;
+  return data as ReportSectionResponse;
 }
 
 export async function createShare(reportId: string) {

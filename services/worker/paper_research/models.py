@@ -628,6 +628,10 @@ class SubmissionIdea(BaseModel):
     verdict: Literal[
         "recommended", "alternative", "needs_evidence", "rejected"
     ] = "needs_evidence"
+    qualification_tier: Literal["strict", "relaxed"] = "strict"
+    review_attempt: int = Field(default=1, ge=1, le=8)
+    missing_evidence_zh: list[str] = Field(default_factory=list, max_length=5)
+    missing_evidence_en: list[str] = Field(default_factory=list, max_length=5)
 
 
 class SubmissionIdeaBatch(BaseModel):
@@ -656,6 +660,17 @@ class IdeaReviewBatch(BaseModel):
     reviews: list[IdeaReview] = Field(min_length=1, max_length=6)
 
 
+class IdeaAttemptSummary(BaseModel):
+    attempt: int = Field(ge=1, le=8)
+    generated: int = Field(ge=0, le=6)
+    grounded: int = Field(ge=0, le=6)
+    strict_passed: int = Field(ge=0, le=3)
+    added_candidates: int = Field(default=0, ge=0)
+    added_full_text: int = Field(default=0, ge=0)
+    rejection_reasons_zh: list[str] = Field(default_factory=list, max_length=12)
+    rejection_reasons_en: list[str] = Field(default_factory=list, max_length=12)
+
+
 class IdeaComparisonBoard(BaseModel):
     idea_key: str
     input_paper_id: str
@@ -674,6 +689,7 @@ class ReportPresentationV4(BaseModel):
     ideas: list[SubmissionIdea] = Field(default_factory=list, max_length=3)
     reviews: list[IdeaReview] = Field(default_factory=list, max_length=6)
     comparison_boards: list[IdeaComparisonBoard] = Field(default_factory=list, max_length=3)
+    idea_attempt_summaries: list[IdeaAttemptSummary] = Field(default_factory=list, max_length=8)
 
 
 class RoundAnalysis(BaseModel):

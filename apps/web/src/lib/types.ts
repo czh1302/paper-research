@@ -108,6 +108,8 @@ export interface SubmissionIdea {
   unresolved_questions_zh: string[]; unresolved_questions_en: string[];
   feasibility: number; submission_value: number; evidence_confidence: number; collision_risk: "low" | "medium" | "high";
   verdict: "recommended" | "alternative" | "needs_evidence" | "rejected";
+  qualification_tier?: "strict" | "relaxed"; review_attempt?: number;
+  missing_evidence_zh?: string[]; missing_evidence_en?: string[];
 }
 export interface IdeaReview {
   idea_key: string; decision: SubmissionIdea["verdict"]; rationale_zh: string; rationale_en: string;
@@ -120,7 +122,9 @@ export interface IdeaComparisonBoard { idea_key: string; input_paper_id: string;
 export interface ReportPresentationV4 {
   version: 4; headline_zh: string; headline_en: string; problem_briefs: ProblemBrief[];
   literature_landscape: LiteratureLandscape; ideas: SubmissionIdea[]; reviews: IdeaReview[]; comparison_boards: IdeaComparisonBoard[];
+  idea_attempt_summaries?: IdeaAttemptSummary[];
 }
+export interface IdeaAttemptSummary { attempt: number; generated: number; grounded: number; strict_passed: number; added_candidates: number; added_full_text: number; rejection_reasons_zh: string[]; rejection_reasons_en: string[]; }
 export interface JointProblemStatement { common_problem_zh: string; common_problem_en: string; aligned_concepts: Record<string, unknown>[]; differences: Record<string, unknown>[]; compatible_assumptions: string[]; conflicting_assumptions: string[]; formalization?: string; }
 export interface GraphNode { id: string; name: string; year?: number; }
 export interface GraphLink { source: string; target: string; }
@@ -130,7 +134,11 @@ export interface ReportRecord { id: string; job_id: string; content: AnalysisRep
 export interface SourcePdfResponse {
   signedUrl: string; expiresIn: number; page: number; bboxes: number[][]; excerpt: string;
   section: string | null; evidenceType: Evidence["evidence_type"] | null; officialUrl: string | null;
+  previewSignedUrl: string | null; previewWidth: number | null; previewHeight: number | null; previewByteSize: number | null;
 }
+
+export type ReportSectionName = "overview" | "problem" | "landscape" | "ideas";
+export interface ReportSectionResponse { section: ReportSectionName; content: Record<string, unknown> | null; updated_at?: string; }
 
 export interface AdminUserRow {
   total_count: number;

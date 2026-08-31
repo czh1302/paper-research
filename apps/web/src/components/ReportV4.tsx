@@ -11,7 +11,7 @@ import {
   Printer,
   Share2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createShare, downloadText, getFullReport, revokeShare } from "../lib/api";
 import { useLanguage } from "../lib/language";
 import { comparisonCsv, humanReportMarkdown, localized } from "../lib/report";
@@ -55,20 +55,18 @@ function ClaimCitation({ claim, title }: { claim: GroundedClaim; title: string }
 
 function BriefOverview({ brief, evidenceMap, paperTitles }: { brief: ProblemBrief; evidenceMap: Map<string, Evidence>; paperTitles: Map<string, string> }) {
   const { language, text } = useLanguage();
-  const cards = [
-    { title: text("输入", "Inputs"), items: brief.inputs, className: "v4-brief-input" },
-    { title: text("输出", "Outputs"), items: brief.outputs, className: "v4-brief-output" },
-  ];
-  const methodIds = [...new Set([...brief.algorithm_steps.flatMap((item) => item.evidence_ids), ...brief.constraints.flatMap((item) => item.evidence_ids)])];
-  return <div className="mt-6 grid gap-4 lg:grid-cols-3">
+  const cards = [{ title: text("输入", "Inputs"), items: brief.inputs, className: "v4-brief-input" }, { title: text("输出", "Outputs"), items: brief.outputs, className: "v4-brief-output" }];
+  return <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
     {cards.map((card) => <article className={`panel v4-brief-card ${card.className} p-5`} key={card.title}><h3 className="!m-0 !text-base !text-content">{card.title}</h3><div className="mt-4 space-y-3">{card.items.slice(0, 4).map((item, index) => <div key={`${item.label_en}-${index}`}><strong className="text-sm text-content">{localized(item, "label", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(item, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={item.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></div>)}</div></article>)}
-    <article className="panel v4-brief-card v4-brief-method p-5"><h3 className="!m-0 !text-base !text-content">{text("算法与关键约束", "Algorithm and key constraints")}</h3><ol className="mt-4 space-y-3">{brief.algorithm_steps.slice(0, 4).map((step) => <li className="grid grid-cols-[1.7rem_1fr] gap-2 text-sm leading-6" key={step.order}><span className="v4-step-number">{step.order}</span><span><strong className="block text-content">{localized(step, "title", language)}</strong><span className="text-muted">{localized(step, "explanation", language)}</span></span></li>)}</ol>{brief.constraints.length > 0 && <p className="mt-4 border-t border-line pt-3 text-sm leading-6 text-muted"><strong className="text-content">{text("关键约束：", "Key constraints: ")}</strong>{brief.constraints.map((item) => localized(item, "label", language)).join(text("、", ", "))}</p>}<div className="mt-3"><EvidenceCitations ids={methodIds} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></article>
+    <article className="panel v4-brief-card v4-brief-method p-5"><h3 className="!m-0 !text-base !text-content">{text("算法", "Algorithm")}</h3><ol className="mt-4 space-y-3">{brief.algorithm_steps.slice(0, 4).map((step) => <li className="grid grid-cols-[1.7rem_1fr] gap-2 text-sm leading-6" key={step.order}><span className="v4-step-number">{step.order}</span><span><strong className="block text-content">{localized(step, "title", language)}</strong><span className="text-muted">{localized(step, "explanation", language)}</span><span className="mt-2 block"><EvidenceCitations ids={step.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></span></span></li>)}</ol></article>
+    <article className="panel v4-brief-card v4-brief-constraint p-5"><h3 className="!m-0 !text-base !text-content">{text("约束", "Constraints")}</h3><div className="mt-4 space-y-3">{brief.constraints.slice(0, 4).map((item, index) => <div key={`${item.label_en}-${index}`}><strong className="text-sm text-content">{localized(item, "label", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(item, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={item.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></div>)}</div></article>
   </div>;
 }
 
 function ProblemBriefPanel({ brief, evidenceMap, paperTitles }: { brief: ProblemBrief; evidenceMap: Map<string, Evidence>; paperTitles: Map<string, string> }) {
   const { language, text } = useLanguage();
-  return <article className="panel p-5 sm:p-7"><h3 className="!m-0 !text-xl !text-content">{brief.title}</h3><div className="mt-5 rounded-xl bg-subtle/60 p-4"><span className="text-xs font-semibold text-muted">{text("论文研究问题", "Research question")}</span><p className="mt-2 leading-7 text-content">{localized(brief, "research_question", language)}</p><div className="mt-3"><EvidenceCitations ids={brief.research_question_evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></div><div className="mt-5 grid gap-5 lg:grid-cols-2"><section><h4 className="text-sm font-semibold text-content">{text("输入与输出", "Inputs and outputs")}</h4><div className="mt-3 space-y-3">{[...brief.inputs, ...brief.outputs].map((item, index) => <article className="rounded-xl border border-line p-4" key={`${item.label_en}-${index}`}><strong className="text-sm text-content">{localized(item, "label", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(item, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={item.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></article>)}</div></section><section><h4 className="text-sm font-semibold text-content">{text("算法步骤", "Algorithm steps")}</h4><ol className="mt-3 space-y-3">{brief.algorithm_steps.map((step) => <li className="rounded-xl border border-line p-4" key={step.order}><div className="flex gap-3"><span className="v4-step-number">{step.order}</span><div><strong className="text-sm text-content">{localized(step, "title", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(step, "explanation", language)}</p></div></div><div className="mt-2"><EvidenceCitations ids={step.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></li>)}</ol></section></div>{brief.constraints.length > 0 && <section className="mt-5"><h4 className="text-sm font-semibold text-content">{text("关键约束", "Key constraints")}</h4><div className="mt-3 grid gap-3 md:grid-cols-2">{brief.constraints.map((item, index) => <article className="rounded-xl border border-line p-4" key={`${item.label_en}-${index}`}><strong className="text-sm text-content">{localized(item, "label", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(item, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={item.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></article>)}</div></section>}</article>;
+  const itemSection = (title: string, items: ProblemBrief["inputs"]) => <section><h4 className="text-sm font-semibold text-content">{title}</h4><div className="mt-3 space-y-3">{items.map((item, index) => <article className="rounded-xl border border-line p-4" key={`${item.label_en}-${index}`}><strong className="text-sm text-content">{localized(item, "label", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(item, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={item.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></article>)}</div></section>;
+  return <article className="panel p-5 sm:p-7"><h3 className="!m-0 !text-xl !text-content">{brief.title}</h3><div className="mt-5 rounded-xl bg-subtle/60 p-4"><span className="text-xs font-semibold text-muted">{text("论文研究问题", "Research question")}</span><p className="mt-2 leading-7 text-content">{localized(brief, "research_question", language)}</p><div className="mt-3"><EvidenceCitations ids={brief.research_question_evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></div><div className="mt-5 grid gap-5 md:grid-cols-2">{itemSection(text("输入", "Inputs"), brief.inputs)}{itemSection(text("输出", "Outputs"), brief.outputs)}<section><h4 className="text-sm font-semibold text-content">{text("算法", "Algorithm")}</h4><ol className="mt-3 space-y-3">{brief.algorithm_steps.map((step) => <li className="rounded-xl border border-line p-4" key={step.order}><div className="flex gap-3"><span className="v4-step-number">{step.order}</span><div><strong className="text-sm text-content">{localized(step, "title", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(step, "explanation", language)}</p></div></div><div className="mt-2"><EvidenceCitations ids={step.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></li>)}</ol></section>{itemSection(text("约束", "Constraints"), brief.constraints)}</div></article>;
 }
 
 const comparisonFields: { key: keyof Pick<PaperEvidenceProfile, "task" | "input_or_data" | "method" | "output_or_evaluation" | "constraints" | "limitations">; zh: string; en: string }[] = [
@@ -151,7 +149,9 @@ function IdeaCard({ idea, review, profiles }: { idea: SubmissionIdea; review?: R
     [text("相对输入论文的改变", "Change from input paper"), localized(idea, "change_from_input", language)],
   ];
   const experiment = idea.experiment;
-  return <article className={`panel p-5 sm:p-7 ${idea.rank === 1 ? "report-recommended" : ""}`}><div className="flex flex-wrap items-start justify-between gap-4"><div><span className="report-rank">{idea.verdict === "recommended" ? text("主方案", "Primary proposal") : text(`备选方案 ${idea.rank}`, `Alternative ${idea.rank}`)}</span><h3 className="!mt-2 !text-xl !text-content">{localized(idea, "title", language)}</h3></div><div className="flex gap-2 text-xs"><span className="idea-status idea-status-viable">{text("已完成全文审查", "Full-text reviewed")}</span></div></div><p className="mt-4 text-base font-medium leading-7 text-content">{localized(idea, "one_sentence", language)}</p><div className="mt-5 grid gap-4 md:grid-cols-2">{fields.map(([label, value]) => <section className="rounded-xl border border-line p-4" key={label}><h4 className="text-xs font-semibold text-muted">{label}</h4><p className="mt-2 text-sm leading-6 text-content">{value}</p></section>)}</div>{review && <div className="mt-5 rounded-xl bg-info/[.07] p-4"><strong className="text-sm text-content">{text("审查结论", "Review conclusion")}</strong><p className="mt-2 text-sm leading-6 text-muted">{localized(review, "rationale", language)}</p></div>}<section className="mt-6"><h4 className="text-sm font-semibold text-content">{text("第一个可证伪实验", "First falsifiable experiment")}</h4><div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-3">{[
+  const relaxed = idea.qualification_tier === "relaxed";
+  const missing = language === "zh" ? idea.missing_evidence_zh : idea.missing_evidence_en;
+  return <article className={`panel p-5 sm:p-7 ${idea.rank === 1 ? "report-recommended" : ""}`}><div className="flex flex-wrap items-start justify-between gap-4"><div><span className="report-rank">{idea.verdict === "recommended" ? text("主方案", "Primary proposal") : text(`备选方案 ${idea.rank}`, `Alternative ${idea.rank}`)}</span><h3 className="!mt-2 !text-xl !text-content">{localized(idea, "title", language)}</h3></div><div className="flex flex-wrap gap-2 text-xs"><span className={`idea-status ${relaxed ? "idea-status-conditional" : "idea-status-viable"}`}>{relaxed ? text("低置信度通过", "Relaxed-threshold pass") : text("严格审查通过", "Strict review passed")}</span>{idea.review_attempt && <span className="idea-status">{text(`第 ${idea.review_attempt} 次审查`, `Review ${idea.review_attempt}`)}</span>}</div></div><p className="mt-4 text-base font-medium leading-7 text-content">{localized(idea, "one_sentence", language)}</p><div className="mt-5 grid gap-4 md:grid-cols-2">{fields.map(([label, value]) => <section className="rounded-xl border border-line p-4" key={label}><h4 className="text-xs font-semibold text-muted">{label}</h4><p className="mt-2 text-sm leading-6 text-content">{value}</p></section>)}</div>{review && <div className="mt-5 rounded-xl bg-info/[.07] p-4"><strong className="text-sm text-content">{text("审查结论", "Review conclusion")}</strong><p className="mt-2 text-sm leading-6 text-muted">{localized(review, "rationale", language)}</p></div>}{relaxed && missing?.length ? <div className="mt-5 rounded-xl border border-warning/30 bg-warning/[.08] p-4"><strong className="text-sm text-content">{text("仍需补强的证据", "Evidence still to strengthen")}</strong><ul className="mt-2 space-y-1 text-sm leading-6 text-muted">{missing.map((item) => <li key={item}>• {item}</li>)}</ul></div> : null}<section className="mt-6"><h4 className="text-sm font-semibold text-content">{text("第一个可证伪实验", "First falsifiable experiment")}</h4><div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-3">{[
     [text("实验输入", "Inputs"), localized(experiment, "inputs", language)],
     ["Baseline", localized(experiment, "baseline", language)],
     [text("核心改动", "Intervention"), localized(experiment, "intervention", language)],
@@ -161,24 +161,36 @@ function IdeaCard({ idea, review, profiles }: { idea: SubmissionIdea; review?: R
   ].map(([label, value]) => <div className="rounded-xl bg-subtle p-4" key={label}><span className="text-xs text-muted">{label}</span><p className="mt-1 text-sm leading-6 text-content">{value}</p></div>)}</div></section><div className="mt-5 flex flex-wrap gap-2"><span className="v4-score">{text("可行性", "Feasibility")} {Math.round(idea.feasibility * 100)}%</span><span className="v4-score">{text("投稿价值", "Submission value")} {Math.round(idea.submission_value * 100)}%</span><span className="v4-score">{text("证据置信度", "Evidence confidence")} {Math.round(idea.evidence_confidence * 100)}%</span></div><div className="mt-5"><SourceCitations urls={urls} papers={[]}/></div></article>;
 }
 
-export function ReportV4({ record, presentation, publicShare = false, hideShare = false }: { record: ReportRecord; presentation: ReportPresentationV4; publicShare?: boolean; hideShare?: boolean }) {
+export function ReportV4({ record, presentation, publicShare = false, hideShare = false, onSectionRequest }: { record: ReportRecord; presentation: ReportPresentationV4; publicShare?: boolean; hideShare?: boolean; onSectionRequest?: (section: ReportTab) => Promise<void> }) {
   const report = record.content;
   const { language, text, formatDate, formatNumber } = useLanguage();
   const [tab, setTab] = useState<ReportTab>("overview");
   const [shareUrl, setShareUrl] = useState("");
   const [shareId, setShareId] = useState("");
+  const [sectionLoading, setSectionLoading] = useState<ReportTab | null>(null);
+  const [sectionError, setSectionError] = useState("");
   const evidenceMap = useMemo(() => new Map(report.problem_statements.flatMap((problem) => problem.evidence.map((item) => [item.id, item] as const))), [report.problem_statements]);
   const paperTitles = useMemo(() => new Map(report.problem_statements.map((problem) => [problem.paper_id, problem.title])), [report.problem_statements]);
   const profileMap = useMemo(() => new Map(presentation.literature_landscape.profiles.map((item) => [item.paper_id, item])), [presentation.literature_landscape.profiles]);
   const ideaMap = useMemo(() => new Map(presentation.ideas.map((item) => [item.key, item])), [presentation.ideas]);
+  useEffect(() => {
+    if (tab === "overview" || !onSectionRequest) return;
+    let active = true;
+    setSectionLoading(tab); setSectionError("");
+    void onSectionRequest(tab).catch((cause) => {
+      if (active) setSectionError(cause instanceof Error ? cause.message : text("报告分区加载失败", "Could not load report section"));
+    }).finally(() => active && setSectionLoading(null));
+    return () => { active = false; };
+  }, [onSectionRequest, tab, text]);
   async function share() { const result = await createShare(record.id); const url = `${location.origin}${location.pathname}#/share/${result.token}`; setShareId(result.shareId); setShareUrl(url); await navigator.clipboard?.writeText(url); }
   async function revoke() { await revokeShare(shareId); setShareId(""); setShareUrl(""); }
   async function download(kind: "md" | "json" | "csv") { const full = publicShare ? record : await getFullReport(record.id); if (kind === "md") downloadText(`report-${language}.md`, full.markdown || humanReportMarkdown(full.content, language), "text/markdown"); else if (kind === "json") downloadText("report.json", JSON.stringify(full.content, null, 2), "application/json"); else downloadText("comparison.csv", comparisonCsv(full.content), "text/csv"); }
+  const tabLabel = (id: ReportTab, label: string) => `${label}${sectionLoading === id ? "…" : sectionError && tab === id ? " !" : ""}`;
   const tabs = [
-    { id: "overview" as const, label: text("概览", "Overview"), icon: FileText },
-    { id: "problem" as const, label: text("输入论文", "Input paper"), icon: BookOpen },
-    { id: "landscape" as const, label: text("研究现状", "Research landscape"), icon: GitCompare },
-    { id: "ideas" as const, label: text("论文级 Idea", "Paper-level ideas"), icon: Lightbulb },
+    { id: "overview" as const, label: tabLabel("overview", text("概览", "Overview")), icon: FileText },
+    { id: "problem" as const, label: tabLabel("problem", text("输入论文", "Input paper")), icon: BookOpen },
+    { id: "landscape" as const, label: tabLabel("landscape", text("研究现状", "Research landscape")), icon: GitCompare },
+    { id: "ideas" as const, label: tabLabel("ideas", text("论文级 Idea", "Paper-level ideas")), icon: Lightbulb },
   ];
   const firstIdea = presentation.ideas[0];
   const bestUnverifiedReview = !firstIdea

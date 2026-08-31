@@ -409,6 +409,25 @@ FULL-TEXT PROFILES:
 """
 
 
+def idea_followup_query_prompt(
+    ideas: list[dict[str, object]], reviews: list[dict[str, object]], attempt: int
+) -> str:
+    return f"""{SYSTEM_GUARD}
+
+The completed literature review produced Ideas that did not pass hostile review. Build 6-10
+targeted search queries for review attempt {attempt}. Cover closest collision work, contrary or
+negative evidence, implementation prerequisites, datasets/code availability, and the exact
+missing evidence named by the reviewers. Prefer precise English academic queries. Do not propose
+new Ideas in this call. Set round_number=1.
+
+FAILED IDEAS:
+{json.dumps(ideas, ensure_ascii=False)}
+
+REVIEWS:
+{json.dumps(reviews, ensure_ascii=False)}
+"""
+
+
 def web_discovery_prompt(queries: list[str]) -> str:
     return f"""{SYSTEM_GUARD}
 

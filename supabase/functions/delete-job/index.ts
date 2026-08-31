@@ -20,7 +20,7 @@ Deno.serve(async (request) => {
     }
     const { data: assets, error: assetsError } = await admin
       .from("report_evidence_assets")
-      .select("storage_path")
+      .select("id,storage_path")
       .eq("job_id", jobId);
     if (assetsError) throw assetsError;
     const paths = Array.from(new Set([
@@ -31,6 +31,16 @@ Deno.serve(async (request) => {
       (job.job_files ?? []).map((item: any) => item.upload?.id).filter(Boolean),
     ));
     if (paths.length) await admin.storage.from("papers").remove(paths);
+    const assetIds = (assets ?? []).map((item: any) => item.id).filter(Boolean);
+    if (assetIds.length) {
+      const { data: previews, error: previewsError } = await admin
+        .from("report_evidence_previews")
+        .select("storage_path")
+        .in("asset_id", assetIds);
+      if (previewsError) throw previewsError;
+      const previewPaths = (previews ?? []).map((item: any) => item.storage_path).filter(Boolean);
+      if (previewPaths.length) await admin.storage.from("evidence-previews").remove(previewPaths);
+    }
     const { error } = await admin.from("jobs").delete().eq("id", jobId).eq("user_id", user.id);
     if (error) throw error;
     if (uploadIds.length) {

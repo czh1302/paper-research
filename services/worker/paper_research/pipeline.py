@@ -28,6 +28,7 @@ from .models import (
     GroundedClaim,
     IdeaAssessment,
     IdeaAssessmentBatch,
+    IdeaAttemptSummary,
     IdeaComparisonBoard,
     IdeaComparisonMatrix,
     IdeaComparisonRow,
@@ -64,6 +65,7 @@ from .prompts import (
     baseline_report_prompt,
     brainstorm_ideas_prompt,
     idea_assessment_prompt,
+    idea_followup_query_prompt,
     idea_query_plan_prompt,
     idea_review_prompt,
     joint_problem_prompt,
@@ -1118,6 +1120,9 @@ def finalize_v4_ideas(
     drafts: list[SubmissionIdea],
     reviews: list[IdeaReview],
     profiles: list[PaperEvidenceProfile],
+    *,
+    qualification_tier: str = "strict",
+    review_attempt: int = 1,
 ) -> tuple[list[SubmissionIdea], list[IdeaReview], list[IdeaComparisonBoard]]:
     profile_map = {
         item.paper_id: item for item in profiles if item.role == "external"
@@ -1134,14 +1139,16 @@ def finalize_v4_ideas(
         supporting = [value for value in dict.fromkeys(review.supporting_work_ids) if value in profile_map]
         counter = [value for value in dict.fromkeys(review.counterevidence_work_ids) if value in profile_map]
         evidence_ids = list(dict.fromkeys(closest + supporting + counter))
+        relaxed = qualification_tier == "relaxed"
         passes = (
-            len(evidence_ids) >= 6
+            review.decision != "rejected"
+            and len(evidence_ids) >= 6
             and len(closest) >= 2
             and len(supporting) >= 2
             and review.collision_risk != "high"
-            and review.feasibility >= 0.65
-            and review.evidence_confidence >= 0.70
-            and review.submission_value >= 0.70
+            and review.feasibility >= (0.60 if relaxed else 0.65)
+            and review.evidence_confidence >= (0.50 if relaxed else 0.70)
+            and review.submission_value >= (0.65 if relaxed else 0.70)
         )
         decision = review.decision if passes else "needs_evidence"
         if review.collision_risk == "high":
@@ -1168,6 +1175,10 @@ def finalize_v4_ideas(
                         "submission_value": review.submission_value,
                         "evidence_confidence": review.evidence_confidence,
                         "collision_risk": review.collision_risk,
+                        "qualification_tier": qualification_tier,
+                        "review_attempt": review_attempt,
+                        "missing_evidence_zh": review.missing_evidence_zh,
+                        "missing_evidence_en": review.missing_evidence_en,
                     }
                 )
             )
@@ -1218,6 +1229,31 @@ def finalize_v4_ideas(
     return selected, final_reviews, boards
 
 
+def idea_semantic_tokens(idea: SubmissionIdea) -> set[str]:
+    """Build a stable English token signature for cross-attempt Idea deduping."""
+
+    text = " ".join(
+        (idea.title_en, idea.hypothesis_en, idea.core_contribution_en, idea.mechanism_en)
+    ).casefold()
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9+._-]{2,}", text)
+        if token not in {"with", "from", "that", "this", "using", "into", "through"}
+    }
+
+
+def idea_is_semantic_duplicate(
+    idea: SubmissionIdea, previous: list[set[str]], *, threshold: float = 0.82
+) -> bool:
+    tokens = idea_semantic_tokens(idea)
+    if not tokens:
+        return False
+    return any(
+        len(tokens & other) / max(1, len(tokens | other)) >= threshold
+        for other in previous
+    )
+
+
 def report_summary(report: AnalysisReport) -> dict[str, Any]:
     selected_ids: set[str] = set()
     payload = report.model_dump(mode="json")
@@ -1229,24 +1265,6 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
         }
         presentation = payload["presentation"]
 
-        def compact_profile(profile: dict[str, Any]) -> dict[str, Any]:
-            for name in (
-                "task",
-                "input_or_data",
-                "method",
-                "output_or_evaluation",
-                "constraints",
-                "limitations",
-            ):
-                claim = profile[name]
-                claim["claim_zh"] = claim["claim_zh"][:320]
-                claim["claim_en"] = claim["claim_en"][:600]
-                claim["evidence"] = claim["evidence"][:2]
-                for locator in claim["evidence"]:
-                    locator["quote"] = locator["quote"][:320]
-                    locator["bboxes"] = locator.get("bboxes", [])[:2]
-            return profile
-
         representative_ids: list[str] = []
         for theme in report.presentation.literature_landscape.themes:
             for paper_id in theme.paper_ids:
@@ -1256,17 +1274,21 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
                     break
             if len(representative_ids) >= 8:
                 break
-        summary_profile_ids = selected_ids or set(representative_ids)
-
         landscape = presentation["literature_landscape"]
-        landscape["profiles"] = [
-            compact_profile(profile)
-            for profile in landscape["profiles"]
-            if profile["role"] == "input"
-            or profile["paper_id"] in summary_profile_ids
-        ]
-        for board in presentation["comparison_boards"]:
-            board["profiles"] = [compact_profile(profile) for profile in board["profiles"]]
+        # The initial payload is an overview manifest. Full evidence profiles and
+        # boards are fetched from report_sections only when their tab is opened.
+        landscape["profiles"] = []
+        presentation["comparison_boards"] = []
+        # Overview needs only the leading proposal. The Ideas section replaces
+        # these arrays with the complete review payload on first navigation.
+        presentation["ideas"] = presentation["ideas"][:1]
+        leading_key = presentation["ideas"][0]["key"] if presentation["ideas"] else None
+        presentation["reviews"] = [
+            item
+            for item in presentation["reviews"]
+            if leading_key is None or item["idea_key"] == leading_key
+        ][:3]
+        presentation["idea_attempt_summaries"] = []
 
         # The complete candidate set belongs to the on-demand full report. When
         # no Idea passes the gate there are no comparison-board IDs, so falling
@@ -1276,10 +1298,21 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
         if not display_ids:
             display_ids.update(representative_ids)
         payload["related_papers"] = [
-            item.model_dump(mode="json")
+            {
+                "canonical_id": item.canonical_id,
+                "title": item.title,
+                "year": item.year,
+                "authors": item.authors[:4],
+                "venue": item.venue,
+                "url": item.url,
+                "pdf_url": item.pdf_url,
+                "sources": item.sources,
+                "relevance_score": item.relevance_score,
+                "evidence_grade": item.evidence_grade,
+            }
             for item in report.related_papers
             if item.canonical_id in display_ids
-        ][:24]
+        ][:12]
 
         brief_evidence_ids = {
             evidence_id
@@ -1292,22 +1325,62 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
                 + [value for item in brief.constraints for value in item.evidence_ids]
             )
         }
+        compact_problems: list[dict[str, Any]] = []
         for problem in payload["problem_statements"]:
-            problem["evidence"] = [
-                evidence
-                for evidence in problem["evidence"]
-                if evidence["id"] in brief_evidence_ids
+            evidence_rows = [
+                evidence_row
+                for evidence_row in problem["evidence"]
+                if evidence_row["id"] in brief_evidence_ids
             ]
-            for evidence in problem["evidence"]:
-                evidence["text"] = evidence["text"][:500]
-                evidence["bboxes"] = evidence.get("bboxes", [])[:2]
+            for evidence_row in evidence_rows:
+                evidence_row["text"] = evidence_row["text"][:500]
+                evidence_row["bboxes"] = evidence_row.get("bboxes", [])[:2]
+            compact_problems.append(
+                {
+                    "paper_id": problem["paper_id"],
+                    "title": problem["title"],
+                    "evidence": evidence_rows,
+                }
+            )
+        payload["problem_statements"] = compact_problems
     else:
         payload["related_papers"] = [
             item.model_dump(mode="json") for item in report.related_papers
         ]
     payload["search_audit"] = []
-    payload["rounds"] = payload["rounds"][-1:]
+    payload["rounds"] = []
+    payload["source_coverage"]["visualizations"] = {}
     return payload
+
+
+def report_section_payloads(report: AnalysisReport) -> dict[str, dict[str, Any]]:
+    """Split V4 reports into tab-sized payloads; legacy reports keep full fallback."""
+    if not isinstance(report.presentation, ReportPresentationV4):
+        return {}
+    presentation = report.presentation.model_dump(mode="json")
+    return {
+        "overview": {"summary": report_summary(report)},
+        "problem": {
+            "problem_statements": [
+                item.model_dump(mode="json") for item in report.problem_statements
+            ],
+            "problem_briefs": presentation["problem_briefs"],
+        },
+        "landscape": {
+            "related_papers": [
+                item.model_dump(mode="json") for item in report.related_papers
+            ],
+            "literature_landscape": presentation["literature_landscape"],
+            "comparison_boards": presentation["comparison_boards"],
+            "source_coverage": report.source_coverage,
+        },
+        "ideas": {
+            "ideas": presentation["ideas"],
+            "reviews": presentation["reviews"],
+            "comparison_boards": presentation["comparison_boards"],
+            "idea_attempt_summaries": presentation["idea_attempt_summaries"],
+        },
+    }
 
 
 class AnalysisPipeline:
@@ -1973,8 +2046,9 @@ class AnalysisPipeline:
         deadline: float,
         *,
         persist: bool,
+        target_override: int | None = None,
     ) -> list[PaperEvidenceProfile]:
-        target = self.settings.V4_FULL_TEXT_TARGET
+        target = min(30, target_override or self.settings.V4_FULL_TEXT_TARGET)
         pool = candidates[: min(len(candidates), target * 2)]
         profiles: list[PaperEvidenceProfile] = []
         if (
@@ -2111,6 +2185,8 @@ class AnalysisPipeline:
         problems: list[ProblemStatement],
         briefs: list[ProblemBrief],
         workspace: Path,
+        pipeline_checkpoint: dict[str, Any],
+        stored_candidates: list[CandidatePaper],
         *,
         persist: bool,
     ) -> tuple[
@@ -2119,105 +2195,452 @@ class AnalysisPipeline:
         list[dict[str, object]],
         list[QueryBundle],
     ]:
+        v4_checkpoint = dict(pipeline_checkpoint.get("v4") or {})
+
+        async def save_v4_checkpoint(**values: Any) -> None:
+            v4_checkpoint.update(values)
+            pipeline_checkpoint["v4"] = v4_checkpoint
+            if self.repository and persist:
+                await self.repository.save_pipeline_checkpoint(job.id, pipeline_checkpoint)
+
         deadline = (
             asyncio.get_running_loop().time() + self.settings.V4_MAX_MINUTES * 60
         )
-        candidates, audit, bundles = await self._v4_retrieve_landscape(
-            job, problems, deadline, persist=persist
-        )
+        if v4_checkpoint.get("complete"):
+            presentation = ReportPresentationV4.model_validate(
+                v4_checkpoint["presentation"]
+            )
+            audit = list(v4_checkpoint.get("audit") or [])
+            bundles = [
+                QueryBundle.model_validate(item)
+                for item in v4_checkpoint.get("bundles") or []
+            ]
+            await self._event(
+                job.id, "resumed", "Reused completed V4 research checkpoint"
+            )
+            return presentation, stored_candidates, audit, bundles
+
+        if v4_checkpoint.get("retrieval_complete") and stored_candidates:
+            candidates = stored_candidates
+            audit = list(v4_checkpoint.get("audit") or [])
+            bundles = [
+                QueryBundle.model_validate(item)
+                for item in v4_checkpoint.get("bundles") or []
+            ]
+            await self._event(
+                job.id,
+                "resumed",
+                f"Reused {len(candidates)} checkpointed V4 retrieval candidates",
+            )
+        else:
+            candidates, audit, bundles = await self._v4_retrieve_landscape(
+                job, problems, deadline, persist=persist
+            )
+            await save_v4_checkpoint(
+                retrieval_complete=True,
+                audit=audit,
+                bundles=[item.model_dump(mode="json") for item in bundles],
+            )
+        await self._update(job.id, JobStatus.SEARCHING, "v4_full_text", 52)
         await self._event(
             job.id,
             "stage",
             "Reranking candidates for open full-text review",
         )
-        ranked = await self._v4_rank_full_text(problems, candidates)
-        external_profiles = await self._v4_external_profiles(
-            job, ranked, workspace, deadline, persist=persist
-        )
         input_profiles = [build_input_profile(item) for item in problems]
-        profiles = input_profiles + external_profiles
         minimum_full_text = min(20, self.settings.V4_FULL_TEXT_TARGET)
-        if len(external_profiles) < minimum_full_text:
-            raise ValueError(
-                "V4 full-text evidence threshold was not met: "
-                f"built {len(external_profiles)} complete profiles, "
-                f"requires {minimum_full_text}"
+        cached_profiles: list[PaperEvidenceProfile] = []
+        if self.repository and persist and hasattr(self.repository, "load_external_profiles"):
+            cached_profiles = [
+                PaperEvidenceProfile.model_validate(item)
+                for item in await self.repository.load_external_profiles(job.id)
+            ]
+        if v4_checkpoint.get("landscape") and len(cached_profiles) >= minimum_full_text:
+            external_profiles = cached_profiles[: self.settings.V4_FULL_TEXT_TARGET]
+            profiles = input_profiles + external_profiles
+            landscape_values = dict(v4_checkpoint["landscape"])
+            landscape_values["profiles"] = [
+                item.model_dump(mode="json") for item in profiles
+            ]
+            landscape = LiteratureLandscape.model_validate(landscape_values)
+            await self._event(
+                job.id,
+                "resumed",
+                f"Reused research landscape and {len(external_profiles)} full-text profiles",
             )
-        await self._event(
-            job.id,
-            "stage",
-            f"Synthesizing research landscape from {len(external_profiles)} full-text papers",
+        else:
+            ranked = await self._v4_rank_full_text(problems, candidates)
+            external_profiles = await self._v4_external_profiles(
+                job, ranked, workspace, deadline, persist=persist
+            )
+            profiles = input_profiles + external_profiles
+            if len(external_profiles) < minimum_full_text:
+                raise ValueError(
+                    "V4 full-text evidence threshold was not met: "
+                    f"built {len(external_profiles)} complete profiles, "
+                    f"requires {minimum_full_text}"
+                )
+            await self._update(job.id, JobStatus.ANALYZING, "v4_landscape", 72)
+            await self._event(
+                job.id,
+                "stage",
+                f"Synthesizing research landscape from {len(external_profiles)} full-text papers",
+            )
+            landscape_draft = await self._call_llm(
+                landscape_prompt(profiles), LiteratureLandscapeDraft
+            )
+            allowed_ids = {item.paper_id for item in profiles}
+            themes = [
+                item.model_copy(
+                    update={
+                        "paper_ids": [
+                            value
+                            for value in dict.fromkeys(item.paper_ids)
+                            if value in allowed_ids
+                        ]
+                    }
+                )
+                for item in landscape_draft.themes
+            ]
+            themes = [item for item in themes if item.paper_ids]
+            if len(themes) < 2:
+                raise ValueError("V4 landscape synthesis did not retain two grounded themes")
+            landscape = LiteratureLandscape(
+                overview_zh=landscape_draft.overview_zh,
+                overview_en=landscape_draft.overview_en,
+                candidate_count=len(candidates),
+                screened_count=len(ranked),
+                full_text_count=len(external_profiles),
+                source_counts=source_coverage(candidates),
+                themes=themes,
+                profiles=profiles,
+            )
+            await save_v4_checkpoint(
+                landscape=landscape.model_dump(mode="json", exclude={"profiles"})
+            )
+        max_attempts = (
+            self.settings.V4_MAX_IDEA_REVIEW_ATTEMPTS
+            if self.settings.V4_IDEA_RETRY_ENABLED
+            else 1
         )
-        landscape_draft = await self._call_llm(
-            landscape_prompt(profiles), LiteratureLandscapeDraft
-        )
-        allowed_ids = {item.paper_id for item in profiles}
-        themes = [
-            item.model_copy(
-                update={
-                    "paper_ids": [
-                        value for value in dict.fromkeys(item.paper_ids) if value in allowed_ids
+        selected: list[SubmissionIdea] = []
+        reviews: list[IdeaReview] = []
+        boards: list[IdeaComparisonBoard] = []
+        attempt_summaries: list[IdeaAttemptSummary] = []
+        best_batch: tuple[list[SubmissionIdea], list[IdeaReview], int, float] | None = None
+        rejected_context: list[str] = []
+        previous_idea_tokens: list[set[str]] = []
+        attempt_checkpoints = dict(v4_checkpoint.get("idea_attempts") or {})
+
+        for attempt in range(1, max_attempts + 1):
+            if asyncio.get_running_loop().time() >= deadline:
+                break
+            await self._cancel_guard(job.id)
+            await self._update(
+                job.id,
+                JobStatus.ANALYZING,
+                "v4_ideas",
+                min(91, 74 + int((attempt - 1) / max(1, max_attempts) * 17)),
+            )
+            await self._event(
+                job.id,
+                "idea_attempt",
+                f"Generating and reviewing paper-core Ideas: attempt {attempt}/{max_attempts}",
+                {"attempt": attempt, "max_attempts": max_attempts},
+            )
+            retry_context = "\n".join(rejected_context[-12:])
+            brief_context = job.research_brief
+            if retry_context:
+                brief_context += (
+                    "\n\nPrevious Ideas were rejected. Do not paraphrase them; address these "
+                    f"review findings instead:\n{retry_context}"
+                )
+            attempt_checkpoint = dict(attempt_checkpoints.get(str(attempt)) or {})
+            if "drafts" in attempt_checkpoint:
+                grounded_drafts = [
+                    SubmissionIdea.model_validate(item)
+                    for item in attempt_checkpoint["drafts"]
+                ]
+                generated_count = int(
+                    attempt_checkpoint.get("generated", len(grounded_drafts))
+                )
+                previous_idea_tokens.extend(
+                    idea_semantic_tokens(item) for item in grounded_drafts
+                )
+                await self._event(
+                    job.id,
+                    "resumed",
+                    f"Reused Idea drafts for review attempt {attempt}",
+                )
+            else:
+                idea_batch = await self._call_llm(
+                    submission_ideas_prompt(
+                        problems,
+                        briefs,
+                        landscape.model_dump(mode="json", exclude={"profiles"}),
+                        profiles,
+                        brief_context,
+                    ),
+                    SubmissionIdeaBatch,
+                )
+                generated_count = len(idea_batch.ideas)
+                profile_ids = {item.paper_id for item in external_profiles}
+                grounded_drafts = []
+                for item in idea_batch.ideas:
+                    if idea_is_semantic_duplicate(item, previous_idea_tokens):
+                        continue
+                    previous_idea_tokens.append(idea_semantic_tokens(item))
+                    values = item.model_dump(mode="json")
+                    values["key"] = f"a{attempt}-{values['key']}"[:60]
+                    values["review_attempt"] = attempt
+                    for name in (
+                        "closest_work_ids",
+                        "supporting_work_ids",
+                        "counterevidence_work_ids",
+                    ):
+                        values[name] = [
+                            value
+                            for value in dict.fromkeys(values[name])
+                            if value in profile_ids
+                        ]
+                    if (
+                        len(
+                            set(
+                                values["closest_work_ids"]
+                                + values["supporting_work_ids"]
+                            )
+                        )
+                        >= 6
+                        and len(values["closest_work_ids"]) >= 2
+                        and len(values["supporting_work_ids"]) >= 2
+                    ):
+                        grounded_drafts.append(SubmissionIdea.model_validate(values))
+                attempt_checkpoint.update(
+                    generated=generated_count,
+                    drafts=[item.model_dump(mode="json") for item in grounded_drafts],
+                )
+                attempt_checkpoints[str(attempt)] = attempt_checkpoint
+                await save_v4_checkpoint(idea_attempts=attempt_checkpoints)
+            if not grounded_drafts:
+                attempt_summaries.append(
+                    IdeaAttemptSummary(
+                        attempt=attempt,
+                        generated=generated_count,
+                        grounded=0,
+                        strict_passed=0,
+                        rejection_reasons_zh=["候选 Idea 未绑定足够的全文论文证据"],
+                        rejection_reasons_en=["Candidates did not bind enough full-text evidence"],
+                    )
+                )
+                rejected_context.append("All candidates lacked six grounded full-text papers.")
+                continue
+
+            if attempt_checkpoint.get("reviews"):
+                review_batch = IdeaReviewBatch(
+                    reviews=[
+                        IdeaReview.model_validate(item)
+                        for item in attempt_checkpoint["reviews"]
                     ]
+                )
+                await self._event(
+                    job.id,
+                    "resumed",
+                    f"Reused hostile review for Idea attempt {attempt}",
+                )
+            else:
+                review_batch = await self._call_llm(
+                    idea_review_prompt(
+                        [item.model_dump(mode="json") for item in grounded_drafts],
+                        profiles,
+                    ),
+                    IdeaReviewBatch,
+                )
+                attempt_checkpoint["reviews"] = [
+                    item.model_dump(mode="json") for item in review_batch.reviews
+                ]
+                attempt_checkpoints[str(attempt)] = attempt_checkpoint
+                await save_v4_checkpoint(idea_attempts=attempt_checkpoints)
+            strict_selected, strict_reviews, strict_boards = finalize_v4_ideas(
+                grounded_drafts,
+                review_batch.reviews,
+                profiles,
+                qualification_tier="strict",
+                review_attempt=attempt,
+            )
+            score = max(
+                (
+                    item.feasibility
+                    + item.submission_value
+                    + item.evidence_confidence
+                    - (1 if item.collision_risk == "high" else 0)
+                    for item in strict_reviews
+                ),
+                default=-1,
+            )
+            if best_batch is None or score > best_batch[3]:
+                best_batch = (grounded_drafts, review_batch.reviews, attempt, score)
+            attempt_summaries.append(
+                IdeaAttemptSummary(
+                    attempt=attempt,
+                    generated=generated_count,
+                    grounded=len(grounded_drafts),
+                    strict_passed=len(strict_selected),
+                    rejection_reasons_zh=[
+                        item.rationale_zh for item in strict_reviews if item.decision not in {"recommended", "alternative"}
+                    ][:12],
+                    rejection_reasons_en=[
+                        item.rationale_en for item in strict_reviews if item.decision not in {"recommended", "alternative"}
+                    ][:12],
+                )
+            )
+            if strict_selected:
+                selected, reviews, boards = strict_selected, strict_reviews, strict_boards
+                break
+
+            rejected_context.extend(
+                f"{item.idea_title_en}: {item.rationale_en}; missing: {', '.join(item.missing_evidence_en)}"
+                for item in strict_reviews
+            )
+            # The first three attempts are complete review cycles: failed reviews
+            # trigger targeted multi-source retrieval and up to five more full texts.
+            if attempt >= 3 or attempt >= max_attempts:
+                continue
+            if attempt_checkpoint.get("followup_complete"):
+                attempt_summaries[-1] = attempt_summaries[-1].model_copy(
+                    update={
+                        "added_candidates": int(
+                            attempt_checkpoint.get("added_candidates", 0)
+                        ),
+                        "added_full_text": int(
+                            attempt_checkpoint.get("added_full_text", 0)
+                        ),
+                    }
+                )
+                await self._event(
+                    job.id,
+                    "resumed",
+                    f"Reused targeted evidence expansion after Idea attempt {attempt}",
+                )
+                continue
+            if attempt_checkpoint.get("followup_bundle"):
+                bundle = QueryBundle.model_validate(
+                    attempt_checkpoint["followup_bundle"]
+                )
+            else:
+                bundle = await self._call_llm(
+                    idea_followup_query_prompt(
+                        [item.model_dump(mode="json") for item in grounded_drafts],
+                        [item.model_dump(mode="json") for item in strict_reviews],
+                        attempt + 1,
+                    ),
+                    QueryBundle,
+                )
+                attempt_checkpoint["followup_bundle"] = bundle.model_dump(mode="json")
+                attempt_checkpoints[str(attempt)] = attempt_checkpoint
+                await save_v4_checkpoint(idea_attempts=attempt_checkpoints)
+            bundle.round_number = 1
+            bundles.append(bundle)
+            previous_ids = {item.canonical_id for item in candidates}
+            (new_candidates, new_audit), web_discovery = await asyncio.gather(
+                self.retriever.retrieve(bundle, per_source_limit=10),
+                self._discover_web(bundle),
+            )
+            for paper in web_discovery.papers:
+                paper.sources = sorted(set(paper.sources + ["deepseek_websearch"]))
+                paper.queries = sorted(set(paper.queries + web_discovery.searched_queries))
+            candidates = rank_candidates(
+                merge_candidates(
+                    candidates
+                    + [
+                        item
+                        for item in new_candidates + web_discovery.papers
+                        if candidate_is_computer_science_relevant(item)
+                    ]
+                ),
+                bundle,
+            )
+            added_candidates = len(
+                [item for item in candidates if item.canonical_id not in previous_ids]
+            )
+            audit.extend(
+                {"idea_attempt": attempt + 1, **item} for item in new_audit
+            )
+            old_profile_count = len(external_profiles)
+            ranked = await self._v4_rank_full_text(problems, candidates)
+            external_profiles = await self._v4_external_profiles(
+                job,
+                ranked,
+                workspace,
+                deadline,
+                persist=persist,
+                target_override=min(30, old_profile_count + 5),
+            )
+            profiles = input_profiles + external_profiles
+            landscape_draft = await self._call_llm(
+                landscape_prompt(profiles), LiteratureLandscapeDraft
+            )
+            allowed_ids = {item.paper_id for item in profiles}
+            next_themes = [
+                item.model_copy(
+                    update={
+                        "paper_ids": [
+                            value
+                            for value in dict.fromkeys(item.paper_ids)
+                            if value in allowed_ids
+                        ]
+                    }
+                )
+                for item in landscape_draft.themes
+            ]
+            next_themes = [item for item in next_themes if item.paper_ids]
+            if len(next_themes) >= 2:
+                landscape = LiteratureLandscape(
+                    overview_zh=landscape_draft.overview_zh,
+                    overview_en=landscape_draft.overview_en,
+                    candidate_count=len(candidates),
+                    screened_count=len(ranked),
+                    full_text_count=len(external_profiles),
+                    source_counts=source_coverage(candidates),
+                    themes=next_themes,
+                    profiles=profiles,
+                )
+            attempt_checkpoint["followup_complete"] = True
+            attempt_checkpoint["added_candidates"] = added_candidates
+            attempt_checkpoint["added_full_text"] = max(
+                0, len(external_profiles) - old_profile_count
+            )
+            attempt_checkpoints[str(attempt)] = attempt_checkpoint
+            await save_v4_checkpoint(
+                idea_attempts=attempt_checkpoints,
+                landscape=landscape.model_dump(mode="json", exclude={"profiles"}),
+                audit=audit,
+                bundles=[item.model_dump(mode="json") for item in bundles],
+            )
+            attempt_summaries[-1] = attempt_summaries[-1].model_copy(
+                update={
+                    "added_candidates": added_candidates,
+                    "added_full_text": max(0, len(external_profiles) - old_profile_count),
                 }
             )
-            for item in landscape_draft.themes
-        ]
-        themes = [item for item in themes if item.paper_ids]
-        if len(themes) < 2:
-            raise ValueError("V4 landscape synthesis did not retain two grounded themes")
-        landscape = LiteratureLandscape(
-            overview_zh=landscape_draft.overview_zh,
-            overview_en=landscape_draft.overview_en,
-            candidate_count=len(candidates),
-            screened_count=len(ranked),
-            full_text_count=len(external_profiles),
-            source_counts=source_coverage(candidates),
-            themes=themes,
-            profiles=profiles,
-        )
-        await self._event(
-            job.id,
-            "stage",
-            "Proposing paper-core Ideas after the literature review",
-        )
-        idea_batch = await self._call_llm(
-            submission_ideas_prompt(
-                problems,
-                briefs,
-                landscape.model_dump(mode="json", exclude={"profiles"}),
+            if self.repository and persist:
+                await self.repository.save_candidates(
+                    job.id,
+                    [item.model_dump(mode="json") for item in candidates],
+                )
+
+        if not selected and best_batch:
+            best_drafts, best_reviews, best_attempt, _ = best_batch
+            selected, reviews, boards = finalize_v4_ideas(
+                best_drafts,
+                best_reviews,
                 profiles,
-                job.research_brief,
-            ),
-            SubmissionIdeaBatch,
-        )
-        profile_ids = {item.paper_id for item in external_profiles}
-        grounded_drafts: list[SubmissionIdea] = []
-        for item in idea_batch.ideas:
-            values = item.model_dump(mode="json")
-            for name in (
-                "closest_work_ids",
-                "supporting_work_ids",
-                "counterevidence_work_ids",
-            ):
-                values[name] = [
-                    value
-                    for value in dict.fromkeys(values[name])
-                    if value in profile_ids
-                ]
-            if len(values["closest_work_ids"]) >= 2 and len(values["supporting_work_ids"]) >= 2:
-                grounded_drafts.append(SubmissionIdea.model_validate(values))
-        if not grounded_drafts:
-            raise ValueError("V4 Idea generation did not retain any grounded proposal")
-        review_batch = await self._call_llm(
-            idea_review_prompt(
-                [item.model_dump(mode="json") for item in grounded_drafts],
-                profiles,
-            ),
-            IdeaReviewBatch,
-        )
-        selected, reviews, boards = finalize_v4_ideas(
-            grounded_drafts, review_batch.reviews, profiles
-        )
+                qualification_tier="relaxed",
+                review_attempt=best_attempt,
+            )
+        if not selected:
+            raise ValueError(
+                "V4 Idea review exhausted the time/evidence budget without a structurally valid proposal"
+            )
         headline_zh = briefs[0].research_question_zh
         headline_en = briefs[0].research_question_en
         presentation = ReportPresentationV4(
@@ -2228,6 +2651,13 @@ class AnalysisPipeline:
             ideas=selected,
             reviews=reviews,
             comparison_boards=boards,
+            idea_attempt_summaries=attempt_summaries,
+        )
+        await save_v4_checkpoint(
+            complete=True,
+            presentation=presentation.model_dump(mode="json"),
+            audit=audit,
+            bundles=[item.model_dump(mode="json") for item in bundles],
         )
         return presentation, candidates, audit, bundles
 
@@ -2488,6 +2918,11 @@ class AnalysisPipeline:
                         problems,
                         problem_briefs,
                         workspace_path,
+                        pipeline_checkpoint,
+                        [
+                            CandidatePaper.model_validate(row["content"])
+                            for row in stored_state["candidates"]
+                        ],
                         persist=persist,
                     )
                 )
@@ -2563,7 +2998,30 @@ class AnalysisPipeline:
                         report.model_dump(mode="json"),
                         markdown,
                         report_summary(report),
+                        report_section_payloads(report)
+                        if self.settings.REPORT_SECTIONS_ENABLED
+                        else None,
                     )
+                    if self.settings.PDF_EVIDENCE_PREVIEW_ENABLED and hasattr(
+                        self.repository, "generate_evidence_previews"
+                    ):
+                        await self._event(
+                            job.id,
+                            "stage",
+                            "Preparing fast evidence-page previews",
+                        )
+                        try:
+                            preview_count = await self.repository.generate_evidence_previews(
+                                job.id, workspace_path, concurrency=2
+                            )
+                            await self._event(
+                                job.id,
+                                "evidence_previews",
+                                f"Prepared {preview_count} cited-page previews",
+                                {"count": preview_count},
+                            )
+                        except Exception as error:
+                            LOGGER.warning("Evidence preview generation failed softly: %s", error)
                 await self._event(job.id, "completed", "V4 evidence-first report generated")
                 return report
 

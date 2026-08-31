@@ -881,5 +881,46 @@ def test_v4_high_collision_is_rejected_and_summary_stays_compact() -> None:
     )
     no_idea_summary = report_summary(no_idea_report)
     assert len(no_idea_summary["related_papers"]) <= 24
-    assert len(no_idea_summary["presentation"]["literature_landscape"]["profiles"]) == 3
-    assert len(json.dumps(no_idea_summary, ensure_ascii=False).encode()) < 300_000
+    assert no_idea_summary["presentation"]["literature_landscape"]["profiles"] == []
+    assert len(json.dumps(no_idea_summary, ensure_ascii=False).encode()) < 80_000
+
+
+def test_v4_relaxed_gate_only_lowers_numeric_scores() -> None:
+    profiles = [v4_profile("input", "input")] + [
+        v4_profile(f"paper-{index}") for index in range(6)
+    ]
+    review = v4_review().model_copy(
+        update={
+            "feasibility": 0.60,
+            "submission_value": 0.65,
+            "evidence_confidence": 0.50,
+            "missing_evidence_zh": ["需要扩大实验规模"],
+            "missing_evidence_en": ["A larger experiment is still needed"],
+        }
+    )
+    strict, _, _ = finalize_v4_ideas([v4_idea()], [review], profiles)
+    assert strict == []
+    relaxed, _, _ = finalize_v4_ideas(
+        [v4_idea()], [review], profiles,
+        qualification_tier="relaxed", review_attempt=4,
+    )
+    assert len(relaxed) == 1
+    assert relaxed[0].qualification_tier == "relaxed"
+    assert relaxed[0].review_attempt == 4
+    assert relaxed[0].missing_evidence_zh == ["需要扩大实验规模"]
+
+    collision, _, _ = finalize_v4_ideas(
+        [v4_idea()],
+        [review.model_copy(update={"collision_risk": "high"})],
+        profiles,
+        qualification_tier="relaxed",
+    )
+    assert collision == []
+
+    model_rejected, _, _ = finalize_v4_ideas(
+        [v4_idea()],
+        [review.model_copy(update={"decision": "rejected"})],
+        profiles,
+        qualification_tier="relaxed",
+    )
+    assert model_rejected == []

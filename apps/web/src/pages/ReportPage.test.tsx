@@ -8,7 +8,7 @@ import { ThemeProvider } from "../lib/theme";
 import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfile, PresentationIdea, ReportPresentationV4, ReportRecord } from "../lib/types";
 import { ReportPage } from "./ReportPage";
 
-const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
+const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), getReportSection: vi.fn().mockResolvedValue({ content: null }), prefetchSourcePdf: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
 vi.mock("../lib/api", () => api);
 vi.mock("../components/EvidencePdfViewer", () => ({ default: () => <div>secure-pdf-viewer</div> }));
 vi.mock("../components/Charts", () => ({
@@ -157,7 +157,7 @@ describe("ReportPage", () => {
     expect(document.body.textContent).not.toContain("Search Audit");
 
     await user.click(screen.getByRole("tab", { name: "问题定义" }));
-    await user.click(screen.getAllByRole("button", { name: "原论文 · 第 2 页" })[0]);
+    await user.click(screen.getAllByRole("button", { name: /Target Paper.*第 2 页/ })[0]);
     expect(screen.getByText("可定位的原论文证据摘录")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "切换到 English" }));
@@ -171,7 +171,7 @@ describe("ReportPage", () => {
     renderReport();
     await screen.findAllByText("中文摘要结论。");
     await user.click(screen.getByRole("tab", { name: "相关工作" }));
-    const sourceButton = screen.getAllByRole("button", { name: "papers.example" })[0];
+    const sourceButton = screen.getAllByRole("button", { name: /Related Paper 0.*papers.example/ })[0];
     await user.hover(sourceButton);
     const sourceLink = screen.getByRole("link", { name: /打开原文/ });
     await user.hover(sourceLink);
@@ -262,7 +262,7 @@ describe("ReportPage", () => {
     expect(document.body.textContent).not.toContain("当前证据未覆盖");
 
     await user.click(screen.getByRole("tab", { name: "输入论文" }));
-    await user.click(screen.getAllByRole("button", { name: "原论文 · 第 2 页" })[0]);
+    await user.click(screen.getAllByRole("button", { name: /Target Paper.*第 2 页/ })[0]);
     expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "关闭" }));
 
@@ -296,7 +296,7 @@ describe("ReportPage", () => {
     expect(document.body.textContent).not.toContain("internal_key_must_not_render");
     await user.click(screen.getByRole("tab", { name: "研究现状" }));
     expect(screen.getByText("Evidence Paper paper-0")).toBeInTheDocument();
-    await user.click(screen.getAllByRole("button", { name: "原论文 · 第 2 页" })[0]);
+    await user.click(screen.getAllByRole("button", { name: /Evidence Paper.*第 2 页/ })[0]);
     expect(screen.getByText("外部论文证据")).toBeInTheDocument();
     expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
   });

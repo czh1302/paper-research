@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
+import shutil
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -11,6 +13,30 @@ import httpx
 
 from ..models import Job, JobFile, JobStatus, ProviderUsage
 from ..security import redact
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _jpeg_size(content: bytes) -> tuple[int, int]:
+    index = 2
+    while index + 9 < len(content):
+        if content[index] != 0xFF:
+            index += 1
+            continue
+        marker = content[index + 1]
+        index += 2
+        if marker in {0xD8, 0xD9}:
+            continue
+        if index + 2 > len(content):
+            break
+        length = int.from_bytes(content[index:index + 2], "big")
+        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+            return (
+                int.from_bytes(content[index + 5:index + 7], "big"),
+                int.from_bytes(content[index + 3:index + 5], "big"),
+            )
+        index += max(2, length)
+    raise ValueError("Could not read JPEG dimensions")
 
 
 def _postgres_json(value: Any) -> Any:
@@ -160,7 +186,10 @@ class SupabaseRepository:
         await self.update_job(job_id, checkpoint=checkpoint)
 
     async def cleanup_expired(self) -> dict[str, int]:
-        response = await self._request("POST", "/rest/v1/rpc/claim_expired_storage", json={})
+        response, preview_response = await asyncio.gather(
+            self._request("POST", "/rest/v1/rpc/claim_expired_storage", json={}),
+            self._request("POST", "/rest/v1/rpc/claim_expired_preview_storage", json={}),
+        )
         rows = response.json() or []
         upload_rows = [row for row in rows if row.get("kind") == "upload"]
         orphan_rows = [row for row in rows if row.get("kind") == "orphan"]
@@ -187,10 +216,23 @@ class SupabaseRepository:
                 f"/rest/v1/storage_deletion_queue?id=in.({ids})",
                 headers={"Prefer": "return=minimal"},
             )
+        preview_rows = preview_response.json() or []
+        preview_paths = [row["storage_path"] for row in preview_rows if row.get("storage_path")]
+        if preview_paths:
+            await self._request(
+                "DELETE", "/storage/v1/object/evidence-previews", json={"prefixes": preview_paths}
+            )
+            ids = ",".join(quote(row["record_id"]) for row in preview_rows)
+            await self._request(
+                "DELETE",
+                f"/rest/v1/storage_deletion_queue?id=in.({ids})",
+                headers={"Prefer": "return=minimal"},
+            )
         return {
             "uploads": len(upload_rows),
             "orphans": len(orphan_rows),
             "reports": sum(1 for row in rows if row.get("kind") == "report"),
+            "previews": len(preview_rows),
         }
 
     async def add_event(
@@ -305,6 +347,118 @@ class SupabaseRepository:
             json={"metadata": _postgres_json(metadata)},
         )
 
+    async def generate_evidence_previews(
+        self, job_id: str, workspace: Path, *, concurrency: int = 2
+    ) -> int:
+        """Pre-render cited PDF pages so evidence opens before PDF.js downloads."""
+        renderer = shutil.which("pdftoppm")
+        if not renderer:
+            return 0
+        response = await self._request(
+            "GET",
+            "/rest/v1/report_evidence_assets"
+            f"?job_id=eq.{quote(job_id)}&select=id,storage_path,metadata",
+        )
+        assets = response.json()
+        preview_root = workspace / "evidence-previews"
+        preview_root.mkdir(parents=True, exist_ok=True)
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def render_asset(asset: dict[str, Any]) -> int:
+            locators = (asset.get("metadata") or {}).get("evidence_locators") or []
+            cited_pages = sorted(
+                {
+                    int(item["page"])
+                    for item in locators
+                    if isinstance(item, dict) and isinstance(item.get("page"), int)
+                    and int(item["page"]) > 0
+                }
+            )
+            asset_id = str(asset["id"])
+            existing_response = await self._request(
+                "GET",
+                "/rest/v1/report_evidence_previews"
+                f"?asset_id=eq.{quote(asset_id)}&select=page",
+            )
+            existing_pages = {
+                int(row["page"])
+                for row in existing_response.json()
+                if isinstance(row.get("page"), int)
+            }
+            pages = [page for page in cited_pages if page not in existing_pages]
+            if not pages:
+                return 0
+            async with semaphore:
+                pdf_path = preview_root / f"{asset_id}.pdf"
+                encoded_path = "/".join(
+                    quote(part, safe="") for part in str(asset["storage_path"]).split("/")
+                )
+                pdf_response = await self._request(
+                    "GET", f"/storage/v1/object/papers/{encoded_path}"
+                )
+                pdf_path.write_bytes(pdf_response.content)
+                rows: list[dict[str, Any]] = []
+                try:
+                    for page in pages:
+                        output_base = preview_root / f"{asset_id}-{page}"
+                        process = await asyncio.create_subprocess_exec(
+                            renderer,
+                            "-f", str(page),
+                            "-l", str(page),
+                            "-singlefile",
+                            "-jpeg",
+                            "-r", "110",
+                            "-jpegopt", "quality=72,progressive=y,optimize=y",
+                            str(pdf_path),
+                            str(output_base),
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        _, stderr = await process.communicate()
+                        image_path = output_base.with_suffix(".jpg")
+                        if process.returncode or not image_path.exists():
+                            LOGGER.warning(
+                                "Evidence preview failed for asset %s page %s: %s",
+                                asset_id, page, redact(stderr.decode(errors="ignore"))[-300:],
+                            )
+                            continue
+                        content = image_path.read_bytes()
+                        width, height = _jpeg_size(content)
+                        storage_path = f"{job_id}/{asset_id}/{page}.jpg"
+                        encoded_preview = "/".join(
+                            quote(part, safe="") for part in storage_path.split("/")
+                        )
+                        await self._request(
+                            "POST",
+                            f"/storage/v1/object/evidence-previews/{encoded_preview}",
+                            headers={"Content-Type": "image/jpeg", "x-upsert": "true"},
+                            content=content,
+                        )
+                        rows.append(
+                            {
+                                "asset_id": asset_id,
+                                "page": page,
+                                "storage_path": storage_path,
+                                "width": width,
+                                "height": height,
+                                "byte_size": len(content),
+                            }
+                        )
+                        image_path.unlink(missing_ok=True)
+                finally:
+                    pdf_path.unlink(missing_ok=True)
+                if rows:
+                    await self._request(
+                        "POST",
+                        "/rest/v1/report_evidence_previews?on_conflict=asset_id,page",
+                        headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+                        json=rows,
+                    )
+                return len(rows)
+
+        counts = await asyncio.gather(*(render_asset(asset) for asset in assets))
+        return sum(counts)
+
     async def load_external_profiles(self, job_id: str) -> list[dict[str, Any]]:
         response = await self._request(
             "GET",
@@ -386,6 +540,7 @@ class SupabaseRepository:
         payload: dict[str, Any],
         markdown: str,
         summary: dict[str, Any] | None = None,
+        sections: dict[str, dict[str, Any]] | None = None,
     ) -> str:
         response = await self._request(
             "POST",
@@ -400,6 +555,20 @@ class SupabaseRepository:
             headers={"Prefer": "return=minimal"},
             json={"report_id": report_id},
         )
+        if sections:
+            await self._request(
+                "POST",
+                "/rest/v1/report_sections?on_conflict=report_id,section",
+                headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+                json=[
+                    {
+                        "report_id": report_id,
+                        "section": name,
+                        "content": _postgres_json(content),
+                    }
+                    for name, content in sections.items()
+                ],
+            )
         return report_id
 
     async def record_usage(self, job_id: str, usage: ProviderUsage) -> None:

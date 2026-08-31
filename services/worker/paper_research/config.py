@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     V4_MAX_MINUTES: int = Field(default=90, ge=10, le=180)
     V4_FULL_TEXT_TARGET: int = Field(default=20, ge=6, le=30)
     V4_MAX_RETRIEVAL_BATCHES: int = Field(default=3, ge=1, le=5)
+    V4_IDEA_RETRY_ENABLED: bool = True
+    V4_MAX_IDEA_REVIEW_ATTEMPTS: int = Field(default=6, ge=1, le=8)
+    PDF_EVIDENCE_PREVIEW_ENABLED: bool = True
+    REPORT_SECTIONS_ENABLED: bool = True
 
     CLAUDE_BIN: str = "claude"
     CLAUDE_TIMEOUT_SECONDS: int = Field(default=900, ge=30)

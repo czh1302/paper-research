@@ -50,15 +50,34 @@ Deno.serve(async (request) => {
     const locator = locators.find((item) => item.id === evidenceId);
     if (!locator) throw new HttpError(404, "Evidence locator not found");
 
-    const { data: signed, error: signedError } = await admin.storage
-      .from("papers")
-      .createSignedUrl(asset.storage_path, 300);
+    const page = locator.page ?? 1;
+    const [{ data: signed, error: signedError }, { data: preview, error: previewError }] = await Promise.all([
+      admin.storage.from("papers").createSignedUrl(asset.storage_path, 300),
+      admin.from("report_evidence_previews")
+        .select("storage_path,width,height,byte_size")
+        .eq("asset_id", assetId)
+        .eq("page", page)
+        .maybeSingle(),
+    ]);
     if (signedError || !signed?.signedUrl) throw signedError ?? new Error("Could not sign PDF URL");
+    if (previewError) throw previewError;
+    let previewSignedUrl: string | null = null;
+    if (preview?.storage_path) {
+      const { data: previewSigned, error: previewSignedError } = await admin.storage
+        .from("evidence-previews")
+        .createSignedUrl(preview.storage_path, 300);
+      if (previewSignedError) throw previewSignedError;
+      previewSignedUrl = previewSigned?.signedUrl ?? null;
+    }
 
     return json(request, {
       signedUrl: signed.signedUrl,
+      previewSignedUrl,
+      previewWidth: preview?.width ?? null,
+      previewHeight: preview?.height ?? null,
+      previewByteSize: preview?.byte_size ?? null,
       expiresIn: 300,
-      page: locator.page ?? 1,
+      page,
       bboxes: locator.bboxes ?? (locator.bbox ? [locator.bbox] : []),
       excerpt: locator.quote ?? locator.text ?? "",
       section: locator.section ?? null,

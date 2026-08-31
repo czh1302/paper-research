@@ -195,12 +195,19 @@ that command with the credentials exposed in chat.
 - With `IDEA_PIPELINE_V4=true`, the worker first completes multi-platform retrieval, screens open
   papers, and builds full-text evidence profiles. Only then does it propose and review paper-core
   Ideas. V3 and V4 are mutually exclusive.
-- Ideas are presented as validated, promising but needing more evidence, or rejected. A promising
-  Idea is never labeled as a recommendation, and reports may legitimately contain no validated Idea.
+- V4 proposes four to six paper-level Ideas only after the literature landscape is built. It can
+  run up to six hostile review attempts; numerical thresholds may be relaxed once, but collision,
+  full-text evidence, experiment completeness and computer-science relevance are never relaxed.
+  A successful V4 task always contains at least one strict or explicitly low-confidence pass;
+  otherwise the task fails or becomes budget-blocked instead of publishing a zero-Idea report.
 - DOI, arXiv, OpenReview, OpenAlex and normalized-title identifiers are used for deduplication.
 - Every problem field stores PDF evidence IDs. Idea claims and horizontal matrix rows retain only
   grounded candidate IDs and URLs; snippets and metadata cannot independently support a validated
   or promising Idea.
+- V4 checkpoints retrieval, completed full-text profiles, the research landscape, every Idea draft
+  and hostile review, the final presentation, report sections and cited-page previews. A restarted
+  worker reuses completed stages and only renders missing preview pages, avoiding repeated MinerU,
+  search and model charges outside an interrupted in-flight provider request.
 - “Nobody studied this” is never emitted. The report says only that no evidence was found within the
   recorded sources, queries and retrieval date.
 - The report UI uses Overview, Problem, Related Work and Research Ideas sections. V2 and V3 reports

@@ -52,5 +52,8 @@ verify_jwt = false
 [functions.get-source-pdf]
 verify_jwt = true
 
+[functions.get-report-section]
+verify_jwt = false
+
 [functions.set-job-favorite]
 verify_jwt = true

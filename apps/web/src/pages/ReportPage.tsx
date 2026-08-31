@@ -1,12 +1,12 @@
-import { BookOpen, ChevronRight, Download, FileText, GitCompare, Info, Lightbulb, ListFilter, Printer, Search, Share2, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { ArrowLeft, BookOpen, ChevronRight, Download, FileText, GitCompare, Info, Lightbulb, ListFilter, Printer, Search, Share2, X } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import { EvidenceCitations, ReportCitationProvider, SourceCitation, SourceCitations, sourceSiteName } from "../components/ReportCitations";
 import { ReportV3 } from "../components/ReportV3";
-import { createShare, downloadText, getReport, revokeShare } from "../lib/api";
+import { createShare, downloadText, getReport, getReportSection, revokeShare } from "../lib/api";
 import { useLanguage } from "../lib/language";
 import { axisLabel, comparisonCsv, displayPresentation, humanReportMarkdown, isV3Presentation, isV4Presentation, localized, reportWarnings, scoreLevel } from "../lib/report";
-import type { CandidatePaper, Evidence, PresentationIdea, ProblemElement, ProblemStatement, ReportRecord, ResearchTheme } from "../lib/types";
+import type { CandidatePaper, Evidence, PresentationIdea, ProblemElement, ProblemStatement, ReportRecord, ReportSectionName, ResearchTheme } from "../lib/types";
 
 type ReportTab = "overview" | "problem" | "landscape" | "ideas";
 
@@ -154,7 +154,29 @@ function LegacyReportView({ record, shared = false }: { record: ReportRecord; sh
   </article>;
 }
 
-function ReportView({ record, publicShare = false, hideShare = false }: { record: ReportRecord; publicShare?: boolean; hideShare?: boolean }) {
+export function mergeReportSection(record: ReportRecord, section: ReportSectionName, payload: Record<string, unknown>): ReportRecord {
+  if (!isV4Presentation(record.content.presentation)) return record;
+  const content = { ...record.content };
+  const presentation = { ...record.content.presentation };
+  if (section === "problem") {
+    if (Array.isArray(payload.problem_statements)) content.problem_statements = payload.problem_statements as typeof content.problem_statements;
+    if (Array.isArray(payload.problem_briefs)) presentation.problem_briefs = payload.problem_briefs as typeof presentation.problem_briefs;
+  } else if (section === "landscape") {
+    if (Array.isArray(payload.related_papers)) content.related_papers = payload.related_papers as typeof content.related_papers;
+    if (payload.literature_landscape) presentation.literature_landscape = payload.literature_landscape as typeof presentation.literature_landscape;
+    if (Array.isArray(payload.comparison_boards)) presentation.comparison_boards = payload.comparison_boards as typeof presentation.comparison_boards;
+    if (payload.source_coverage) content.source_coverage = payload.source_coverage as typeof content.source_coverage;
+  } else if (section === "ideas") {
+    if (Array.isArray(payload.ideas)) presentation.ideas = payload.ideas as typeof presentation.ideas;
+    if (Array.isArray(payload.reviews)) presentation.reviews = payload.reviews as typeof presentation.reviews;
+    if (Array.isArray(payload.comparison_boards)) presentation.comparison_boards = payload.comparison_boards as typeof presentation.comparison_boards;
+    if (Array.isArray(payload.idea_attempt_summaries)) presentation.idea_attempt_summaries = payload.idea_attempt_summaries as typeof presentation.idea_attempt_summaries;
+  }
+  content.presentation = presentation;
+  return { ...record, content };
+}
+
+function ReportView({ record, publicShare = false, hideShare = false, onSectionRequest }: { record: ReportRecord; publicShare?: boolean; hideShare?: boolean; onSectionRequest?: (section: ReportSectionName) => Promise<void> }) {
   const evidence = record.content.problem_statements.flatMap((problem) => problem.evidence);
   if (isV4Presentation(record.content.presentation)) {
     for (const profile of record.content.presentation.literature_landscape.profiles) {
@@ -164,9 +186,19 @@ function ReportView({ record, publicShare = false, hideShare = false }: { record
     }
   }
   const sharedUi = publicShare || hideShare;
-  return <ReportCitationProvider evidence={evidence} papers={record.content.related_papers} reportId={record.id} pdfEnabled={!publicShare}>
-    {isV4Presentation(record.content.presentation) ? <Suspense fallback={<div className="report-loading mx-auto max-w-6xl"><div className="h-56 animate-pulse rounded-2xl bg-subtle"/></div>}><ReportV4 record={record} presentation={record.content.presentation} publicShare={publicShare} hideShare={hideShare}/></Suspense> : isV3Presentation(record.content.presentation) ? <ReportV3 record={record} presentation={record.content.presentation} shared={sharedUi}/> : <LegacyReportView record={record} shared={sharedUi}/>}
-  </ReportCitationProvider>;
+  return (
+    <ReportCitationProvider evidence={evidence} papers={record.content.related_papers} reportId={record.id} pdfEnabled={!publicShare}>
+      {isV4Presentation(record.content.presentation) ? (
+        <Suspense fallback={<div className="report-loading mx-auto max-w-6xl"><div className="h-56 animate-pulse rounded-2xl bg-subtle" /></div>}>
+          <ReportV4 record={record} presentation={record.content.presentation} publicShare={publicShare} hideShare={hideShare} onSectionRequest={onSectionRequest} />
+        </Suspense>
+      ) : isV3Presentation(record.content.presentation) ? (
+        <ReportV3 record={record} presentation={record.content.presentation} shared={sharedUi} />
+      ) : (
+        <LegacyReportView record={record} shared={sharedUi} />
+      )}
+    </ReportCitationProvider>
+  );
 }
 
 export function ReportPage({ readOnly = false }: { readOnly?: boolean }) {
@@ -174,10 +206,18 @@ export function ReportPage({ readOnly = false }: { readOnly?: boolean }) {
   const { text } = useLanguage();
   const [record, setRecord] = useState<ReportRecord | null>(null);
   const [error, setError] = useState("");
+  const loadedSections = useRef(new Set<ReportSectionName>(["overview"]));
   useEffect(() => { void getReport(id).then(setRecord).catch((cause) => setError(cause instanceof Error ? cause.message : text("报告加载失败", "Could not load report"))); }, [id, text]);
+  const loadSection = useCallback(async (section: ReportSectionName) => {
+    if (loadedSections.current.has(section)) return;
+    const response = await getReportSection(id, section);
+    if (!response.content) { loadedSections.current.add(section); return; }
+    setRecord((current) => current ? mergeReportSection(current, section, response.content!) : current);
+    loadedSections.current.add(section);
+  }, [id]);
   if (error) return <div className="panel p-6 text-danger">{error}</div>;
   if (!record) return <div className="report-loading mx-auto max-w-6xl" aria-label={text("加载报告", "Loading report")}><div className="h-5 w-36 animate-pulse rounded bg-subtle"/><div className="mt-4 h-10 max-w-3xl animate-pulse rounded-lg bg-subtle"/><div className="mt-8 grid gap-4 lg:grid-cols-3"><div className="h-48 animate-pulse rounded-2xl bg-subtle"/><div className="h-48 animate-pulse rounded-2xl bg-subtle"/><div className="h-48 animate-pulse rounded-2xl bg-subtle"/></div><p className="mt-6 text-sm text-muted">{text("正在整理报告内容…", "Preparing the report…")}</p></div>;
-  return <ReportView record={record} hideShare={readOnly}/>;
+  return <><Link className="button button-secondary no-print mb-6 inline-flex" to={readOnly ? `/admin/jobs/${record.job_id}` : `/jobs/${record.job_id}`}><ArrowLeft className="h-4 w-4"/>{text("返回任务详情", "Back to job")}</Link><ReportView record={record} hideShare={readOnly} onSectionRequest={loadSection}/></>;
 }
 
-export function SharedReportView({ record }: { record: ReportRecord }) { return <ReportView record={record} publicShare/>; }
+export function SharedReportView({ record, onSectionRequest }: { record: ReportRecord; onSectionRequest?: (section: ReportSectionName) => Promise<void> }) { return <ReportView record={record} publicShare onSectionRequest={onSectionRequest}/>; }
