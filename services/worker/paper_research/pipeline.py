@@ -2653,6 +2653,30 @@ class AnalysisPipeline:
                 selected, reviews, boards = strict_selected, strict_reviews, strict_boards
                 break
 
+            # After the three required strict cycles plus one materially new
+            # batch, accept a candidate that clears every relaxed gate instead
+            # of starting calls that cannot finish inside the active-time cap.
+            if attempt >= 4 and best_batch:
+                best_drafts, best_reviews, best_attempt, _ = best_batch
+                relaxed_selected, relaxed_reviews, relaxed_boards = finalize_v4_ideas(
+                    best_drafts,
+                    best_reviews,
+                    profiles,
+                    qualification_tier="relaxed",
+                    review_attempt=best_attempt,
+                )
+                if relaxed_selected:
+                    selected = relaxed_selected
+                    reviews = relaxed_reviews
+                    boards = relaxed_boards
+                    await self._event(
+                        job.id,
+                        "idea_qualified",
+                        "Accepted the best structurally valid Idea at the low-confidence tier",
+                        {"review_attempt": best_attempt, "qualification_tier": "relaxed"},
+                    )
+                    break
+
             rejected_context.extend(
                 f"{item.idea_title_en}: {item.rationale_en}; missing: {', '.join(item.missing_evidence_en)}"
                 for item in strict_reviews
