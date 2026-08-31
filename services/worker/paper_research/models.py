@@ -638,6 +638,10 @@ class SubmissionIdeaBatch(BaseModel):
     ideas: list[SubmissionIdea] = Field(min_length=4, max_length=6)
 
 
+class SubmissionIdeaPairBatch(BaseModel):
+    ideas: list[SubmissionIdea] = Field(min_length=2, max_length=2)
+
+
 class IdeaReview(BaseModel):
     idea_key: str
     idea_title_zh: str = Field(default="", max_length=120)

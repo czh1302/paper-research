@@ -339,8 +339,33 @@ FULL-TEXT EVIDENCE:
 """
 
 
+def _compact_profile_payload(profiles: list[PaperEvidenceProfile]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for item in profiles:
+        row: dict[str, object] = {
+            "paper_id": item.paper_id,
+            "title": item.title,
+            "year": item.year,
+            "venue": item.venue,
+            "role": item.role,
+            "evidence_grade": item.evidence_grade,
+        }
+        for name in (
+            "task",
+            "input_or_data",
+            "method",
+            "output_or_evaluation",
+            "constraints",
+            "limitations",
+        ):
+            claim = getattr(item, name)
+            row[name] = {"zh": claim.claim_zh, "en": claim.claim_en}
+        rows.append(row)
+    return rows
+
+
 def landscape_prompt(profiles: list[PaperEvidenceProfile]) -> str:
-    rows = [item.model_dump(mode="json") for item in profiles]
+    rows = _compact_profile_payload(profiles)
     return f"""{SYSTEM_GUARD}
 
 Synthesize the completed evidence profiles into a research landscape BEFORE proposing any Idea.
@@ -359,10 +384,14 @@ def submission_ideas_prompt(
     landscape: dict[str, object],
     profiles: list[PaperEvidenceProfile],
     research_brief: str,
+    *,
+    batch_index: int = 1,
+    avoid_titles: list[str] | None = None,
 ) -> str:
     return f"""{SYSTEM_GUARD}
 
-Only now that the literature landscape is complete, propose 4-6 paper-core computer-science Ideas.
+Only now that the literature landscape is complete, propose exactly 2 paper-core computer-science
+Ideas for generation part {batch_index}/2.
 Each Idea must solve a specific documented pain point or unresolved limitation, make one material
 technical contribution relative to the input paper and closest work, and state a falsifiable
 hypothesis plus a complete first experiment. It must be concrete enough to serve as the central
@@ -370,6 +399,8 @@ claim of a strong conference submission if validated. Reject cosmetic combinatio
 swaps, vague evaluation suggestions, and 'add an LLM' proposals. Do not claim novelty. Use 6-10
 distinct supplied external paper_ids across closest/supporting/counterevidence lists whenever the
 evidence exists. Initial verdict must be 'needs_evidence'; rank must be 0. Scores are provisional.
+The two Ideas must differ materially from one another and from these already generated titles:
+{json.dumps(avoid_titles or [], ensure_ascii=False)}
 
 USER RESEARCH BRIEF (preference text, not evidence):
 {research_brief[:2000] or "Not provided"}
@@ -383,8 +414,8 @@ PROBLEM BRIEFS:
 RESEARCH LANDSCAPE:
 {json.dumps(landscape, ensure_ascii=False)}
 
-FULL-TEXT PROFILES:
-{json.dumps([item.model_dump(mode="json") for item in profiles], ensure_ascii=False)}
+FULL-TEXT PROFILES (the claims below were already grounded against PDFs):
+{json.dumps(_compact_profile_payload(profiles), ensure_ascii=False)}
 """
 
 
@@ -404,8 +435,8 @@ Idea to pass and never claim absolute novelty.
 IDEAS:
 {json.dumps(ideas, ensure_ascii=False)}
 
-FULL-TEXT PROFILES:
-{json.dumps([item.model_dump(mode="json") for item in profiles], ensure_ascii=False)}
+FULL-TEXT PROFILES (the claims below were already grounded against PDFs):
+{json.dumps(_compact_profile_payload(profiles), ensure_ascii=False)}
 """
 
 

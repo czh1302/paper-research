@@ -153,7 +153,7 @@ class ClaudeCodeClient:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(prompt.encode("utf-8")), timeout=self.timeout_seconds
             )
-        except TimeoutError:
+        except asyncio.TimeoutError:
             process.terminate()
             await process.wait()
             raise ClaudeCodeError("Claude Code invocation timed out") from None
