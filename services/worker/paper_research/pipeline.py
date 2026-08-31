@@ -2069,7 +2069,7 @@ class AnalysisPipeline:
                     cached[profile.paper_id] = profile
             profiles = [
                 cached[paper.canonical_id]
-                for paper in pool
+                for paper in candidates
                 if paper.canonical_id in cached
             ][:target]
             if profiles:
@@ -2274,10 +2274,18 @@ class AnalysisPipeline:
                 f"Reused research landscape and {len(external_profiles)} full-text profiles",
             )
         else:
-            ranked = await self._v4_rank_full_text(problems, candidates)
-            external_profiles = await self._v4_external_profiles(
-                job, ranked, workspace, deadline, persist=persist
-            )
+            if len(cached_profiles) >= self.settings.V4_FULL_TEXT_TARGET:
+                external_profiles = cached_profiles[: self.settings.V4_FULL_TEXT_TARGET]
+                await self._event(
+                    job.id,
+                    "resumed",
+                    f"Reused all {len(external_profiles)} checkpointed full-text profiles",
+                )
+            else:
+                ranked = await self._v4_rank_full_text(problems, candidates)
+                external_profiles = await self._v4_external_profiles(
+                    job, ranked, workspace, deadline, persist=persist
+                )
             profiles = input_profiles + external_profiles
             if len(external_profiles) < minimum_full_text:
                 raise ValueError(

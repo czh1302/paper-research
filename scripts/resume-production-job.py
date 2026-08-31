@@ -15,6 +15,11 @@ from paper_research.config import Settings
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_id")
+    parser.add_argument(
+        "--from-active",
+        action="store_true",
+        help="Allow requeueing an active job after its worker has been stopped",
+    )
     args = parser.parse_args()
     job_id = quote(args.job_id, safe="")
     settings = Settings()
@@ -32,7 +37,12 @@ async def main() -> None:
         if not rows:
             raise RuntimeError("Job not found")
         job = rows[0]
-        if job["status"] not in {"failed", "budget_blocked"}:
+        allowed_statuses = {"failed", "budget_blocked"}
+        if args.from_active:
+            allowed_statuses.update(
+                {"parsing", "problem_ready", "searching", "analyzing", "rendering"}
+            )
+        if job["status"] not in allowed_statuses:
             raise RuntimeError(f"Job cannot be resumed from status {job['status']}")
         checkpoint = job.get("checkpoint") or {}
         await repository._request(
