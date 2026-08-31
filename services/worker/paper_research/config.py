@@ -48,6 +48,8 @@ class Settings(BaseSettings):
 
     CLAUDE_BIN: str = "claude"
     CLAUDE_TIMEOUT_SECONDS: int = Field(default=900, ge=30)
+    CLAUDE_ANALYSIS_MAX_TURNS: int = Field(default=8, ge=4, le=16)
+    CLAUDE_WEB_MAX_TURNS: int = Field(default=12, ge=8, le=20)
     CLAUDE_MODEL: str = "deepseek-v4-flash"
     CLAUDE_EFFORT: str = "high"
 

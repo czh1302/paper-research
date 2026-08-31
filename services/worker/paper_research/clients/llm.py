@@ -28,6 +28,8 @@ class ClaudeCodeClient:
         cli_model: str | None = None,
         effort: str = "high",
         timeout_seconds: int = 900,
+        analysis_max_turns: int = 8,
+        web_max_turns: int = 12,
         usage_callback: Callable[[ProviderUsage], Any] | None = None,
     ) -> None:
         self.api_key = api_key
@@ -36,6 +38,8 @@ class ClaudeCodeClient:
         self.cli_model = cli_model or self._claude_cli_model(model)
         self.effort = effort
         self.timeout_seconds = timeout_seconds
+        self.analysis_max_turns = analysis_max_turns
+        self.web_max_turns = web_max_turns
         self.usage_callback = usage_callback
 
     @staticmethod
@@ -104,7 +108,7 @@ class ClaudeCodeClient:
             # error_max_turns before structured_output is emitted.
             # WebSearch can require several tool-result turns before the model
             # gets a final turn to emit the requested structured output.
-            "8" if allow_web_search else "4",
+            str(self.web_max_turns if allow_web_search else self.analysis_max_turns),
             "--no-session-persistence",
             "--disable-slash-commands",
             "--permission-mode",

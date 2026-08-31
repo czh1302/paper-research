@@ -1394,6 +1394,8 @@ class AnalysisPipeline:
             model=settings.CLAUDE_MODEL,
             effort=settings.CLAUDE_EFFORT,
             timeout_seconds=settings.CLAUDE_TIMEOUT_SECONDS,
+            analysis_max_turns=settings.CLAUDE_ANALYSIS_MAX_TURNS,
+            web_max_turns=settings.CLAUDE_WEB_MAX_TURNS,
             usage_callback=self._record_usage,
         )
         token = Settings.reveal(settings.MINERU_API_TOKEN)
@@ -2083,8 +2085,10 @@ class AnalysisPipeline:
             timeout=httpx.Timeout(90, connect=20), follow_redirects=True
         )
         semaphore = asyncio.Semaphore(3)
+        completed_count = len(profiles)
 
         async def profile_one(index: int, paper: CandidatePaper) -> PaperEvidenceProfile | None:
+            nonlocal completed_count
             if asyncio.get_running_loop().time() >= deadline:
                 return None
             async with semaphore:
@@ -2147,10 +2151,11 @@ class AnalysisPipeline:
                             },
                         )
                     paper.evidence_grade = "full_text"
+                    completed_count += 1
                     await self._event(
                         job.id,
                         "external_profile",
-                        f"Built complete evidence profile {len(profiles) + 1}/{target}",
+                        f"Built complete evidence profile {completed_count}/{target}",
                         {"paper_id": paper.canonical_id},
                     )
                     return grounded

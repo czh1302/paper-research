@@ -30,7 +30,7 @@ def test_analysis_command_uses_supported_permission_mode_and_disables_tools() ->
     assert "--safe-mode" in command
     assert "--strict-mcp-config" in command
     max_turns_index = command.index("--max-turns")
-    assert command[max_turns_index + 1] == "4"
+    assert command[max_turns_index + 1] == "8"
 
 
 def test_web_command_only_allows_web_search() -> None:
@@ -43,4 +43,14 @@ def test_web_command_only_allows_web_search() -> None:
     assert command[tools_index + 1] == "WebSearch"
     assert command[allowed_tools_index + 1] == "WebSearch"
     max_turns_index = command.index("--max-turns")
-    assert command[max_turns_index + 1] == "8"
+    assert command[max_turns_index + 1] == "12"
+
+
+def test_max_turns_can_be_tuned_for_long_structured_calls() -> None:
+    client = ClaudeCodeClient("test", analysis_max_turns=10, web_max_turns=14)
+
+    analysis = client._command("{}", client.cli_model, allow_web_search=False)
+    web = client._command("{}", client.cli_model, allow_web_search=True)
+
+    assert analysis[analysis.index("--max-turns") + 1] == "10"
+    assert web[web.index("--max-turns") + 1] == "14"
