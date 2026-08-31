@@ -1,3 +1,4 @@
+import json
 import math
 
 import httpx
@@ -15,6 +16,24 @@ def test_postgres_json_removes_null_characters_and_non_finite_numbers() -> None:
         "quote": "beforeafter",
         "bboxes": [[0.0, None, None, 1000.0]],
     }
+
+
+@pytest.mark.asyncio
+async def test_all_repository_json_requests_remove_null_characters() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body[0]["content"]["abstract"] == "beforeafter"
+        return httpx.Response(201)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    repository = SupabaseRepository("https://example.test", "service-key", client=client)
+    try:
+        await repository.save_candidates(
+            "job-1",
+            [{"canonical_id": "paper-1", "abstract": "before\x00after"}],
+        )
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio

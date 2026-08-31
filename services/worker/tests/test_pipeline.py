@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from paper_research.config import Settings
 from paper_research.models import (
     AlgorithmStep,
     AnalysisReport,
@@ -35,6 +36,7 @@ from paper_research.models import (
     SubmissionIdea,
 )
 from paper_research.pipeline import (
+    AnalysisPipeline,
     build_input_profile,
     build_presentation_v3,
     candidate_is_computer_science_relevant,
@@ -50,6 +52,8 @@ from paper_research.pipeline import (
     reconstruct_search_audit,
     report_summary,
     should_stop,
+    v4_remaining_seconds,
+    v4_resume_full_text_target,
 )
 from paper_research.reporting import comparison_csv
 
@@ -97,6 +101,61 @@ def test_conservative_cost_estimate() -> None:
         output_tokens=100_000,
     )
     assert estimate_usage_cny(pro) == pytest.approx(3 * estimate_usage_cny(usage))
+
+
+def test_v4_runtime_budget_and_full_text_target_resume_from_checkpoint() -> None:
+    checkpoint = {
+        "active_seconds": 1_800,
+        "landscape": {"full_text_count": 25},
+    }
+
+    assert v4_remaining_seconds(checkpoint, 90) == 3_600
+    assert v4_remaining_seconds({"active_seconds": 6_000}, 90) == 0
+    assert v4_resume_full_text_target(checkpoint, 20) == 25
+    assert v4_resume_full_text_target(
+        {"landscape": {"full_text_count": 42}}, 20
+    ) == 30
+
+
+async def test_pipeline_checkpoint_survives_remote_write_failure(
+    tmp_path, monkeypatch
+) -> None:
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr("paper_research.pipeline.asyncio.to_thread", run_inline)
+
+    class OfflineRepository:
+        async def save_pipeline_checkpoint(self, _job_id, _checkpoint) -> None:
+            raise OSError("network unavailable")
+
+        async def load_pipeline_checkpoint(self, _job_id) -> dict:
+            raise OSError("network unavailable")
+
+    settings = Settings(
+        _env_file=None,
+        ARTIFACT_ROOT=tmp_path,
+        SEARCH_PROFILE="academic_only",
+        DEEPSEEK_API_KEY=None,
+        MINERU_API_TOKEN=None,
+        OPENALEX_API_KEY=None,
+        SERPER_API_KEY=None,
+        TAVILY_API_KEY=None,
+        SUPABASE_URL=None,
+        SUPABASE_SERVICE_ROLE_KEY=None,
+    )
+    pipeline = AnalysisPipeline(settings, OfflineRepository())
+    checkpoint = {"v4": {"idea_attempts": {"2": {"draft_batches": {"1": {}}}}}}
+
+    with pytest.raises(OSError, match="network unavailable"):
+        await pipeline._save_pipeline_checkpoint(
+            "job-resume", checkpoint, persist=True
+        )
+
+    assert await pipeline._load_pipeline_checkpoint(
+        "job-resume", persist=True
+    ) == checkpoint
+    await pipeline.close()
 
 
 def test_v4_external_pool_excludes_uploaded_paper_by_normalized_title() -> None:

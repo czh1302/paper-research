@@ -77,6 +77,8 @@ class SupabaseRepository:
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         headers = {**self.headers, **kwargs.pop("headers", {})}
+        if "json" in kwargs:
+            kwargs["json"] = _postgres_json(kwargs["json"])
         response = await self._client.request(
             method, f"{self.url}{path}", headers=headers, **kwargs
         )

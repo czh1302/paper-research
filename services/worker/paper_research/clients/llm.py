@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -12,6 +13,7 @@ from ..models import ProviderUsage
 from ..security import redact
 
 SchemaModel = TypeVar("SchemaModel", bound=BaseModel)
+LOGGER = logging.getLogger(__name__)
 
 
 class ClaudeCodeError(RuntimeError):
@@ -158,6 +160,17 @@ class ClaudeCodeClient:
             await process.wait()
             raise ClaudeCodeError("Claude Code invocation timed out") from None
 
+        payload: dict[str, Any] = {}
+        try:
+            decoded = json.loads(stdout) if stdout else {}
+            if isinstance(decoded, dict):
+                payload = decoded
+        except json.JSONDecodeError:
+            pass
+        await self._emit_usage(
+            payload, provider_model, failed=process.returncode != 0
+        )
+
         if process.returncode != 0:
             stderr_text = stderr.decode("utf-8", errors="replace").strip()
             stdout_text = stdout.decode("utf-8", errors="replace").strip()
@@ -165,7 +178,6 @@ class ClaudeCodeClient:
             error = redact(diagnostic)[-4000:]
             raise ClaudeCodeError(f"Claude Code exited with {process.returncode}: {error}")
         try:
-            payload = json.loads(stdout)
             structured = payload.get("structured_output")
             if structured is None:
                 result = payload.get("result")
@@ -176,16 +188,35 @@ class ClaudeCodeClient:
                 f"Claude Code returned invalid structured output: {error}"
             ) from error
 
+        return parsed
+
+    async def _emit_usage(
+        self,
+        payload: dict[str, Any],
+        provider_model: str,
+        *,
+        failed: bool,
+    ) -> None:
         usage = payload.get("usage") or {}
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        if not input_tokens and not output_tokens:
+            return
         usage_record = ProviderUsage(
             provider="deepseek",
             model=provider_model,
-            input_tokens=int(usage.get("input_tokens", 0)),
-            output_tokens=int(usage.get("output_tokens", 0)),
-            metadata={"client_cost_usd": payload.get("total_cost_usd")},
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            metadata={
+                "client_cost_usd": payload.get("total_cost_usd"),
+                "failed": failed,
+                "subtype": payload.get("subtype"),
+            },
         )
         if self.usage_callback:
-            callback_result = self.usage_callback(usage_record)
-            if asyncio.iscoroutine(callback_result):
-                await callback_result
-        return parsed
+            try:
+                callback_result = self.usage_callback(usage_record)
+                if asyncio.iscoroutine(callback_result):
+                    await callback_result
+            except Exception as error:
+                LOGGER.warning("Provider usage callback failed: %s", error)

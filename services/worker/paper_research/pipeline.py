@@ -110,6 +110,20 @@ def estimate_usage_cny(usage: ProviderUsage) -> float:
     return round(usd * 7.5, 6)
 
 
+def v4_remaining_seconds(checkpoint: dict[str, Any], max_minutes: int) -> float:
+    """Return the remaining active V4 runtime across process restarts."""
+    active_seconds = max(0.0, float(checkpoint.get("active_seconds", 0.0) or 0.0))
+    return max(0.0, max_minutes * 60 - active_seconds)
+
+
+def v4_resume_full_text_target(checkpoint: dict[str, Any], configured_target: int) -> int:
+    """Do not discard additional full-text profiles acquired before a restart."""
+    checkpoint_target = int(
+        dict(checkpoint.get("landscape") or {}).get("full_text_count", 0) or 0
+    )
+    return min(30, max(configured_target, checkpoint_target))
+
+
 def rank_candidates(
     candidates: list[CandidatePaper], query_bundle: QueryBundle
 ) -> list[CandidatePaper]:
@@ -1429,27 +1443,100 @@ class AnalysisPipeline:
         if self.mineru:
             await self.mineru.close()
 
+    def _local_checkpoint_path(self, job_id: str) -> Path:
+        safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "_", job_id)
+        return self.settings.ARTIFACT_ROOT / "pipeline-checkpoints" / f"{safe_job_id}.json"
+
+    async def _load_pipeline_checkpoint(
+        self, job_id: str, *, persist: bool
+    ) -> dict[str, Any]:
+        local_path = self._local_checkpoint_path(job_id)
+
+        def read_local() -> dict[str, Any]:
+            if not local_path.exists():
+                return {}
+            try:
+                payload = json.loads(local_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return {}
+            return dict(payload.get("checkpoint") or {})
+
+        local_checkpoint = await asyncio.to_thread(read_local)
+        remote_checkpoint: dict[str, Any] = {}
+        if (
+            self.repository
+            and persist
+            and hasattr(self.repository, "load_pipeline_checkpoint")
+        ):
+            try:
+                remote_checkpoint = await self.repository.load_pipeline_checkpoint(job_id)
+            except Exception as error:
+                LOGGER.warning("Remote checkpoint load failed for job %s: %s", job_id, error)
+        return local_checkpoint or remote_checkpoint
+
+    async def _save_pipeline_checkpoint(
+        self,
+        job_id: str,
+        checkpoint: dict[str, Any],
+        *,
+        persist: bool,
+    ) -> None:
+        local_path = self._local_checkpoint_path(job_id)
+        payload = {
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "checkpoint": checkpoint,
+        }
+
+        def write_local() -> None:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = local_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(local_path)
+
+        await asyncio.to_thread(write_local)
+        if self.repository and persist:
+            await self.repository.save_pipeline_checkpoint(job_id, checkpoint)
+
     async def _record_usage(self, usage: ProviderUsage) -> None:
         usage.estimated_cny = estimate_usage_cny(usage)
         if self.repository and self._active_job_id:
-            await self.repository.record_usage(self._active_job_id, usage)
-        else:
-            ledger = self.settings.ARTIFACT_ROOT / "provider-usage.jsonl"
-            payload = {
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "job_id": self._active_job_id,
-                **usage.model_dump(mode="json"),
-            }
+            try:
+                await self.repository.record_usage(self._active_job_id, usage)
+                return
+            except Exception as error:
+                LOGGER.warning(
+                    "Remote provider usage write failed for job %s: %s",
+                    self._active_job_id,
+                    error,
+                )
+                await self._append_local_usage(usage, pending_remote=True)
+                return
+        await self._append_local_usage(usage, pending_remote=False)
 
-            def append_usage() -> None:
-                ledger.parent.mkdir(parents=True, exist_ok=True)
-                with ledger.open("a", encoding="utf-8") as output:
-                    output.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    async def _append_local_usage(
+        self, usage: ProviderUsage, *, pending_remote: bool
+    ) -> None:
+        ledger_name = (
+            "provider-usage-pending.jsonl" if pending_remote else "provider-usage.jsonl"
+        )
+        ledger = self.settings.ARTIFACT_ROOT / ledger_name
+        payload = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "job_id": self._active_job_id,
+            **usage.model_dump(mode="json"),
+        }
 
-            await asyncio.to_thread(append_usage)
+        def append_usage() -> None:
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with ledger.open("a", encoding="utf-8") as output:
+                output.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-    async def _local_monthly_spend_cny(self) -> float:
-        ledger = self.settings.ARTIFACT_ROOT / "provider-usage.jsonl"
+        await asyncio.to_thread(append_usage)
+
+    async def _local_monthly_spend_cny(
+        self, ledger_name: str = "provider-usage.jsonl"
+    ) -> float:
+        ledger = self.settings.ARTIFACT_ROOT / ledger_name
         month = datetime.now(timezone.utc).strftime("%Y-%m")
 
         def read_spend() -> float:
@@ -1470,6 +1557,7 @@ class AnalysisPipeline:
     async def _check_budget(self) -> None:
         if self.repository:
             spend = await self.repository.monthly_spend_cny()
+            spend += await self._local_monthly_spend_cny("provider-usage-pending.jsonl")
         else:
             spend = await self._local_monthly_spend_cny()
         if spend >= self.settings.BUDGET_GUARD_CNY:
@@ -1719,10 +1807,7 @@ class AnalysisPipeline:
         async def save_checkpoint(**values: Any) -> None:
             round_checkpoint.update(values)
             pipeline_checkpoint[checkpoint_key] = round_checkpoint
-            if self.repository and persist:
-                await self.repository.save_pipeline_checkpoint(
-                    job.id, pipeline_checkpoint
-                )
+            await self._save_pipeline_checkpoint(job.id, pipeline_checkpoint, persist=persist)
 
         await self._event(job.id, "stage", "Brainstorming testable research ideas")
         prior = None
@@ -2172,12 +2257,12 @@ class AnalysisPipeline:
             for start in range(0, len(pool), 3):
                 if len(profiles) >= target or asyncio.get_running_loop().time() >= deadline:
                     break
+                remaining = target - len(profiles)
+                batch = pool[start : start + min(3, remaining)]
                 results = await asyncio.gather(
                     *(
                         profile_one(index, paper)
-                        for index, paper in enumerate(
-                            pool[start : start + 3], start=start
-                        )
+                        for index, paper in enumerate(batch, start=start)
                     )
                 )
                 profiles.extend(item for item in results if item is not None)
@@ -2202,15 +2287,21 @@ class AnalysisPipeline:
         list[QueryBundle],
     ]:
         v4_checkpoint = dict(pipeline_checkpoint.get("v4") or {})
+        run_segment_started = asyncio.get_running_loop().time()
+        active_seconds = float(v4_checkpoint.get("active_seconds", 0.0) or 0.0)
 
         async def save_v4_checkpoint(**values: Any) -> None:
+            nonlocal active_seconds, run_segment_started
+            now = asyncio.get_running_loop().time()
+            active_seconds += max(0.0, now - run_segment_started)
+            run_segment_started = now
             v4_checkpoint.update(values)
+            v4_checkpoint["active_seconds"] = round(active_seconds, 3)
             pipeline_checkpoint["v4"] = v4_checkpoint
-            if self.repository and persist:
-                await self.repository.save_pipeline_checkpoint(job.id, pipeline_checkpoint)
+            await self._save_pipeline_checkpoint(job.id, pipeline_checkpoint, persist=persist)
 
-        deadline = (
-            asyncio.get_running_loop().time() + self.settings.V4_MAX_MINUTES * 60
+        deadline = asyncio.get_running_loop().time() + v4_remaining_seconds(
+            v4_checkpoint, self.settings.V4_MAX_MINUTES
         )
         if v4_checkpoint.get("complete"):
             presentation = ReportPresentationV4.model_validate(
@@ -2262,7 +2353,10 @@ class AnalysisPipeline:
                 for item in await self.repository.load_external_profiles(job.id)
             ]
         if v4_checkpoint.get("landscape") and len(cached_profiles) >= minimum_full_text:
-            external_profiles = cached_profiles[: self.settings.V4_FULL_TEXT_TARGET]
+            resume_target = v4_resume_full_text_target(
+                v4_checkpoint, self.settings.V4_FULL_TEXT_TARGET
+            )
+            external_profiles = cached_profiles[:resume_target]
             profiles = input_profiles + external_profiles
             landscape_values = dict(v4_checkpoint["landscape"])
             landscape_values["profiles"] = [
@@ -2808,13 +2902,11 @@ class AnalysisPipeline:
                 if self.repository and persist
                 else {"problems": [], "candidates": [], "rounds": []}
             )
-            pipeline_checkpoint = (
-                await self.repository.load_pipeline_checkpoint(job.id)
-                if self.repository
-                and persist
-                and hasattr(self.repository, "load_pipeline_checkpoint")
-                else dict(job.checkpoint)
+            pipeline_checkpoint = await self._load_pipeline_checkpoint(
+                job.id, persist=persist
             )
+            if not pipeline_checkpoint:
+                pipeline_checkpoint = dict(job.checkpoint)
             stored_problem_rows = [
                 row for row in stored_state["problems"] if row["paper_id"] != "__joint__"
             ]
@@ -2961,10 +3053,9 @@ class AnalysisPipeline:
                     pipeline_checkpoint["problem_briefs"] = [
                         item.model_dump(mode="json") for item in problem_briefs
                     ]
-                    if self.repository and persist:
-                        await self.repository.save_pipeline_checkpoint(
-                            job.id, pipeline_checkpoint
-                        )
+                    await self._save_pipeline_checkpoint(
+                        job.id, pipeline_checkpoint, persist=persist
+                    )
 
             if self.settings.IDEA_PIPELINE_V4:
                 await self._update(

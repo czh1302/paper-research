@@ -1,4 +1,14 @@
-from paper_research.clients.llm import ClaudeCodeClient
+import asyncio
+import json
+
+import pytest
+from paper_research.clients.llm import ClaudeCodeClient, ClaudeCodeError
+from paper_research.models import ProviderUsage
+from pydantic import BaseModel
+
+
+class ExampleOutput(BaseModel):
+    value: str
 
 
 def test_deepseek_models_use_claude_aliases() -> None:
@@ -54,3 +64,37 @@ def test_max_turns_can_be_tuned_for_long_structured_calls() -> None:
 
     assert analysis[analysis.index("--max-turns") + 1] == "10"
     assert web[web.index("--max-turns") + 1] == "14"
+
+
+async def test_failed_cli_result_still_records_token_usage(monkeypatch) -> None:
+    records: list[ProviderUsage] = []
+
+    class FailedProcess:
+        returncode = 1
+
+        async def communicate(self, _prompt: bytes) -> tuple[bytes, bytes]:
+            return (
+                json.dumps(
+                    {
+                        "subtype": "error_max_turns",
+                        "usage": {"input_tokens": 1200, "output_tokens": 300},
+                        "total_cost_usd": 99,
+                    }
+                ).encode(),
+                b"",
+            )
+
+    async def create_process(*_args, **_kwargs):
+        return FailedProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    client = ClaudeCodeClient("test", usage_callback=records.append)
+
+    with pytest.raises(ClaudeCodeError, match="exited with 1"):
+        await client.structured("prompt", ExampleOutput)
+
+    assert len(records) == 1
+    assert records[0].input_tokens == 1200
+    assert records[0].output_tokens == 300
+    assert records[0].metadata["failed"] is True
+    assert records[0].metadata["subtype"] == "error_max_turns"
