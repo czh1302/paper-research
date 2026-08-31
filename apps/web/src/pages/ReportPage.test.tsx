@@ -257,11 +257,13 @@ describe("ReportPage", () => {
     api.getFullReport.mockResolvedValue(record);
     renderReport();
 
-    expect(await screen.findByText("如何验证网络实验复现结果与论文结论的一致性？")).toBeInTheDocument();
+    expect(await screen.findByText("调研结论")).toBeInTheDocument();
+    expect(screen.getByText(/围绕“如何验证网络实验复现结果与论文结论的一致性？”/)).toBeInTheDocument();
     expect(screen.getByText("证据契约驱动的网络实验忠实度验证")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("当前证据未覆盖");
 
     await user.click(screen.getByRole("tab", { name: "输入论文" }));
+    expect(screen.getByText("如何验证网络实验复现结果与论文结论的一致性？")).toBeInTheDocument();
     await user.click(screen.getAllByRole("button", { name: /Target Paper.*第 2 页/ })[0]);
     expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "关闭" }));
@@ -273,6 +275,35 @@ describe("ReportPage", () => {
     await user.click(screen.getByRole("button", { name: "下一组" }));
     expect(await screen.findByText("Evidence Paper paper-3")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("Not covered");
+  });
+
+  it("keeps the overview concise and expands one input-paper card without duplicate detail", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    const presentation = record.content.presentation as ReportPresentationV4;
+    const firstBrief = presentation.problem_briefs[0];
+    firstBrief.inputs.push(
+      { label_zh: "实验配置", label_en: "Experiment setup", explanation_zh: "用于复现实验环境", explanation_en: "Used to reproduce the experiment environment", evidence_ids: ["paperhash:b1"] },
+      { label_zh: "运行日志", label_en: "Runtime logs", explanation_zh: "用于定位偏差来源", explanation_en: "Used to localize drift", evidence_ids: ["paperhash:b1"] },
+    );
+    presentation.problem_briefs.push({ ...firstBrief, paper_id: "paper-second", title: "Second Input Paper", research_question_zh: "第二篇论文的研究问题", research_question_en: "Research question of the second paper" });
+    api.getReport.mockResolvedValue(record);
+    renderReport();
+
+    expect(await screen.findByText("最相关工作的差异摘要")).toBeInTheDocument();
+    expect(screen.getAllByText("Evidence Paper paper-0").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Evidence Paper paper-2").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Evidence Paper paper-3")).not.toBeInTheDocument();
+    expect(screen.queryByText("运行日志")).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("button", { name: /查看输入论文/ })[0]);
+    expect(screen.getByRole("tab", { name: "Target Paper" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("运行日志")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /查看全部（3）/ }));
+    expect(screen.getByText("运行日志")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Second Input Paper" }));
+    expect(screen.getByText("第二篇论文的研究问题")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "收起" })).not.toBeInTheDocument();
   });
 
   it("keeps representative full-text PDF evidence available when no V4 idea passes", async () => {
