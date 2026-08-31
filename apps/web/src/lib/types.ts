@@ -1,4 +1,4 @@
-export type JobStatus = "queued" | "parsing" | "problem_ready" | "searching" | "analyzing" | "rendering" | "completed" | "cancelled" | "failed" | "budget_blocked";
+export type JobStatus = "queued" | "parsing" | "problem_ready" | "searching" | "analyzing" | "rendering" | "completed" | "cancelled" | "failed" | "budget_blocked" | "recovering" | "waiting_resources" | "needs_input";
 
 export interface JobRecord {
   id: string;
@@ -15,9 +15,13 @@ export interface JobRecord {
   is_favorite?: boolean;
   report_id?: string | null;
   total_count?: number;
+  retry_count?: number;
+  next_retry_at?: string | null;
+  last_recovery_at?: string | null;
 }
 
 export interface JobEvent { id: number; kind: string; message: string; data: Record<string, unknown>; created_at: string; }
+export interface JobAttempt { id: number; attempt_number: number; failure_category: string; checkpoint_stage: string; safe_error: string | null; created_at: string; }
 
 export interface Evidence {
   id: string; paper_id: string; page?: number; section?: string; text: string; source_url?: string;
@@ -110,6 +114,7 @@ export interface SubmissionIdea {
   verdict: "recommended" | "alternative" | "needs_evidence" | "rejected";
   qualification_tier?: "strict" | "relaxed"; review_attempt?: number;
   missing_evidence_zh?: string[]; missing_evidence_en?: string[];
+  lineage_id?: string | null; parent_key?: string | null; revision_number?: number;
 }
 export interface IdeaReview {
   idea_key: string; decision: SubmissionIdea["verdict"]; rationale_zh: string; rationale_en: string;
@@ -123,6 +128,7 @@ export interface ReportPresentationV4 {
   version: 4; headline_zh: string; headline_en: string; problem_briefs: ProblemBrief[];
   literature_landscape: LiteratureLandscape; ideas: SubmissionIdea[]; reviews: IdeaReview[]; comparison_boards: IdeaComparisonBoard[];
   idea_attempt_summaries?: IdeaAttemptSummary[];
+  idea_evolution_audit?: Record<string, unknown>[];
 }
 export interface IdeaAttemptSummary { attempt: number; generated: number; grounded: number; strict_passed: number; added_candidates: number; added_full_text: number; rejection_reasons_zh: string[]; rejection_reasons_en: string[]; }
 export interface JointProblemStatement { common_problem_zh: string; common_problem_en: string; aligned_concepts: Record<string, unknown>[]; differences: Record<string, unknown>[]; compatible_assumptions: string[]; conflicting_assumptions: string[]; formalization?: string; }

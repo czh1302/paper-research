@@ -35,6 +35,7 @@ export function sourceSiteName(url: string) {
 }
 
 function PreviewShell({ open, onOpen, children, button }: { open: boolean; onOpen: (open: boolean) => void; children: ReactNode; button: ReactNode }) {
+  const { text } = useLanguage();
   const root = useRef<HTMLSpanElement>(null);
   const popover = useRef<HTMLSpanElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -42,7 +43,7 @@ function PreviewShell({ open, onOpen, children, button }: { open: boolean; onOpe
   const [position, setPosition] = useState({ top: 0, left: 0 });
   function cancelClose() { if (timer.current) clearTimeout(timer.current); timer.current = null; }
   function close() { cancelClose(); setPinned(false); onOpen(false); }
-  function scheduleClose() { cancelClose(); if (!pinned) timer.current = setTimeout(() => onOpen(false), 250); }
+  function scheduleClose() { cancelClose(); if (!pinned) timer.current = setTimeout(() => onOpen(false), 100); }
   useEffect(() => {
     if (!open) return;
     const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
@@ -65,7 +66,7 @@ function PreviewShell({ open, onOpen, children, button }: { open: boolean; onOpe
     return () => { window.removeEventListener("resize", update); window.removeEventListener("scroll", update, true); };
   }, [open]);
   useEffect(() => () => cancelClose(), []);
-  return <><span ref={root} className="citation-wrap" data-pinned={pinned || undefined} onMouseEnter={() => { cancelClose(); onOpen(true); }} onMouseLeave={scheduleClose} onClick={(event) => { if (!(event.target as Element).closest(".source-pill")) return; cancelClose(); const next = !pinned; setPinned(next); onOpen(next); }}>{button}</span>{open && createPortal(<span ref={popover} className="citation-popover" role="dialog" style={position} onMouseEnter={cancelClose} onMouseLeave={scheduleClose}><button type="button" className="citation-close" aria-label="Close" onClick={(event) => { event.stopPropagation(); close(); }}><X className="h-3.5 w-3.5"/></button>{children}</span>, document.body)}</>;
+  return <><span ref={root} className="citation-wrap" data-pinned={pinned || undefined} onMouseEnter={() => { cancelClose(); onOpen(true); }} onMouseLeave={scheduleClose} onFocus={() => { cancelClose(); onOpen(true); }} onBlur={(event) => { if (!popover.current?.contains(event.relatedTarget as Node)) scheduleClose(); }} onClick={(event) => { if (!(event.target as Element).closest(".source-pill")) return; cancelClose(); const next = !pinned; setPinned(next); onOpen(next); }}>{button}</span>{open && createPortal(<span ref={popover} className="citation-popover" role="dialog" style={position} onMouseEnter={cancelClose} onMouseLeave={scheduleClose}>{pinned && <span className="citation-pinned-label">{text("已固定", "Pinned")}</span>}<button type="button" className="citation-close" aria-label={text("关闭", "Close")} onClick={(event) => { event.stopPropagation(); close(); }}><X className="h-3.5 w-3.5"/></button>{children}</span>, document.body)}</>;
 }
 
 export function SourceCitation({ url, papers }: { url: string; papers: CandidatePaper[] }) {

@@ -15,7 +15,7 @@ Deno.serve(async (request) => {
       .maybeSingle();
     if (jobError) throw jobError;
     if (!job) throw new HttpError(404, "Job not found");
-    if (!["completed", "cancelled", "failed", "budget_blocked"].includes(job.status)) {
+    if (!["completed", "cancelled", "failed", "budget_blocked", "needs_input"].includes(job.status)) {
       throw new HttpError(409, "Cancel the active job before deleting it");
     }
     const { data: assets, error: assetsError } = await admin

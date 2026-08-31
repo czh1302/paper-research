@@ -388,6 +388,8 @@ def submission_ideas_prompt(
     idea_index: int = 1,
     total_ideas: int = 4,
     avoid_titles: list[str] | None = None,
+    evolution_target: dict[str, object] | None = None,
+    evolution_mode: str = "new",
 ) -> str:
     return f"""{SYSTEM_GUARD}
 
@@ -402,6 +404,15 @@ distinct supplied external paper_ids across closest/supporting/counterevidence l
 evidence exists. Initial verdict must be 'needs_evidence'; rank must be 0. Scores are provisional.
 The Idea must differ materially from these already generated titles:
 {json.dumps(avoid_titles or [], ensure_ascii=False)}
+
+EVOLUTION MODE: {evolution_mode}
+EVOLUTION TARGET (empty for a new lineage):
+{json.dumps(evolution_target or {}, ensure_ascii=False)}
+
+When mode is "revise", preserve the target's useful research direction but materially repair the
+reviewed technical mechanism, hypothesis, evidence mapping, or experiment. Do not merely paraphrase
+it. When mode is "branch", use the documented defect to create a genuinely different mechanism.
+Keep lineage_id, parent_key and revision_number consistent with the target when supplied.
 
 USER RESEARCH BRIEF (preference text, not evidence):
 {research_brief[:2000] or "Not provided"}

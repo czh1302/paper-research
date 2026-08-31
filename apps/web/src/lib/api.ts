@@ -50,11 +50,16 @@ export async function createAnalysis(files: File[], mode: "single" | "multi", ma
   return data.job as JobRecord;
 }
 
-export async function getJob(jobId: string): Promise<JobRecord> {
-  const { data, error } = await requireSupabase().from("jobs").select("*,job_files(position,upload:uploads(original_name))").eq("id", jobId).single();
+export async function getJob(jobId: string, includeInternal = false): Promise<JobRecord> {
+  const client = requireSupabase();
+  const result = includeInternal
+    ? await client.from("jobs").select("id,mode,max_rounds,current_round,status,stage,progress,created_at,completed_at,retry_count,next_retry_at,last_recovery_at,error,job_files(position,upload:uploads(original_name))").eq("id", jobId).single()
+    : await client.from("jobs").select("id,mode,max_rounds,current_round,status,stage,progress,created_at,completed_at,retry_count,next_retry_at,last_recovery_at,job_files(position,upload:uploads(original_name))").eq("id", jobId).single();
+  const { data, error } = result;
   if (error) throw error;
-  const files = ((data as any).job_files ?? []).sort((a: any, b: any) => a.position - b.position);
-  return { ...data, file_names: files.map((item: any) => item.upload?.original_name).filter(Boolean) } as JobRecord;
+  const row = data as unknown as Record<string, unknown>;
+  const files = (((row.job_files as any[]) ?? [])).sort((a: any, b: any) => a.position - b.position);
+  return { ...row, file_names: files.map((item: any) => item.upload?.original_name).filter(Boolean) } as unknown as JobRecord;
 }
 
 export async function getReportByJob(jobId: string): Promise<ReportRecord | null> {

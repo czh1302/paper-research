@@ -41,6 +41,7 @@ from paper_research.pipeline import (
     build_presentation_v3,
     candidate_is_computer_science_relevant,
     candidate_matches_input_paper,
+    deterministic_evidence_confidence,
     estimate_usage_cny,
     finalize_v4_ideas,
     ground_analysis,
@@ -48,6 +49,7 @@ from paper_research.pipeline import (
     ground_presentation,
     ground_problem,
     idea_review_checkpoint_is_current,
+    idea_passes_deterministic_filter,
     query_bundle_from_plan,
     rank_candidates,
     reconstruct_search_audit,
@@ -960,7 +962,7 @@ def test_v4_relaxed_gate_only_lowers_numeric_scores() -> None:
         update={
             "feasibility": 0.60,
             "submission_value": 0.65,
-            "evidence_confidence": 0.50,
+            "evidence_confidence": 0.55,
             "missing_evidence_zh": ["需要扩大实验规模"],
             "missing_evidence_en": ["A larger experiment is still needed"],
         }
@@ -969,11 +971,11 @@ def test_v4_relaxed_gate_only_lowers_numeric_scores() -> None:
     assert strict == []
     relaxed, _, _ = finalize_v4_ideas(
         [v4_idea()], [review], profiles,
-        qualification_tier="relaxed", review_attempt=4,
+        qualification_tier="relaxed", review_attempt=8,
     )
     assert len(relaxed) == 1
     assert relaxed[0].qualification_tier == "relaxed"
-    assert relaxed[0].review_attempt == 4
+    assert relaxed[0].review_attempt == 8
     assert relaxed[0].missing_evidence_zh == ["需要扩大实验规模"]
 
     collision, _, _ = finalize_v4_ideas(
@@ -991,3 +993,24 @@ def test_v4_relaxed_gate_only_lowers_numeric_scores() -> None:
         qualification_tier="relaxed",
     )
     assert model_rejected == []
+
+
+def test_v4_evidence_confidence_is_computed_from_grounded_coverage() -> None:
+    profiles = [v4_profile("input", "input")] + [
+        v4_profile(f"paper-{index}") for index in range(6)
+    ]
+    review = v4_review(evidence_confidence=0.01)
+    score = deterministic_evidence_confidence(review, profiles)
+    assert score >= 0.70
+    assert score != review.evidence_confidence
+
+
+def test_v4_deterministic_filter_rejects_a_plain_model_swap() -> None:
+    assert idea_passes_deterministic_filter(v4_idea())
+    swapped = v4_idea().model_copy(
+        update={
+            "core_contribution_en": "Replace the model with a larger LLM and keep the pipeline unchanged.",
+            "core_contribution_zh": "仅替换大模型，保持现有流程完全不变。",
+        }
+    )
+    assert not idea_passes_deterministic_filter(swapped)

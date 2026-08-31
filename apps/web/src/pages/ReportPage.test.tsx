@@ -178,6 +178,13 @@ describe("ReportPage", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 300));
     expect(sourceLink).toHaveAttribute("href", "https://papers.example/0");
     expect(document.body.textContent).not.toContain("https://papers.example/0");
+    await user.unhover(sourceLink);
+    await new Promise((resolve) => window.setTimeout(resolve, 140));
+    expect(screen.queryByRole("link", { name: /打开原文/ })).not.toBeInTheDocument();
+    await user.click(sourceButton);
+    expect(await screen.findByText("已固定")).toBeInTheDocument();
+    await user.click(sourceButton);
+    expect(screen.queryByText("已固定")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "查看全部 30 篇结果" }));
     expect(screen.getByRole("dialog", { name: "全部检索结果" })).toBeInTheDocument();
@@ -270,6 +277,10 @@ describe("ReportPage", () => {
 
     await user.click(screen.getByRole("tab", { name: "研究现状" }));
     expect(screen.getAllByText("Evidence Paper paper-0").length).toBeGreaterThan(0);
+    const validationTheme = screen.getByRole("button", { name: /结果验证/ });
+    await user.click(validationTheme);
+    expect(validationTheme).toHaveClass("active");
+    await user.click(screen.getByRole("tab", { name: "Idea 差异" }));
     expect(screen.getByText("Evidence Paper paper-2")).toBeInTheDocument();
     expect(screen.queryByText("Evidence Paper paper-3")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "下一组" }));
@@ -326,7 +337,7 @@ describe("ReportPage", () => {
     expect(await screen.findByText("最接近门槛的方向")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("internal_key_must_not_render");
     await user.click(screen.getByRole("tab", { name: "研究现状" }));
-    expect(screen.getByText("Evidence Paper paper-0")).toBeInTheDocument();
+    expect(screen.getAllByText("Evidence Paper paper-0").length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole("button", { name: /Evidence Paper.*第 2 页/ })[0]);
     expect(screen.getByText("外部论文证据")).toBeInTheDocument();
     expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();

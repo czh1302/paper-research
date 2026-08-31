@@ -10,6 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -1170,7 +1171,7 @@ def finalize_v4_ideas(
             and len(supporting) >= 2
             and review.collision_risk != "high"
             and review.feasibility >= (0.60 if relaxed else 0.65)
-            and review.evidence_confidence >= (0.50 if relaxed else 0.70)
+            and review.evidence_confidence >= (0.55 if relaxed else 0.70)
             and review.submission_value >= (0.65 if relaxed else 0.70)
         )
         decision = review.decision if passes else "needs_evidence"
@@ -1252,6 +1253,67 @@ def finalize_v4_ideas(
     return selected, final_reviews, boards
 
 
+def deterministic_evidence_confidence(
+    review: IdeaReview, profiles: list[PaperEvidenceProfile]
+) -> float:
+    """Score review coverage from grounded full-text facts, never model self-confidence."""
+
+    profile_map = {
+        item.paper_id: item for item in profiles if item.role == "external"
+    }
+    closest = [value for value in dict.fromkeys(review.closest_work_ids) if value in profile_map]
+    supporting = [
+        value for value in dict.fromkeys(review.supporting_work_ids) if value in profile_map
+    ]
+    counter = [
+        value
+        for value in dict.fromkeys(review.counterevidence_work_ids)
+        if value in profile_map
+    ]
+    all_ids = list(dict.fromkeys(closest + supporting + counter))
+    field_names = (
+        "task",
+        "input_or_data",
+        "method",
+        "output_or_evaluation",
+        "constraints",
+        "limitations",
+    )
+    covered_fields = sum(
+        1
+        for paper_id in all_ids
+        for field in field_names
+        if getattr(profile_map[paper_id], field).evidence
+    )
+    field_coverage = covered_fields / max(1, len(all_ids) * len(field_names))
+    domains = {
+        urlparse(profile_map[paper_id].source_url or "").hostname
+        for paper_id in all_ids
+        if urlparse(profile_map[paper_id].source_url or "").hostname
+    }
+    source_diversity = min(1.0, len(domains) / 3)
+    score = (
+        0.30 * min(1.0, len(all_ids) / 6)
+        + 0.20 * field_coverage
+        + 0.15 * source_diversity
+        + 0.15 * min(1.0, len(closest) / 2)
+        + 0.15 * min(1.0, len(supporting) / 2)
+        + 0.05 * min(1.0, len(counter))
+    )
+    return round(min(1.0, max(0.0, score)), 3)
+
+
+def idea_review_score(review: IdeaReview) -> float:
+    collision_penalty = 1.0 if review.collision_risk == "high" else 0.0
+    return round(
+        review.feasibility
+        + review.submission_value
+        + review.evidence_confidence
+        - collision_penalty,
+        4,
+    )
+
+
 def idea_semantic_tokens(idea: SubmissionIdea) -> set[str]:
     """Build a stable English token signature for cross-attempt Idea deduping."""
 
@@ -1263,6 +1325,33 @@ def idea_semantic_tokens(idea: SubmissionIdea) -> set[str]:
         for token in re.findall(r"[a-z0-9][a-z0-9+._-]{2,}", text)
         if token not in {"with", "from", "that", "this", "using", "into", "through"}
     }
+
+
+def idea_passes_deterministic_filter(idea: SubmissionIdea) -> bool:
+    """Reject known non-contributions before spending a hostile-review call."""
+
+    text = " ".join(
+        (
+            idea.title_zh,
+            idea.title_en,
+            idea.hypothesis_zh,
+            idea.hypothesis_en,
+            idea.core_contribution_zh,
+            idea.core_contribution_en,
+            idea.mechanism_zh,
+            idea.mechanism_en,
+        )
+    ).casefold()
+    forbidden = (
+        r"\b(?:replace|swap) (?:the )?(?:model|llm)\b",
+        r"\buse (?:a )?(?:larger|newer|stronger) (?:model|llm)\b",
+        r"\b(?:just|simply) (?:add|combine)\b",
+        r"\b(?:benchmark|evaluation)-only\b",
+        r"仅(?:替换|更换)(?:模型|大模型)",
+        r"只(?:增加|加入).*大模型",
+        r"纯(?:评测|评价|基准)",
+    )
+    return not any(re.search(pattern, text) for pattern in forbidden)
 
 
 def idea_is_semantic_duplicate(
@@ -1312,6 +1401,7 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
             if leading_key is None or item["idea_key"] == leading_key
         ][:3]
         presentation["idea_attempt_summaries"] = []
+        presentation["idea_evolution_audit"] = []
 
         # The complete candidate set belongs to the on-demand full report. When
         # no Idea passes the gate there are no comparison-board IDs, so falling
@@ -1414,7 +1504,11 @@ class AnalysisPipeline:
         self.llm = ClaudeCodeClient(
             Settings.reveal(settings.DEEPSEEK_API_KEY) or "mock",
             binary=settings.CLAUDE_BIN,
-            model=settings.CLAUDE_MODEL,
+            model=(
+                "deepseek-v4-flash"
+                if settings.IDEA_EVOLUTION_LOOP_ENABLED
+                else settings.CLAUDE_MODEL
+            ),
             effort=settings.CLAUDE_EFFORT,
             timeout_seconds=settings.CLAUDE_TIMEOUT_SECONDS,
             analysis_max_turns=settings.CLAUDE_ANALYSIS_MAX_TURNS,
@@ -2449,6 +2543,7 @@ class AnalysisPipeline:
         rejected_context: list[str] = []
         previous_idea_tokens: list[set[str]] = []
         attempt_checkpoints = dict(v4_checkpoint.get("idea_attempts") or {})
+        evolution_pool = list(v4_checkpoint.get("evolution_pool") or [])
 
         for attempt in range(1, max_attempts + 1):
             if asyncio.get_running_loop().time() >= deadline:
@@ -2510,14 +2605,38 @@ class AnalysisPipeline:
                         f"Reused {len(generated_ideas)} individually checkpointed Ideas "
                         f"for attempt {attempt}",
                     )
-                while len(generated_ideas) < 4:
+                total_ideas = (
+                    8
+                    if self.settings.IDEA_EVOLUTION_LOOP_ENABLED and attempt == 1
+                    else 4
+                )
+                evolution_targets = evolution_pool[:3]
+                while len(generated_ideas) < total_ideas:
                     idea_index = len(generated_ideas) + 1
                     part_key = f"idea-{idea_index}"
+                    target: dict[str, Any] | None = None
+                    evolution_mode = "new"
+                    if self.settings.IDEA_EVOLUTION_LOOP_ENABLED and evolution_targets:
+                        if idea_index <= 3:
+                            target = dict(evolution_targets[idea_index - 1])
+                            evolution_mode = (
+                                "branch"
+                                if int(target.get("stalled_rounds", 0)) >= 2
+                                else "revise"
+                            )
+                        elif idea_index == 4:
+                            target = dict(evolution_targets[0])
+                            evolution_mode = "branch"
                     await self._event(
                         job.id,
                         "idea_generation_part",
-                        f"Generating Idea {idea_index}/4 for attempt {attempt}",
-                        {"attempt": attempt, "part": idea_index, "parts": 4},
+                        f"Generating Idea {idea_index}/{total_ideas} for attempt {attempt}",
+                        {
+                            "attempt": attempt,
+                            "part": idea_index,
+                            "parts": total_ideas,
+                            "mode": evolution_mode,
+                        },
                     )
                     single = await self._call_llm(
                         submission_ideas_prompt(
@@ -2527,11 +2646,44 @@ class AnalysisPipeline:
                             profiles,
                             brief_context,
                             idea_index=idea_index,
-                            total_ideas=4,
+                            total_ideas=total_ideas,
                             avoid_titles=[item.title_en for item in generated_ideas],
+                            evolution_target=(
+                                {
+                                    "draft": target.get("draft"),
+                                    "review": target.get("review"),
+                                    "stalled_rounds": target.get("stalled_rounds", 0),
+                                }
+                                if target
+                                else None
+                            ),
+                            evolution_mode=evolution_mode,
                         ),
                         SubmissionIdeaSingleBatch,
                     )
+                    generated = single.ideas[0]
+                    if target and evolution_mode == "revise":
+                        target_draft = dict(target.get("draft") or {})
+                        generated = generated.model_copy(
+                            update={
+                                "lineage_id": target.get("lineage_id"),
+                                "parent_key": target_draft.get("key"),
+                                "revision_number": int(target.get("revision_number", 0)) + 1,
+                            }
+                        )
+                    else:
+                        generated = generated.model_copy(
+                            update={
+                                "lineage_id": f"a{attempt}-lineage-{idea_index}",
+                                "parent_key": (
+                                    dict(target.get("draft") or {}).get("key")
+                                    if target
+                                    else None
+                                ),
+                                "revision_number": 0,
+                            }
+                        )
+                    single = SubmissionIdeaSingleBatch(ideas=[generated])
                     generated_ideas.extend(single.ideas)
                     draft_batches[part_key] = single.model_dump(mode="json")
                     attempt_checkpoint["draft_batches"] = draft_batches
@@ -2542,7 +2694,12 @@ class AnalysisPipeline:
                 profile_ids = {item.paper_id for item in external_profiles}
                 grounded_drafts = []
                 for item in idea_batch.ideas:
-                    if idea_is_semantic_duplicate(item, previous_idea_tokens):
+                    if not idea_passes_deterministic_filter(item):
+                        continue
+                    is_revision = bool(item.parent_key and attempt > 1)
+                    if not is_revision and idea_is_semantic_duplicate(
+                        item, previous_idea_tokens
+                    ):
                         continue
                     previous_idea_tokens.append(idea_semantic_tokens(item))
                     values = item.model_dump(mode="json")
@@ -2610,12 +2767,38 @@ class AnalysisPipeline:
                     ),
                     IdeaReviewBatch,
                 )
+                review_batch = IdeaReviewBatch(
+                    reviews=[
+                        item.model_copy(
+                            update={
+                                "evidence_confidence": deterministic_evidence_confidence(
+                                    item, profiles
+                                )
+                            }
+                        )
+                        for item in review_batch.reviews
+                    ]
+                )
                 attempt_checkpoint["reviews"] = [
                     item.model_dump(mode="json") for item in review_batch.reviews
                 ]
                 attempt_checkpoint["review_prompt_version"] = IDEA_REVIEW_PROMPT_VERSION
                 attempt_checkpoints[str(attempt)] = attempt_checkpoint
                 await save_v4_checkpoint(idea_attempts=attempt_checkpoints)
+            # Old checkpoints may contain a model self-score. Recompute on every
+            # resume so the public confidence is deterministic and auditable.
+            review_batch = IdeaReviewBatch(
+                reviews=[
+                    item.model_copy(
+                        update={
+                            "evidence_confidence": deterministic_evidence_confidence(
+                                item, profiles
+                            )
+                        }
+                    )
+                    for item in review_batch.reviews
+                ]
+            )
             strict_selected, strict_reviews, strict_boards = finalize_v4_ideas(
                 grounded_drafts,
                 review_batch.reviews,
@@ -2623,18 +2806,69 @@ class AnalysisPipeline:
                 qualification_tier="strict",
                 review_attempt=attempt,
             )
-            score = max(
-                (
-                    item.feasibility
-                    + item.submission_value
-                    + item.evidence_confidence
-                    - (1 if item.collision_risk == "high" else 0)
-                    for item in strict_reviews
-                ),
-                default=-1,
-            )
+            score = max((idea_review_score(item) for item in strict_reviews), default=-1)
             if best_batch is None or score > best_batch[3]:
                 best_batch = (grounded_drafts, review_batch.reviews, attempt, score)
+
+            if self.settings.IDEA_EVOLUTION_LOOP_ENABLED:
+                if attempt_checkpoint.get("evolution_pool_after"):
+                    evolution_pool = list(attempt_checkpoint["evolution_pool_after"])
+                else:
+                    draft_map = {item.key: item for item in grounded_drafts}
+                    previous_by_lineage = {
+                        str(item.get("lineage_id")): item
+                        for item in evolution_pool
+                        if item.get("lineage_id")
+                    }
+                    next_by_lineage: dict[str, dict[str, Any]] = dict(previous_by_lineage)
+                    for reviewed in strict_reviews:
+                        draft = draft_map.get(reviewed.idea_key)
+                        if not draft:
+                            continue
+                        lineage_id = draft.lineage_id or draft.key
+                        previous = previous_by_lineage.get(lineage_id)
+                        current_score = idea_review_score(reviewed)
+                        previous_score = (
+                            float(previous.get("best_score", -10)) if previous else -10
+                        )
+                        improved = current_score >= previous_score + 0.03
+                        keep_current = previous is None or current_score >= previous_score
+                        next_by_lineage[lineage_id] = {
+                            "lineage_id": lineage_id,
+                            "draft": (
+                                draft.model_dump(mode="json")
+                                if keep_current
+                                else previous.get("draft")
+                            ),
+                            "review": (
+                                reviewed.model_dump(mode="json")
+                                if keep_current
+                                else previous.get("review")
+                            ),
+                            "best_score": max(previous_score, current_score),
+                            "stalled_rounds": (
+                                0
+                                if improved
+                                else int(previous.get("stalled_rounds", 0)) + 1
+                                if previous
+                                else 0
+                            ),
+                            "revision_number": max(
+                                draft.revision_number,
+                                int(previous.get("revision_number", 0)) if previous else 0,
+                            ),
+                        }
+                    evolution_pool = sorted(
+                        next_by_lineage.values(),
+                        key=lambda item: float(item.get("best_score", -10)),
+                        reverse=True,
+                    )[:3]
+                    attempt_checkpoint["evolution_pool_after"] = evolution_pool
+                    attempt_checkpoints[str(attempt)] = attempt_checkpoint
+                    await save_v4_checkpoint(
+                        idea_attempts=attempt_checkpoints,
+                        evolution_pool=evolution_pool,
+                    )
             attempt_summaries.append(
                 IdeaAttemptSummary(
                     attempt=attempt,
@@ -2653,37 +2887,13 @@ class AnalysisPipeline:
                 selected, reviews, boards = strict_selected, strict_reviews, strict_boards
                 break
 
-            # After the three required strict cycles plus one materially new
-            # batch, accept a candidate that clears every relaxed gate instead
-            # of starting calls that cannot finish inside the active-time cap.
-            if attempt >= 4 and best_batch:
-                best_drafts, best_reviews, best_attempt, _ = best_batch
-                relaxed_selected, relaxed_reviews, relaxed_boards = finalize_v4_ideas(
-                    best_drafts,
-                    best_reviews,
-                    profiles,
-                    qualification_tier="relaxed",
-                    review_attempt=best_attempt,
-                )
-                if relaxed_selected:
-                    selected = relaxed_selected
-                    reviews = relaxed_reviews
-                    boards = relaxed_boards
-                    await self._event(
-                        job.id,
-                        "idea_qualified",
-                        "Accepted the best structurally valid Idea at the low-confidence tier",
-                        {"review_attempt": best_attempt, "qualification_tier": "relaxed"},
-                    )
-                    break
-
             rejected_context.extend(
                 f"{item.idea_title_en}: {item.rationale_en}; missing: {', '.join(item.missing_evidence_en)}"
                 for item in strict_reviews
             )
-            # The first three attempts are complete review cycles: failed reviews
-            # trigger targeted multi-source retrieval and up to five more full texts.
-            if attempt >= 3 or attempt >= max_attempts:
+            # Every failed cycle diagnoses its own evidence gaps and can add up
+            # to three new full-text profiles, up to the global cap of 30.
+            if attempt >= max_attempts:
                 continue
             if attempt_checkpoint.get("followup_complete"):
                 attempt_summaries[-1] = attempt_summaries[-1].model_copy(
@@ -2707,10 +2917,20 @@ class AnalysisPipeline:
                     attempt_checkpoint["followup_bundle"]
                 )
             else:
+                followup_drafts = (
+                    [item.get("draft") for item in evolution_pool if item.get("draft")]
+                    if self.settings.IDEA_EVOLUTION_LOOP_ENABLED
+                    else [item.model_dump(mode="json") for item in grounded_drafts]
+                )
+                followup_reviews = (
+                    [item.get("review") for item in evolution_pool if item.get("review")]
+                    if self.settings.IDEA_EVOLUTION_LOOP_ENABLED
+                    else [item.model_dump(mode="json") for item in strict_reviews]
+                )
                 bundle = await self._call_llm(
                     idea_followup_query_prompt(
-                        [item.model_dump(mode="json") for item in grounded_drafts],
-                        [item.model_dump(mode="json") for item in strict_reviews],
+                        followup_drafts,
+                        followup_reviews,
                         attempt + 1,
                     ),
                     QueryBundle,
@@ -2753,7 +2973,7 @@ class AnalysisPipeline:
                 workspace,
                 deadline,
                 persist=persist,
-                target_override=min(30, old_profile_count + 5),
+                target_override=min(30, old_profile_count + 3),
             )
             profiles = input_profiles + external_profiles
             landscape = landscape.model_copy(
@@ -2831,6 +3051,24 @@ class AnalysisPipeline:
                 qualification_tier="relaxed",
                 review_attempt=best_attempt,
             )
+            if selected:
+                primary_key = selected[0].key
+                selected = selected[:1]
+                boards = boards[:1]
+                reviews = [
+                    item.model_copy(
+                        update={
+                            "decision": (
+                                "recommended"
+                                if item.idea_key == primary_key
+                                else "needs_evidence"
+                                if item.decision == "alternative"
+                                else item.decision
+                            )
+                        }
+                    )
+                    for item in reviews
+                ]
         if not selected:
             raise ValueError(
                 "V4 Idea review exhausted the time/evidence budget without a structurally valid proposal"
@@ -2846,6 +3084,20 @@ class AnalysisPipeline:
             reviews=reviews,
             comparison_boards=boards,
             idea_attempt_summaries=attempt_summaries,
+            idea_evolution_audit=[
+                {
+                    "attempt": int(attempt_key),
+                    "draft_batches": checkpoint.get("draft_batches", {}),
+                    "grounded_drafts": checkpoint.get("drafts", []),
+                    "reviews": checkpoint.get("reviews", []),
+                    "followup_queries": checkpoint.get("followup_bundle"),
+                    "added_candidates": checkpoint.get("added_candidates", 0),
+                    "added_full_text": checkpoint.get("added_full_text", 0),
+                }
+                for attempt_key, checkpoint in sorted(
+                    attempt_checkpoints.items(), key=lambda item: int(item[0])
+                )
+            ],
         )
         await save_v4_checkpoint(
             complete=True,

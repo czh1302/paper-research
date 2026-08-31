@@ -6,7 +6,7 @@ import { cancelJob, deleteJob, listJobs, setJobFavorite } from "../lib/api";
 import { useLanguage } from "../lib/language";
 import type { JobRecord } from "../lib/types";
 
-const terminalStatuses = new Set(["completed", "cancelled", "failed", "budget_blocked"]);
+const terminalStatuses = new Set(["completed", "cancelled", "needs_input"]);
 
 function jobTitle(job: JobRecord, fallback: string) {
   return job.file_names?.[0] || fallback;

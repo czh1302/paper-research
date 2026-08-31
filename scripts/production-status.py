@@ -20,7 +20,7 @@ async def main() -> None:
         response = await repository._request(
             "GET",
             "/rest/v1/jobs"
-            "?status=in.(queued,parsing,problem_ready,searching,analyzing,rendering)"
+            "?status=in.(queued,parsing,problem_ready,searching,analyzing,rendering,recovering,waiting_resources)"
             "&select=status",
         )
         rows = response.json()

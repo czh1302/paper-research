@@ -14,10 +14,12 @@ const supabase = vi.hoisted(() => {
   const query = {
     select: vi.fn(),
     eq: vi.fn(),
+    in: vi.fn(),
     order: vi.fn(),
   };
   query.select.mockReturnValue(query);
   query.eq.mockReturnValue(query);
+  query.in.mockReturnValue(query);
   query.order.mockResolvedValue({ data: [], error: null });
   const channel = { on: vi.fn(), subscribe: vi.fn() };
   channel.on.mockReturnValue(channel);
@@ -66,5 +68,36 @@ describe("JobPage", () => {
     expect(screen.getByRole("link", { name: /返回任务列表/ })).toHaveAttribute("href", "/");
     expect(screen.getAllByText(/^步骤 [1-7]$/)).toHaveLength(7);
     expect(screen.getAllByText("生成报告和导出文件").length).toBeGreaterThan(0);
+  });
+
+  it("shows automatic recovery without exposing a failed label or technical log", async () => {
+    api.getJob.mockResolvedValue({
+      id: "job-recovery",
+      mode: "single",
+      max_rounds: 1,
+      current_round: 1,
+      status: "recovering",
+      stage: "v4_ideas",
+      progress: 82,
+      retry_count: 2,
+      next_retry_at: "2026-08-31T10:30:00Z",
+      created_at: "2026-08-31T00:00:00Z",
+      file_names: ["paper.pdf"],
+      error: "RAW_PROVIDER_EXCEPTION",
+    });
+
+    render(
+      <LanguageProvider>
+        <MemoryRouter initialEntries={["/jobs/job-recovery"]}>
+          <Routes><Route path="/jobs/:id" element={<JobPage />} /></Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
+    );
+
+    expect(await screen.findByText("自动恢复中")).toBeInTheDocument();
+    expect(screen.getByText(/将从第 6 步继续/)).toBeInTheDocument();
+    expect(screen.queryByText(/RAW_PROVIDER_EXCEPTION/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/技术日志/)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("失败");
   });
 });

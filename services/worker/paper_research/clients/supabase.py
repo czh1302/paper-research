@@ -127,6 +127,9 @@ class SupabaseRepository:
             stage=row.get("stage", "queued"),
             research_brief=row.get("research_brief") or "",
             checkpoint=row.get("checkpoint") or {},
+            retry_count=int(row.get("retry_count") or 0),
+            next_retry_at=row.get("next_retry_at"),
+            last_recovery_at=row.get("last_recovery_at"),
             files=files,
         )
 
@@ -591,4 +594,24 @@ class SupabaseRepository:
             "POST",
             "/rest/v1/rpc/finish_job",
             json={"p_job_id": job_id, "p_status": status.value, "p_error": error},
+        )
+
+    async def schedule_job_retry(
+        self,
+        job_id: str,
+        status: JobStatus,
+        retry_seconds: int,
+        failure_category: str,
+        safe_error: str | None = None,
+    ) -> None:
+        await self._request(
+            "POST",
+            "/rest/v1/rpc/schedule_job_retry",
+            json={
+                "p_job_id": job_id,
+                "p_status": status.value,
+                "p_retry_seconds": retry_seconds,
+                "p_failure_category": failure_category,
+                "p_safe_error": safe_error,
+            },
         )

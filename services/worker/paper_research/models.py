@@ -35,6 +35,9 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
     FAILED = "failed"
     BUDGET_BLOCKED = "budget_blocked"
+    RECOVERING = "recovering"
+    WAITING_RESOURCES = "waiting_resources"
+    NEEDS_INPUT = "needs_input"
 
 
 class AnalysisMode(str, Enum):
@@ -632,10 +635,13 @@ class SubmissionIdea(BaseModel):
     review_attempt: int = Field(default=1, ge=1, le=8)
     missing_evidence_zh: list[str] = Field(default_factory=list, max_length=5)
     missing_evidence_en: list[str] = Field(default_factory=list, max_length=5)
+    lineage_id: str | None = Field(default=None, max_length=80)
+    parent_key: str | None = Field(default=None, max_length=80)
+    revision_number: int = Field(default=0, ge=0, le=8)
 
 
 class SubmissionIdeaBatch(BaseModel):
-    ideas: list[SubmissionIdea] = Field(min_length=4, max_length=6)
+    ideas: list[SubmissionIdea] = Field(min_length=4, max_length=8)
 
 
 class SubmissionIdeaPairBatch(BaseModel):
@@ -665,13 +671,13 @@ class IdeaReview(BaseModel):
 
 
 class IdeaReviewBatch(BaseModel):
-    reviews: list[IdeaReview] = Field(min_length=1, max_length=6)
+    reviews: list[IdeaReview] = Field(min_length=1, max_length=8)
 
 
 class IdeaAttemptSummary(BaseModel):
     attempt: int = Field(ge=1, le=8)
-    generated: int = Field(ge=0, le=6)
-    grounded: int = Field(ge=0, le=6)
+    generated: int = Field(ge=0, le=8)
+    grounded: int = Field(ge=0, le=8)
     strict_passed: int = Field(ge=0, le=3)
     added_candidates: int = Field(default=0, ge=0)
     added_full_text: int = Field(default=0, ge=0)
@@ -695,9 +701,10 @@ class ReportPresentationV4(BaseModel):
     problem_briefs: list[ProblemBrief] = Field(min_length=1, max_length=5)
     literature_landscape: LiteratureLandscape
     ideas: list[SubmissionIdea] = Field(default_factory=list, max_length=3)
-    reviews: list[IdeaReview] = Field(default_factory=list, max_length=6)
+    reviews: list[IdeaReview] = Field(default_factory=list, max_length=8)
     comparison_boards: list[IdeaComparisonBoard] = Field(default_factory=list, max_length=3)
     idea_attempt_summaries: list[IdeaAttemptSummary] = Field(default_factory=list, max_length=8)
+    idea_evolution_audit: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
 
 
 class RoundAnalysis(BaseModel):
@@ -747,6 +754,9 @@ class Job(BaseModel):
     stage: str = "queued"
     files: list[JobFile] = Field(min_length=1, max_length=5)
     checkpoint: dict[str, Any] = Field(default_factory=dict)
+    retry_count: int = Field(default=0, ge=0)
+    next_retry_at: datetime | None = None
+    last_recovery_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_mode_file_count(self) -> Job:

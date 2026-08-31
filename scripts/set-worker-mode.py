@@ -43,7 +43,10 @@ def main() -> None:
     parser.add_argument("--report-sections", choices=("true", "false"))
     parser.add_argument("--pdf-evidence-preview", choices=("true", "false"))
     parser.add_argument("--e2b-pilot", choices=("true", "false"))
-    parser.add_argument("--v4-max-idea-review-attempts", type=int, choices=range(1, 7))
+    parser.add_argument("--job-auto-recovery", choices=("true", "false"))
+    parser.add_argument("--idea-evolution-loop", choices=("true", "false"))
+    parser.add_argument("--v4-max-idea-review-attempts", type=int, choices=range(1, 9))
+    parser.add_argument("--v4-max-minutes", type=int, choices=range(10, 181))
     args = parser.parse_args()
     updates = {
         "IDEA_PIPELINE_V3": args.idea_pipeline_v3,
@@ -52,7 +55,10 @@ def main() -> None:
         "REPORT_SECTIONS_ENABLED": args.report_sections,
         "PDF_EVIDENCE_PREVIEW_ENABLED": args.pdf_evidence_preview,
         "E2B_PILOT_ENABLED": args.e2b_pilot,
+        "JOB_AUTO_RECOVERY_ENABLED": args.job_auto_recovery,
+        "IDEA_EVOLUTION_LOOP_ENABLED": args.idea_evolution_loop,
         "V4_MAX_IDEA_REVIEW_ATTEMPTS": args.v4_max_idea_review_attempts,
+        "V4_MAX_MINUTES": args.v4_max_minutes,
     }
     if all(value is None for value in updates.values()):
         parser.error("at least one pipeline switch is required")
