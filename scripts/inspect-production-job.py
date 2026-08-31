@@ -52,12 +52,31 @@ async def main() -> None:
         reports = (
             await repository._request(
                 "GET",
-                f"/rest/v1/reports?job_id=eq.{job_id}&select=id,summary",
+                f"/rest/v1/reports?job_id=eq.{job_id}&select=id,summary,markdown",
             )
         ).json()
         report = reports[0] if reports else None
         summary = report.get("summary") if report else None
         presentation = (summary or {}).get("presentation") or {}
+        ideas = presentation.get("ideas") or []
+        section_rows = (
+            (
+                await repository._request(
+                    "GET",
+                    "/rest/v1/report_sections"
+                    f"?report_id=eq.{quote(str(report['id']), safe='')}"
+                    "&select=section,content",
+                )
+            ).json()
+            if report
+            else []
+        )
+        section_content = {
+            str(row.get("section")): row.get("content") or {} for row in section_rows
+        }
+        idea_section = section_content.get("ideas") or {}
+        full_ideas = idea_section.get("ideas") or ideas
+        comparison_boards = idea_section.get("comparison_boards") or []
         assets = (
             await repository._request(
                 "GET",
@@ -79,12 +98,34 @@ async def main() -> None:
                 if summary
                 else 0
             ),
-            "passed_ideas": len(presentation.get("ideas") or []),
+            "presentation_version": presentation.get("version"),
+            "passed_ideas": len(full_ideas),
             "promising_ideas": len(presentation.get("promising_ideas") or []),
+            "ideas": [
+                {
+                    "title": idea.get("title_zh") or idea.get("title_en"),
+                    "qualification_tier": idea.get("qualification_tier"),
+                    "review_attempt": idea.get("review_attempt"),
+                    "verdict": idea.get("verdict"),
+                    "feasibility": idea.get("feasibility"),
+                    "submission_value": idea.get("submission_value"),
+                    "evidence_confidence": idea.get("evidence_confidence"),
+                    "collision_risk": idea.get("collision_risk"),
+                    "closest_work_count": len(idea.get("closest_work_ids") or []),
+                    "supporting_work_count": len(idea.get("supporting_work_ids") or []),
+                }
+                for idea in full_ideas
+            ],
+            "comparison_boards": len(comparison_boards),
+            "comparison_profiles": sum(
+                len(board.get("profiles") or [])
+                for board in comparison_boards
+            ),
+            "markdown_bytes": len(str(report.get("markdown") or "").encode("utf-8")) if report else 0,
             "report_sections": (
                 await count_rows(
                     repository,
-                    f"/rest/v1/report_sections?report_id=eq.{quote(str(report['id']), safe='')}&select=id",
+                    f"/rest/v1/report_sections?report_id=eq.{quote(str(report['id']), safe='')}&select=report_id",
                 )
                 if report
                 else 0
