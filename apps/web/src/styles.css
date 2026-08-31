@@ -124,10 +124,11 @@ button, input, select { font: inherit; }
 .report-flow-item > summary { display: flex; cursor: pointer; list-style: none; align-items: center; justify-content: space-between; gap: .4rem; color: rgb(var(--content)); font-size: .8rem; font-weight: 600; }
 
 .citation-wrap { position: relative; display: inline-flex; max-width: 100%; vertical-align: middle; }
-.source-pill { display: inline-flex; min-height: 30px; max-width: 15rem; cursor: pointer; align-items: center; gap: .4rem; border: 1px solid rgb(var(--line)); border-radius: 999px; background: rgb(var(--surface)); padding: .3rem .65rem; color: rgb(var(--content)); font-size: .73rem; font-weight: 600; box-shadow: 0 2px 7px rgba(23, 59, 87, .04); }
+.source-pill { display: inline-flex; min-height: 30px; max-width: 100%; cursor: pointer; align-items: center; gap: .4rem; border: 1px solid rgb(var(--line)); border-radius: 999px; background: rgb(var(--surface)); padding: .3rem .65rem; color: rgb(var(--content)); font-size: .73rem; font-weight: 600; line-height: 1.35; text-align: left; white-space: normal; overflow-wrap: anywhere; box-shadow: 0 2px 7px rgba(23, 59, 87, .04); }
 .source-pill:hover, .source-pill:focus-visible, .evidence-reference:hover, .evidence-reference:focus-visible { border-color: rgb(var(--report-blue) / .4); background: rgb(var(--report-blue-soft) / .55); outline: none; }
 .source-mark { display: grid; min-width: 24px; height: 20px; flex: none; place-items: center; border-radius: 999px; background: rgb(var(--report-blue-soft)); padding: 0 .25rem; color: rgb(var(--report-blue)); font-size: .68rem; font-weight: 750; }
-.evidence-reference { display: inline-flex; min-height: 28px; cursor: pointer; align-items: center; gap: .25rem; border: 1px solid rgb(var(--line)); border-radius: 8px; background: rgb(var(--surface)); padding: .2rem .45rem; color: rgb(var(--report-blue)); font-size: .72rem; font-weight: 750; box-shadow: 0 2px 7px rgba(23, 59, 87, .04); }
+.evidence-reference { display: inline-flex; min-height: 30px; max-width: 100%; cursor: pointer; align-items: center; gap: .35rem; border: 1px solid rgb(var(--line)); border-radius: 999px; background: rgb(var(--surface)); padding: .3rem .65rem; color: rgb(var(--report-blue)); font-size: .72rem; font-weight: 700; line-height: 1.35; text-align: left; white-space: normal; overflow-wrap: anywhere; box-shadow: 0 2px 7px rgba(23, 59, 87, .04); }
+.evidence-reference > span { min-width: 0; overflow-wrap: anywhere; }
 .citation-popover { position: fixed; z-index: 100; display: block; width: min(360px, calc(100vw - 2rem)); border: 1px solid rgb(var(--line)); border-radius: 14px; background: rgb(var(--surface)); padding: 1rem; color: rgb(var(--content)); box-shadow: 0 18px 50px rgba(15, 30, 50, .18); text-align: left; }
 .citation-popover::before { content: ""; position: absolute; inset: -10px 0 auto; height: 10px; }
 .citation-close { position: absolute; top: .55rem; right: .55rem; display: grid; height: 28px; width: 28px; cursor: pointer; place-items: center; border: 0; border-radius: 8px; background: rgb(var(--subtle)); color: rgb(var(--muted)); }
@@ -146,7 +147,7 @@ button, input, select { font: inherit; }
 .pdf-toolbar button:disabled { cursor: not-allowed; opacity: .35; }
 .pdf-scroll { min-height: 0; flex: 1; overflow: auto; background: rgb(var(--background)); padding: 1.25rem; }
 .pdf-page { position: relative; margin: 0 auto; overflow: hidden; background: white; box-shadow: 0 8px 30px rgba(15, 31, 48, .14); }
-.pdf-page canvas { display: block; }
+.pdf-page canvas, .pdf-page img { display: block; }
 .pdf-highlight { position: absolute; z-index: 2; border: 2px solid currentColor; border-radius: 3px; mix-blend-mode: multiply; pointer-events: none; }
 .pdf-highlight-input { color: #2563eb; background: rgba(37, 99, 235, .22); }
 .pdf-highlight-output { color: #7c3aed; background: rgba(124, 58, 237, .22); }
@@ -173,7 +174,8 @@ button, input, select { font: inherit; }
 .confirm-backdrop { position: absolute; inset: 0; border: 0; background: rgba(8, 18, 30, .48); backdrop-filter: blur(2px); }
 .confirm-dialog { position: relative; width: min(460px, 100%); border: 1px solid rgb(var(--line)); border-radius: 16px; background: rgb(var(--surface)); padding: 1.5rem; box-shadow: 0 22px 70px rgba(4, 14, 26, .28); }
 
-.v4-brief-card { position: relative; overflow: hidden; }
+.v4-brief-card { position: relative; min-width: 0; overflow: visible; overflow-wrap: anywhere; }
+.v4-brief-card > *, .v4-brief-card li > * { min-width: 0; }
 .v4-brief-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: rgb(var(--info)); opacity: .75; }
 .v4-brief-output::before { background: #7c6fd0; }
 .v4-brief-method::before { background: #d68135; }

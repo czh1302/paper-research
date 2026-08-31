@@ -5,13 +5,8 @@ import EvidencePdfViewer from "./EvidencePdfViewer";
 
 const api = vi.hoisted(() => ({ getSourcePdf: vi.fn() }));
 vi.mock("../lib/api", () => api);
-vi.mock("pdfjs-dist", () => ({
-  GlobalWorkerOptions: { workerSrc: "" },
-  getDocument: () => ({ promise: Promise.reject(new Error("full PDF unavailable")) }),
-}));
-
 describe("EvidencePdfViewer", () => {
-  it("shows the highlighted page snapshot before the full PDF is available", async () => {
+  it("shows the highlighted page snapshot without loading PDF.js", async () => {
     api.getSourcePdf.mockResolvedValue({
       signedUrl: "https://private.example/document.pdf",
       previewSignedUrl: "https://private.example/page-5.jpg",
@@ -29,7 +24,19 @@ describe("EvidencePdfViewer", () => {
 
     const { container } = render(
       <LanguageProvider>
-        <EvidencePdfViewer reportId="report" assetId="asset" evidenceId="evidence" />
+        <EvidencePdfViewer
+          reportId="report"
+          assetId="asset"
+          evidence={[{
+            id: "evidence",
+            asset_id: "asset",
+            paper_id: "paper",
+            page: 5,
+            text: "The cited algorithm step.",
+            bboxes: [[100, 200, 900, 300]],
+            evidence_type: "algorithm",
+          }]}
+        />
       </LanguageProvider>,
     );
 
@@ -39,6 +46,10 @@ describe("EvidencePdfViewer", () => {
     );
     expect(container.querySelector(".pdf-highlight-algorithm")).toBeInTheDocument();
     expect(screen.getByText("The cited algorithm step.")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("full PDF unavailable")).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: /打开原始 PDF/ })).toHaveAttribute(
+      "href",
+      "https://arxiv.org/pdf/example.pdf",
+    );
+    await waitFor(() => expect(api.getSourcePdf).toHaveBeenCalledWith("report", "asset", "evidence"));
   });
 });
