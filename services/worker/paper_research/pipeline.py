@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from .clients.llm import ClaudeCodeClient
+from .clients.llm import ClaudeCodeClient, ClaudeCodeError
 from .clients.mineru import MinerUClient
 from .config import Settings
 from .document import blocks_as_prompt, chunk_blocks, normalize_mineru_zip, validate_pdf
@@ -2591,33 +2591,47 @@ class AnalysisPipeline:
                 target_override=min(30, old_profile_count + 5),
             )
             profiles = input_profiles + external_profiles
-            landscape_draft = await self._call_llm(
-                landscape_prompt(profiles), LiteratureLandscapeDraft
+            landscape = landscape.model_copy(
+                update={
+                    "candidate_count": len(candidates),
+                    "screened_count": len(ranked),
+                    "full_text_count": len(external_profiles),
+                    "source_counts": source_coverage(candidates),
+                    "profiles": profiles,
+                }
             )
-            allowed_ids = {item.paper_id for item in profiles}
-            next_themes = [
-                item.model_copy(
-                    update={
-                        "paper_ids": [
-                            value
-                            for value in dict.fromkeys(item.paper_ids)
-                            if value in allowed_ids
-                        ]
-                    }
+            try:
+                landscape_draft = await self._call_llm(
+                    landscape_prompt(profiles), LiteratureLandscapeDraft
                 )
-                for item in landscape_draft.themes
-            ]
-            next_themes = [item for item in next_themes if item.paper_ids]
-            if len(next_themes) >= 2:
-                landscape = LiteratureLandscape(
-                    overview_zh=landscape_draft.overview_zh,
-                    overview_en=landscape_draft.overview_en,
-                    candidate_count=len(candidates),
-                    screened_count=len(ranked),
-                    full_text_count=len(external_profiles),
-                    source_counts=source_coverage(candidates),
-                    themes=next_themes,
-                    profiles=profiles,
+                allowed_ids = {item.paper_id for item in profiles}
+                next_themes = [
+                    item.model_copy(
+                        update={
+                            "paper_ids": [
+                                value
+                                for value in dict.fromkeys(item.paper_ids)
+                                if value in allowed_ids
+                            ]
+                        }
+                    )
+                    for item in landscape_draft.themes
+                ]
+                next_themes = [item for item in next_themes if item.paper_ids]
+                if len(next_themes) >= 2:
+                    landscape = landscape.model_copy(
+                        update={
+                            "overview_zh": landscape_draft.overview_zh,
+                            "overview_en": landscape_draft.overview_en,
+                            "themes": next_themes,
+                        }
+                    )
+            except ClaudeCodeError:
+                await self._event(
+                    job.id,
+                    "warning",
+                    "Kept the prior grounded landscape after supplemental synthesis failed",
+                    {"full_text_count": len(external_profiles)},
                 )
             attempt_checkpoint["followup_complete"] = True
             attempt_checkpoint["added_candidates"] = added_candidates
