@@ -2276,6 +2276,7 @@ class AnalysisPipeline:
         else:
             if len(cached_profiles) >= self.settings.V4_FULL_TEXT_TARGET:
                 external_profiles = cached_profiles[: self.settings.V4_FULL_TEXT_TARGET]
+                screened_count = len(cached_profiles)
                 await self._event(
                     job.id,
                     "resumed",
@@ -2283,6 +2284,7 @@ class AnalysisPipeline:
                 )
             else:
                 ranked = await self._v4_rank_full_text(problems, candidates)
+                screened_count = len(ranked)
                 external_profiles = await self._v4_external_profiles(
                     job, ranked, workspace, deadline, persist=persist
                 )
@@ -2322,7 +2324,7 @@ class AnalysisPipeline:
                 overview_zh=landscape_draft.overview_zh,
                 overview_en=landscape_draft.overview_en,
                 candidate_count=len(candidates),
-                screened_count=len(ranked),
+                screened_count=screened_count,
                 full_text_count=len(external_profiles),
                 source_counts=source_coverage(candidates),
                 themes=themes,
