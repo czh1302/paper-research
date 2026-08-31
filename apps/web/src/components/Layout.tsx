@@ -4,6 +4,7 @@ import { Link, NavLink } from "react-router-dom";
 import { requireSupabase } from "../lib/supabase";
 import { useLanguage } from "../lib/language";
 import { LanguageToggle } from "./LanguageToggle";
+import { GithubButton } from "./GithubButton";
 import { ThemeToggle } from "./ThemeToggle";
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -26,6 +27,7 @@ export function Layout({ children, email, isAdmin = false }: { children: ReactNo
             {email && <NavLink className={({ isActive }) => `button button-primary !min-h-10 !px-3 ${isActive ? "ring-2 ring-accent/20" : ""}`} to="/new"><Plus className="h-4 w-4" /><span className="hidden sm:inline">{text("新建分析", "New analysis")}</span></NavLink>}
             <LanguageToggle />
             <ThemeToggle />
+            <GithubButton />
             {email && <button className="button button-secondary !h-10 !min-h-10 !w-10 !p-0" title={text(`退出 ${email}`, `Sign out ${email}`)} aria-label={text("退出登录", "Sign out")} onClick={() => requireSupabase().auth.signOut({ scope: "local" })}><LogOut className="h-4 w-4" /></button>}
           </nav>
         </div>

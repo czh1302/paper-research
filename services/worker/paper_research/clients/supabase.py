@@ -240,6 +240,118 @@ class SupabaseRepository:
             "previews": len(preview_rows),
         }
 
+    async def claim_admin_deletion_request(
+        self, worker_id: str, lease_seconds: int
+    ) -> dict[str, Any] | None:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/claim_admin_deletion_request",
+            json={"p_worker_id": worker_id, "p_lease_seconds": lease_seconds},
+        )
+        rows = response.json() or []
+        if not rows:
+            return None
+        return dict(rows[0] if isinstance(rows, list) else rows)
+
+    async def admin_deletion_target_ready(self, target_kind: str, target_id: str) -> bool:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/admin_deletion_target_ready",
+            json={"p_target_kind": target_kind, "p_target_id": target_id},
+        )
+        return response.json() is True
+
+    async def finish_admin_deletion_request(
+        self,
+        request_id: str,
+        worker_id: str,
+        *,
+        success: bool,
+        retry_seconds: int = 60,
+        error: str | None = None,
+    ) -> None:
+        await self._request(
+            "POST",
+            "/rest/v1/rpc/finish_admin_deletion_request",
+            json={
+                "p_request_id": request_id,
+                "p_worker_id": worker_id,
+                "p_success": success,
+                "p_retry_seconds": retry_seconds,
+                "p_error": error,
+            },
+        )
+
+    async def _remove_storage_paths(self, bucket: str, paths: list[str]) -> None:
+        unique_paths = list(dict.fromkeys(path for path in paths if path))
+        if unique_paths:
+            await self._request(
+                "DELETE", f"/storage/v1/object/{bucket}", json={"prefixes": unique_paths}
+            )
+
+    async def delete_job_permanently(self, job_id: str) -> None:
+        encoded_job_id = quote(job_id)
+        job_response, asset_response = await asyncio.gather(
+            self._request(
+                "GET",
+                "/rest/v1/jobs"
+                f"?id=eq.{encoded_job_id}&select=id,job_files(upload:uploads(id,storage_path))",
+            ),
+            self._request(
+                "GET",
+                "/rest/v1/report_evidence_assets"
+                f"?job_id=eq.{encoded_job_id}&select=id,storage_path",
+            ),
+        )
+        jobs = job_response.json() or []
+        assets = asset_response.json() or []
+        upload_rows = [
+            item.get("upload")
+            for job in jobs
+            for item in (job.get("job_files") or [])
+            if item.get("upload")
+        ]
+        asset_ids = [str(item["id"]) for item in assets if item.get("id")]
+        previews: list[dict[str, Any]] = []
+        if asset_ids:
+            encoded_ids = ",".join(quote(item) for item in asset_ids)
+            preview_response = await self._request(
+                "GET",
+                "/rest/v1/report_evidence_previews"
+                f"?asset_id=in.({encoded_ids})&select=storage_path",
+            )
+            previews = preview_response.json() or []
+
+        await self._remove_storage_paths(
+            "papers",
+            [str(item.get("storage_path") or "") for item in upload_rows]
+            + [str(item.get("storage_path") or "") for item in assets],
+        )
+        await self._remove_storage_paths(
+            "evidence-previews",
+            [str(item.get("storage_path") or "") for item in previews],
+        )
+        await self._request(
+            "POST",
+            "/rest/v1/rpc/purge_job_records",
+            json={"p_job_id": job_id},
+        )
+
+    async def delete_user_permanently(self, user_id: str) -> None:
+        response = await self._request(
+            "GET", f"/rest/v1/jobs?user_id=eq.{quote(user_id)}&select=id"
+        )
+        for row in response.json() or []:
+            await self.delete_job_permanently(str(row["id"]))
+        try:
+            await self._request(
+                "DELETE",
+                f"/auth/v1/admin/users/{quote(user_id)}?should_soft_delete=false",
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+
     async def add_event(
         self, job_id: str, kind: str, message: str, data: dict[str, Any] | None = None
     ) -> None:

@@ -29,3 +29,36 @@ async def test_heartbeat_retries_after_transient_repository_error(monkeypatch) -
         await worker._heartbeat("job-1")
 
     assert worker.repository.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_job_deletion_waits_for_safe_lease_then_cleans() -> None:
+    class Repository:
+        ready = False
+        deleted: list[str] = []
+        finished: list[dict] = []
+
+        async def claim_admin_deletion_request(self, *_args):
+            return {"id": "request-1", "target_kind": "job", "target_id": "job-1", "attempt_count": 1}
+
+        async def admin_deletion_target_ready(self, *_args):
+            return self.ready
+
+        async def delete_job_permanently(self, job_id: str):
+            self.deleted.append(job_id)
+
+        async def finish_admin_deletion_request(self, _request_id, _worker_id, **values):
+            self.finished.append(values)
+
+    worker = Worker.__new__(Worker)
+    worker.settings = SimpleNamespace(WORKER_ID="worker-1", JOB_LEASE_SECONDS=300)
+    worker.repository = Repository()
+
+    await worker._process_admin_deletion()
+    assert worker.repository.deleted == []
+    assert worker.repository.finished[-1]["success"] is False
+
+    worker.repository.ready = True
+    await worker._process_admin_deletion()
+    assert worker.repository.deleted == ["job-1"]
+    assert worker.repository.finished[-1]["success"] is True

@@ -18,7 +18,7 @@ port = 54323
 [auth]
 enabled = true
 site_url = "http://localhost:5173"
-additional_redirect_urls = ["http://localhost:5173/**"]
+additional_redirect_urls = ["http://localhost:5173/**", "http://localhost:5174/**", "https://czh1302.github.io/paper-research/**"]
 enable_signup = true
 
 [storage]
@@ -56,4 +56,10 @@ verify_jwt = true
 verify_jwt = false
 
 [functions.set-job-favorite]
+verify_jwt = true
+
+[functions.admin-delete-job]
+verify_jwt = true
+
+[functions.admin-delete-user]
 verify_jwt = true

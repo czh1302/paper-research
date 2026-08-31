@@ -1,5 +1,5 @@
 import { requireSupabase } from "./supabase";
-import type { AdminJobRow, AdminUserRow, JobRecord, ReportRecord, ReportSectionName, ReportSectionResponse, SourcePdfResponse } from "./types";
+import type { AdminDeletionRequest, AdminJobRow, AdminUserRow, JobRecord, ReportRecord, ReportSectionName, ReportSectionResponse, SourcePdfResponse } from "./types";
 
 export async function checkIsAdmin(): Promise<boolean> {
   const { data, error } = await requireSupabase().rpc("is_admin");
@@ -23,6 +23,29 @@ export async function adminListJobs(limit = 100, offset = 0): Promise<AdminJobRo
   });
   if (error) throw error;
   return (data ?? []) as AdminJobRow[];
+}
+
+export async function adminListDeletionRequests(): Promise<AdminDeletionRequest[]> {
+  const { data, error } = await requireSupabase()
+    .from("admin_deletion_requests")
+    .select("id,target_kind,target_id,state,attempt_count,next_attempt_at,last_error,created_at")
+    .neq("state", "completed")
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data ?? []) as AdminDeletionRequest[];
+}
+
+export async function adminDeleteJob(jobId: string): Promise<{ state: "pending" | "deleted" }> {
+  const { data, error } = await requireSupabase().functions.invoke("admin-delete-job", { body: { jobId } });
+  if (error) throw error;
+  return data as { state: "pending" | "deleted" };
+}
+
+export async function adminDeleteUser(userId: string, confirmationEmail: string): Promise<{ state: "pending" | "deleted" }> {
+  const { data, error } = await requireSupabase().functions.invoke("admin-delete-user", { body: { userId, confirmationEmail } });
+  if (error) throw error;
+  return data as { state: "pending" | "deleted" };
 }
 
 export async function listJobs(limit = 20, offset = 0, favoritesOnly = false): Promise<JobRecord[]> {

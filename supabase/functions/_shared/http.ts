@@ -51,6 +51,18 @@ export async function authenticate(request: Request): Promise<{ user: User; admi
   return { user: data.user, admin };
 }
 
+export async function requireAdministrator(admin: SupabaseClient, user: User): Promise<void> {
+  const { data, error } = await admin.from("admin_users").select("user_id").eq("user_id", user.id).maybeSingle();
+  if (error) throw error;
+  if (!data) throw new HttpError(403, "Administrator access required");
+}
+
+export async function requireActiveAccount(admin: SupabaseClient, user: User): Promise<void> {
+  const { data, error } = await admin.from("profiles").select("deletion_requested_at").eq("id", user.id).maybeSingle();
+  if (error) throw error;
+  if (data?.deletion_requested_at) throw new HttpError(403, "Account deletion is pending");
+}
+
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
     super(message);

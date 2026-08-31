@@ -84,14 +84,14 @@ and DBLP do not need API keys; Crossref only requires a contact email for its po
    ```bash
    npx supabase secrets set \
      TURNSTILE_SECRET_KEY=ROTATED_VALUE \
-     PUBLIC_SITE_URL=https://YOUR_USER.github.io \
-     ADMIN_REDIRECT_URL=https://YOUR_USER.github.io/SJTU_Task_final/?admin=1
+     PUBLIC_SITE_URL=https://YOUR_USER.github.io/paper-research/ \
+     ADMIN_REDIRECT_URL=https://YOUR_USER.github.io/paper-research/?admin=1
    ```
 
-4. Deploy the eight functions:
+4. Deploy the Edge Functions:
 
    ```bash
-   for function_name in create-upload create-job cancel-job delete-job create-share revoke-share get-share admin-qr-login; do
+   for function_name in create-upload create-job cancel-job delete-job create-share revoke-share get-share admin-qr-login get-source-pdf get-report-section set-job-favorite admin-delete-job admin-delete-user; do
      npx supabase functions deploy "${function_name}"
    done
    ```

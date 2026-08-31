@@ -87,3 +87,50 @@ async def test_prune_external_assets_deletes_only_unselected_rows() -> None:
         assert [request.method for request in requests] == ["GET", "DELETE"]
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_permanent_job_delete_removes_storage_before_transactional_purge() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        path = request.url.path
+        if path == "/rest/v1/jobs":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "job-1",
+                        "job_files": [
+                            {"upload": {"id": "upload-1", "storage_path": "user/upload.pdf"}}
+                        ],
+                    }
+                ],
+            )
+        if path == "/rest/v1/report_evidence_assets":
+            return httpx.Response(
+                200,
+                json=[{"id": "asset-1", "storage_path": "evidence/external.pdf"}],
+            )
+        if path == "/rest/v1/report_evidence_previews":
+            return httpx.Response(
+                200,
+                json=[{"storage_path": "job/asset/page-1.jpg"}],
+            )
+        if path.startswith("/storage/v1/object/"):
+            return httpx.Response(200)
+        if path == "/rest/v1/rpc/purge_job_records":
+            assert json.loads(request.content) == {"p_job_id": "job-1"}
+            return httpx.Response(204)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    repository = SupabaseRepository("https://example.test", "service-key", client=client)
+    try:
+        await repository.delete_job_permanently("job-1")
+        assert requests[-1].url.path == "/rest/v1/rpc/purge_job_records"
+        storage_requests = [request for request in requests if request.url.path.startswith("/storage/")]
+        assert len(storage_requests) == 2
+    finally:
+        await client.aclose()

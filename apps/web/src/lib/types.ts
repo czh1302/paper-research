@@ -155,6 +155,7 @@ export interface AdminUserRow {
   job_count: number;
   active_job_count: number;
   completed_job_count: number;
+  is_admin: boolean;
 }
 
 export interface AdminJobRow {
@@ -176,4 +177,15 @@ export interface AdminJobRow {
   updated_at: string;
   file_names: string[];
   report_id: string | null;
+}
+
+export interface AdminDeletionRequest {
+  id: string;
+  target_kind: "job" | "user";
+  target_id: string;
+  state: "pending" | "processing" | "completed";
+  attempt_count: number;
+  next_attempt_at: string;
+  last_error: string | null;
+  created_at: string;
 }

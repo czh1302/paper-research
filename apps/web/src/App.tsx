@@ -3,7 +3,9 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthPanel } from "./components/AuthPanel";
 import { Layout } from "./components/Layout";
+import { PasswordResetPanel } from "./components/PasswordResetPanel";
 import { checkIsAdmin } from "./lib/api";
+import { authLinkIssue, clearAuthLink, isPasswordRecoveryLink } from "./lib/auth";
 import { useLanguage } from "./lib/language";
 import { isConfigured, supabase, supabaseUrl } from "./lib/supabase";
 
@@ -57,19 +59,30 @@ function SetupRequired() {
 }
 
 function PrivateApp({ session, isAdmin }: { session: Session; isAdmin: boolean }) {
-  return <Layout email={session.user.email} isAdmin={isAdmin}><Suspense fallback={<Loading/>}><Routes><Route path="/" element={<DashboardPage/>}/><Route path="/new" element={<NewAnalysisPage/>}/><Route path="/jobs/:id" element={<JobPage/>}/><Route path="/reports/:id" element={<ReportPage/>}/>{isAdmin && <Route path="/admin" element={<AdminPage/>}/>} {isAdmin && <Route path="/admin/jobs/:id" element={<JobPage readOnly/>}/>} {isAdmin && <Route path="/admin/reports/:id" element={<ReportPage readOnly/>}/>}<Route path="*" element={<Navigate to={isAdmin && window.location.hash.startsWith("#/admin") ? "/admin" : "/"} replace/>}/></Routes></Suspense></Layout>;
+  return <Layout email={session.user.email} isAdmin={isAdmin}><Suspense fallback={<Loading/>}><Routes><Route path="/" element={<DashboardPage/>}/><Route path="/new" element={<NewAnalysisPage/>}/><Route path="/jobs/:id" element={<JobPage/>}/><Route path="/reports/:id" element={<ReportPage/>}/>{isAdmin && <Route path="/admin" element={<AdminPage/>}/>} {isAdmin && <Route path="/admin/jobs/:id" element={<JobPage adminMode/>}/>} {isAdmin && <Route path="/admin/reports/:id" element={<ReportPage readOnly/>}/>}<Route path="*" element={<Navigate to={isAdmin && window.location.hash.startsWith("#/admin") ? "/admin" : "/"} replace/>}/></Routes></Suspense></Layout>;
 }
 
 export default function App() {
   const { text } = useLanguage();
+  const [linkIssue] = useState(authLinkIssue);
+  const [requestedAuthMode] = useState(() => new URLSearchParams(window.location.search).get("auth"));
+  const [passwordRecovery, setPasswordRecovery] = useState(isPasswordRecoveryLink);
+  const [authMessage, setAuthMessage] = useState("");
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [isAdmin, setIsAdmin] = useState<boolean | undefined>(undefined);
   useEffect(() => {
     if (!supabase) { setSession(null); return; }
     void supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
+    const { data } = supabase.auth.onAuthStateChange((event, next) => {
+      setSession(next);
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
+    });
     return () => data.subscription.unsubscribe();
   }, []);
+  useEffect(() => {
+    if (linkIssue) clearAuthLink();
+    else if (session && !passwordRecovery && new URLSearchParams(window.location.search).get("auth") === "confirm") clearAuthLink("#/new");
+  }, [linkIssue, passwordRecovery, session]);
   useEffect(() => {
     if (!session) { setIsAdmin(false); return; }
     setIsAdmin(undefined);
@@ -84,7 +97,11 @@ export default function App() {
   if (window.location.hash.startsWith("#admin_ticket=")) return <AdminTicketLogin/>;
   if (location.hash.startsWith("#/share/")) return <Suspense fallback={<Loading/>}><Routes><Route path="/share/:token" element={<SharedReportPage/>}/></Routes></Suspense>;
   if (session === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">{text("正在建立安全会话…", "Establishing a secure session…")}</div>;
-  if (!session) return <main className="relative min-h-screen bg-canvas px-5"><AuthPanel/></main>;
+  if (passwordRecovery && session) return <PasswordResetPanel onComplete={(message) => { setPasswordRecovery(false); setAuthMessage(message); setSession(null); }}/>;
+  if (!session) {
+    const issueMessage = linkIssue ? text(linkIssue === "expired" ? "邮件链接已失效，请重新申请。" : "邮件链接无效，请重新申请。", linkIssue === "expired" ? "This email link has expired. Request a new one." : "This email link is invalid. Request a new one.") : authMessage;
+    return <main className="relative min-h-screen bg-canvas px-5"><AuthPanel initialMode={linkIssue ? requestedAuthMode === "recovery" ? "forgot" : "signup" : "signin"} initialMessage={issueMessage}/></main>;
+  }
   if (isAdmin === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-muted">{text("正在验证访问权限…", "Checking access permissions…")}</div>;
   return <PrivateApp session={session} isAdmin={isAdmin}/>;
 }

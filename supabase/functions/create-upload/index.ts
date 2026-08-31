@@ -1,4 +1,4 @@
-import { handleError, HttpError, json, preflight, authenticate } from "../_shared/http.ts";
+import { handleError, HttpError, json, preflight, authenticate, requireActiveAccount } from "../_shared/http.ts";
 
 type FileInput = { name: string; size: number; type: string };
 
@@ -11,6 +11,7 @@ Deno.serve(async (request) => {
   if (early) return early;
   try {
     const { user, admin } = await authenticate(request);
+    await requireActiveAccount(admin, user);
     const body = await request.json();
     const files = body.files as FileInput[];
     if (!Array.isArray(files) || files.length < 1 || files.length > 5) {
@@ -48,4 +49,3 @@ Deno.serve(async (request) => {
     return handleError(request, error);
   }
 });
-

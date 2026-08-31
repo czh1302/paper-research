@@ -1,10 +1,11 @@
-import { authenticate, handleError, HttpError, json, preflight, verifyTurnstile } from "../_shared/http.ts";
+import { authenticate, handleError, HttpError, json, preflight, requireActiveAccount, verifyTurnstile } from "../_shared/http.ts";
 
 Deno.serve(async (request) => {
   const early = preflight(request);
   if (early) return early;
   try {
     const { user, admin } = await authenticate(request);
+    await requireActiveAccount(admin, user);
     const body = await request.json();
     const mode = body.mode as "single" | "multi";
     const uploadIds = body.uploadIds as string[];

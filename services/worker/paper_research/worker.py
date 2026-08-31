@@ -143,11 +143,60 @@ class Worker:
         if counts["uploads"] or counts["reports"] or counts.get("orphans"):
             LOGGER.info("Expired data cleanup: %s", counts)
 
+    async def _process_admin_deletion(self) -> None:
+        request = await self.repository.claim_admin_deletion_request(
+            self.settings.WORKER_ID, self.settings.JOB_LEASE_SECONDS
+        )
+        if not request:
+            return
+        request_id = str(request["id"])
+        target_kind = str(request["target_kind"])
+        target_id = str(request["target_id"])
+        attempt = int(request.get("attempt_count") or 1)
+        try:
+            ready = await self.repository.admin_deletion_target_ready(target_kind, target_id)
+            if not ready:
+                await self.repository.finish_admin_deletion_request(
+                    request_id,
+                    self.settings.WORKER_ID,
+                    success=False,
+                    retry_seconds=30,
+                    error="Waiting for the active worker lease to reach a safe checkpoint",
+                )
+                return
+            if target_kind == "job":
+                await self.repository.delete_job_permanently(target_id)
+            elif target_kind == "user":
+                await self.repository.delete_user_permanently(target_id)
+            else:
+                raise ValueError(f"Unsupported deletion target: {target_kind}")
+            await self.repository.finish_admin_deletion_request(
+                request_id, self.settings.WORKER_ID, success=True
+            )
+            LOGGER.info("Completed administrator %s deletion %s", target_kind, target_id)
+        except Exception as error:
+            retry_seconds = min(21600, 30 * (2 ** min(max(attempt - 1, 0), 9)))
+            safe_error = redact(str(error))[:2000]
+            await self.repository.finish_admin_deletion_request(
+                request_id,
+                self.settings.WORKER_ID,
+                success=False,
+                retry_seconds=retry_seconds,
+                error=safe_error,
+            )
+            LOGGER.warning(
+                "Administrator deletion %s interrupted; retrying in %ss: %s",
+                request_id,
+                retry_seconds,
+                safe_error,
+            )
+
     async def run_forever(self) -> None:
         LOGGER.info("Worker %s started", self.settings.WORKER_ID)
         try:
             while not self._stopping.is_set():
                 try:
+                    await self._process_admin_deletion()
                     await self._maybe_cleanup()
                     job = await self.repository.claim_next_job(
                         self.settings.WORKER_ID, self.settings.JOB_LEASE_SECONDS
