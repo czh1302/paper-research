@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -368,6 +368,80 @@ describe("ReportPage", () => {
     expect(screen.queryByRole("button", { name: /输出，/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /算法，/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /约束，/ })).not.toBeInTheDocument();
+  });
+
+  it("shows one paper-level idea at a time in a stable proposal reading workspace", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    const presentation = record.content.presentation as ReportPresentationV4;
+    const primary = presentation.ideas[0];
+    presentation.ideas.push({
+      ...primary,
+      key: "idea-v4-alternative",
+      rank: 2,
+      title_zh: "面向复现偏差的轻量审计方案",
+      title_en: "Lightweight auditing for reproduction drift",
+      one_sentence_zh: "使用轻量审计记录定位复现偏差。",
+      one_sentence_en: "Use lightweight audit records to localize reproduction drift.",
+      hypothesis_zh: "轻量审计可以降低定位偏差的成本。",
+      hypothesis_en: "Lightweight auditing can reduce drift-localization cost.",
+      pain_point_zh: "完整契约执行成本较高。",
+      pain_point_en: "Full contract execution is expensive.",
+      core_contribution_zh: "提出低成本审计记录。",
+      core_contribution_en: "Introduce low-cost audit records.",
+      mechanism_zh: "",
+      mechanism_en: "",
+      change_from_input_zh: "",
+      change_from_input_en: "",
+      qualification_tier: "relaxed",
+      verdict: "alternative",
+      experiment: { ...primary.experiment, intervention_zh: "加入轻量审计记录", intervention_en: "Add lightweight audit records" },
+    });
+    presentation.reviews.push({
+      idea_key: "idea-v4-alternative",
+      decision: "alternative",
+      rationale_zh: "方案可执行，但技术机制仍需补强。",
+      rationale_en: "The proposal is executable, but its mechanism needs strengthening.",
+      missing_evidence_zh: ["跨论文开销数据"],
+      missing_evidence_en: ["Cross-paper overhead data"],
+    });
+    api.getReport.mockResolvedValue(record);
+    renderReport();
+
+    await screen.findByText("调研结论");
+    await user.click(screen.getByRole("tab", { name: "论文级 Idea" }));
+    const workspace = document.querySelector(".v4-idea-workbench");
+    expect(workspace).not.toBeNull();
+    const proposal = within(workspace as HTMLElement);
+    expect(proposal.getByText("证据契约驱动的网络实验忠实度验证")).toBeInTheDocument();
+    expect(proposal.queryByText("面向复现偏差的轻量审计方案")).not.toBeInTheDocument();
+    expect(document.querySelector(".v4-natural-columns")).toBeNull();
+    expect(proposal.getByRole("button", { name: "概述" })).toHaveAttribute("aria-current", "location");
+
+    const routeBeforeNavigation = window.location.hash;
+    await user.click(proposal.getByRole("button", { name: "技术" }));
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ behavior: "smooth", block: "start" });
+    expect(window.location.hash).toBe(routeBeforeNavigation);
+    expect(proposal.getByRole("button", { name: "技术" })).toHaveAttribute("aria-current", "location");
+
+    const reviewSection = proposal.getByRole("region", { name: "审查与证据" });
+    act(() => {
+      intersectionObserverCallback?.([{
+        isIntersecting: true,
+        intersectionRatio: .8,
+        target: reviewSection,
+      } as unknown as IntersectionObserverEntry], {} as IntersectionObserver);
+    });
+    expect(proposal.getByRole("button", { name: "审查" })).toHaveAttribute("aria-current", "location");
+    expect(proposal.getAllByRole("button", { name: /papers\.example/ }).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("tab", { name: /备选方案 2，条件通过/ }));
+    expect(proposal.getByText("面向复现偏差的轻量审计方案")).toBeInTheDocument();
+    expect(proposal.queryByText("证据契约驱动的网络实验忠实度验证")).not.toBeInTheDocument();
+    expect(proposal.queryByRole("button", { name: "技术" })).not.toBeInTheDocument();
+    expect(proposal.getByRole("button", { name: "概述" })).toHaveAttribute("aria-current", "location");
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ behavior: "auto", block: "start" });
+    expect(proposal.getByText("加入轻量审计记录")).toBeInTheDocument();
   });
 
   it("keeps representative full-text PDF evidence available when no V4 idea passes", async () => {
