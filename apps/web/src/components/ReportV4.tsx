@@ -10,7 +10,7 @@ import {
   Printer,
   Share2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createShare, downloadText, getFullReport, revokeShare } from "../lib/api";
 import { useLanguage } from "../lib/language";
 import { comparisonCsv, humanReportMarkdown, localized } from "../lib/report";
@@ -71,63 +71,94 @@ function OverviewBriefSummary({ brief, onOpen }: { brief: ProblemBrief; onOpen: 
   </div>;
 }
 
-function ExpandableBriefCard({
+type BriefSectionType = "inputs" | "outputs" | "algorithm_steps" | "constraints";
+
+function BriefReadingSection({
   type,
   title,
   brief,
-  expanded,
-  onToggle,
+  tone,
+  setElement,
   evidenceMap,
   paperTitles,
 }: {
-  type: "inputs" | "outputs" | "algorithm_steps" | "constraints";
+  type: BriefSectionType;
   title: string;
   brief: ProblemBrief;
-  expanded: boolean;
-  onToggle: () => void;
+  tone: string;
+  setElement: (element: HTMLElement | null) => void;
   evidenceMap: Map<string, Evidence>;
   paperTitles: Map<string, string>;
 }) {
   const { language, text } = useLanguage();
   const isAlgorithm = type === "algorithm_steps";
   const allItems = brief[type];
-  const compactLimit = isAlgorithm ? 3 : 2;
-  const visible = expanded ? allItems : allItems.slice(0, compactLimit);
-  const className = type === "inputs" ? "v4-brief-input" : type === "outputs" ? "v4-brief-output" : isAlgorithm ? "v4-brief-method" : "v4-brief-constraint";
-  if (!allItems.length) return null;
-  return <article className={`panel v4-input-card v4-brief-card ${className} p-5 ${expanded ? "expanded" : ""}`}>
-    <h3 className="!m-0 !text-lg !text-content">{title}</h3>
-    {isAlgorithm ? <ol className="mt-4 space-y-4">{visible.map((value) => {
+  const headingId = `v4-input-section-${type}`;
+  return <section className={`v4-input-section ${tone}`} data-section-type={type} ref={setElement} aria-labelledby={headingId}>
+    <header className="v4-input-section-heading"><span className="v4-input-section-mark"/><div><h3 id={headingId}>{title}</h3><p>{text(`${allItems.length} 项`, `${allItems.length} items`)}</p></div></header>
+    {isAlgorithm ? <ol className="v4-input-section-list">{allItems.map((value) => {
       const step = value as ProblemBrief["algorithm_steps"][number];
-      return <li className="grid min-w-0 grid-cols-[1.7rem_minmax(0,1fr)] gap-3" key={step.order}><span className="v4-step-number">{step.order}</span><div className="min-w-0"><strong className="text-sm text-content">{localized(step, "title", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(step, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={step.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></div></li>;
-    })}</ol> : <div className="mt-4 space-y-4">{visible.map((value, index) => {
+      return <li className="v4-input-entry grid min-w-0 grid-cols-[1.7rem_minmax(0,1fr)] gap-3" key={step.order}><span className="v4-step-number">{step.order}</span><div className="min-w-0"><strong>{localized(step, "title", language)}</strong><p>{localized(step, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={step.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></div></li>;
+    })}</ol> : <div className="v4-input-section-list">{allItems.map((value, index) => {
       const item = value as ProblemBrief["inputs"][number];
-      return <section key={`${item.label_en}-${index}`}><strong className="text-sm text-content">{localized(item, "label", language)}</strong><p className="mt-1 text-sm leading-6 text-muted">{localized(item, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={item.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></section>;
+      return <article className="v4-input-entry" key={`${item.label_en}-${index}`}><strong>{localized(item, "label", language)}</strong><p>{localized(item, "explanation", language)}</p><div className="mt-2"><EvidenceCitations ids={item.evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></article>;
     })}</div>}
-    {allItems.length > compactLimit && <button className="button button-secondary no-print mt-5 !min-h-9 !py-1.5" onClick={onToggle}>{expanded ? text("收起", "Collapse") : text(`查看全部（${allItems.length}）`, `View all (${allItems.length})`)}<ChevronRight className={`h-4 w-4 transition-transform ${expanded ? "rotate-90" : ""}`}/></button>}
-  </article>;
+  </section>;
 }
 
 function InputPaperView({ briefs, headline, evidenceMap, paperTitles }: { briefs: ProblemBrief[]; headline: string; evidenceMap: Map<string, Evidence>; paperTitles: Map<string, string> }) {
   const { language, text } = useLanguage();
   const [activePaperId, setActivePaperId] = useState(briefs[0]?.paper_id ?? "");
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<BriefSectionType>("inputs");
+  const sectionElements = useRef<Partial<Record<BriefSectionType, HTMLElement | null>>>({});
+  const resetScrollAfterPaperChange = useRef(false);
   const active = briefs.find((item) => item.paper_id === activePaperId) ?? briefs[0];
   useEffect(() => {
     if (active && !briefs.some((item) => item.paper_id === activePaperId)) setActivePaperId(active.paper_id);
   }, [active, activePaperId, briefs]);
+  const sections = active ? [
+    { type: "inputs" as const, title: text("输入", "Inputs"), tone: "v4-tone-input", count: active.inputs.length },
+    { type: "outputs" as const, title: text("输出", "Outputs"), tone: "v4-tone-output", count: active.outputs.length },
+    { type: "algorithm_steps" as const, title: text("算法", "Algorithm"), tone: "v4-tone-method", count: active.algorithm_steps.length },
+    { type: "constraints" as const, title: text("约束", "Constraints"), tone: "v4-tone-constraint", count: active.constraints.length },
+  ].filter((section) => section.count > 0) : [];
+  const sectionKey = sections.map((section) => section.type).join(":");
+  useEffect(() => {
+    const firstSection = sections[0]?.type;
+    if (!firstSection) return;
+    setActiveSection(firstSection);
+    if (resetScrollAfterPaperChange.current) {
+      resetScrollAfterPaperChange.current = false;
+      sectionElements.current[firstSection]?.scrollIntoView?.({ behavior: "auto", block: "start" });
+    }
+  }, [active?.paper_id, sectionKey]);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting).sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+      const sectionType = visible?.target.getAttribute("data-section-type") as BriefSectionType | null;
+      if (sectionType) setActiveSection(sectionType);
+    }, { rootMargin: "-24% 0px -58% 0px", threshold: [0, .2, .5, .8] });
+    sections.forEach((section) => { const element = sectionElements.current[section.type]; if (element) observer.observe(element); });
+    return () => observer.disconnect();
+  }, [active?.paper_id, sectionKey]);
   if (!active) return null;
-  function selectPaper(paperId: string) { setActivePaperId(paperId); setExpanded(null); }
-  const sections = [
-    { type: "inputs" as const, title: text("输入", "Inputs") },
-    { type: "outputs" as const, title: text("输出", "Outputs") },
-    { type: "algorithm_steps" as const, title: text("算法", "Algorithm") },
-    { type: "constraints" as const, title: text("约束", "Constraints") },
-  ];
+  function selectPaper(paperId: string) {
+    resetScrollAfterPaperChange.current = paperId !== active.paper_id;
+    setActivePaperId(paperId);
+    const next = briefs.find((brief) => brief.paper_id === paperId);
+    const first = next && (["inputs", "outputs", "algorithm_steps", "constraints"] as BriefSectionType[]).find((type) => next[type].length > 0);
+    if (first) setActiveSection(first);
+  }
+  function openSection(type: BriefSectionType) {
+    setActiveSection(type);
+    const behavior = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    sectionElements.current[type]?.scrollIntoView?.({ behavior, block: "start" });
+  }
   return <div>
     {briefs.length > 1 && <div className="v4-paper-tabs no-print mb-5" role="tablist" aria-label={text("选择输入论文", "Select input paper")}>{briefs.map((brief) => <button role="tab" aria-selected={brief.paper_id === active.paper_id} className={brief.paper_id === active.paper_id ? "active" : ""} key={brief.paper_id} onClick={() => selectPaper(brief.paper_id)}>{brief.title}</button>)}</div>}
     <div className="report-hero"><span className="report-rank">{text("论文研究问题", "Paper research question")}</span><h2 className="!mt-3 !text-2xl sm:!text-3xl">{briefs.length === 1 ? headline : localized(active, "research_question", language)}</h2><p className="mt-3 text-sm text-muted">{active.title}</p><div className="mt-4"><EvidenceCitations ids={active.research_question_evidence_ids} evidenceMap={evidenceMap} paperTitles={paperTitles}/></div></div>
-    <div className="v4-input-grid mt-6">{sections.map((section) => <ExpandableBriefCard key={section.type} type={section.type} title={section.title} brief={active} expanded={expanded === section.type} onToggle={() => setExpanded((value) => value === section.type ? null : section.type)} evidenceMap={evidenceMap} paperTitles={paperTitles}/>)}</div>
+    {sections.length > 0 && <div className="v4-input-workbench mt-6"><nav className="v4-input-directory no-print" aria-label={text("输入论文章节", "Input-paper sections")}><p className="v4-input-directory-label">{text("论文结构", "Paper structure")}</p>{sections.map((section) => <button className={`${section.tone} ${activeSection === section.type ? "active" : ""}`} type="button" aria-current={activeSection === section.type ? "location" : undefined} aria-label={text(`${section.title}，${section.count} 项`, `${section.title}, ${section.count} items`)} key={section.type} onClick={() => openSection(section.type)}><span className="v4-input-directory-mark"/><strong>{section.title}</strong><small>{section.count}</small></button>)}</nav><article className="panel v4-input-reader">{sections.map((section) => <BriefReadingSection key={section.type} type={section.type} title={section.title} tone={section.tone} brief={active} setElement={(element) => { sectionElements.current[section.type] = element; }} evidenceMap={evidenceMap} paperTitles={paperTitles}/>)}</article></div>}
   </div>;
 }
 

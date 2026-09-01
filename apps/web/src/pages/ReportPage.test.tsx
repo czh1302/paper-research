@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,8 @@ import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfil
 import { ReportPage } from "./ReportPage";
 
 const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), getReportSection: vi.fn().mockResolvedValue({ content: null }), prefetchSourcePdf: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
+const scrollIntoView = vi.fn();
+let intersectionObserverCallback: IntersectionObserverCallback | undefined;
 vi.mock("../lib/api", () => api);
 vi.mock("../components/EvidencePdfViewer", () => ({ default: () => <div>secure-pdf-viewer</div> }));
 vi.mock("../components/Charts", () => ({
@@ -139,9 +141,25 @@ function v4Fixture(): ReportRecord {
 }
 
 describe("ReportPage", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
   beforeEach(() => {
     window.localStorage.clear();
+    scrollIntoView.mockReset();
+    intersectionObserverCallback = undefined;
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    vi.stubGlobal("IntersectionObserver", class {
+      root: Element | Document | null = null;
+      rootMargin = "";
+      thresholds: readonly number[] = [];
+      constructor(callback: IntersectionObserverCallback) { intersectionObserverCallback = callback; }
+      disconnect() {}
+      observe() {}
+      takeRecords(): IntersectionObserverEntry[] { return []; }
+      unobserve() {}
+    });
     api.getReport.mockReset();
     api.getReport.mockResolvedValue(fixture());
     api.getFullReport.mockResolvedValue(fixture());
@@ -288,7 +306,7 @@ describe("ReportPage", () => {
     expect(document.body.textContent).not.toContain("Not covered");
   });
 
-  it("keeps the overview concise and expands one input-paper card without duplicate detail", async () => {
+  it("keeps the overview concise and renders a stable input-paper reading workspace", async () => {
     const user = userEvent.setup();
     const record = v4Fixture();
     const presentation = record.content.presentation as ReportPresentationV4;
@@ -297,7 +315,17 @@ describe("ReportPage", () => {
       { label_zh: "实验配置", label_en: "Experiment setup", explanation_zh: "用于复现实验环境", explanation_en: "Used to reproduce the experiment environment", evidence_ids: ["paperhash:b1"] },
       { label_zh: "运行日志", label_en: "Runtime logs", explanation_zh: "用于定位偏差来源", explanation_en: "Used to localize drift", evidence_ids: ["paperhash:b1"] },
     );
-    presentation.problem_briefs.push({ ...firstBrief, paper_id: "paper-second", title: "Second Input Paper", research_question_zh: "第二篇论文的研究问题", research_question_en: "Research question of the second paper" });
+    presentation.problem_briefs.push({
+      ...firstBrief,
+      paper_id: "paper-second",
+      title: "Second Input Paper",
+      research_question_zh: "第二篇论文的研究问题",
+      research_question_en: "Research question of the second paper",
+      inputs: [{ label_zh: "第二篇输入", label_en: "Second input", explanation_zh: "只保留一个可用章节", explanation_en: "Keep one available section", evidence_ids: ["paperhash:b1"] }],
+      outputs: [],
+      algorithm_steps: [],
+      constraints: [],
+    });
     api.getReport.mockResolvedValue(record);
     renderReport();
 
@@ -309,12 +337,37 @@ describe("ReportPage", () => {
 
     await user.click(screen.getAllByRole("button", { name: /查看输入论文/ })[0]);
     expect(screen.getByRole("tab", { name: "Target Paper" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByText("运行日志")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /查看全部（3）/ }));
     expect(screen.getByText("运行日志")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /查看全部|收起/ })).not.toBeInTheDocument();
+
+    const inputDirectoryItem = screen.getByRole("button", { name: "输入，3 项" });
+    const algorithmDirectoryItem = screen.getByRole("button", { name: "算法，3 项" });
+    const constraintDirectoryItem = screen.getByRole("button", { name: "约束，1 项" });
+    expect(inputDirectoryItem).toHaveAttribute("aria-current", "location");
+    const hashBeforeNavigation = window.location.hash;
+    await user.click(algorithmDirectoryItem);
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(window.location.hash).toBe(hashBeforeNavigation);
+    expect(algorithmDirectoryItem).toHaveAttribute("aria-current", "location");
+
+    const constraintSection = screen.getByRole("region", { name: "约束" });
+    act(() => {
+      intersectionObserverCallback?.([{
+        isIntersecting: true,
+        intersectionRatio: .8,
+        target: constraintSection,
+      } as unknown as IntersectionObserverEntry], {} as IntersectionObserver);
+    });
+    expect(constraintDirectoryItem).toHaveAttribute("aria-current", "location");
+
     await user.click(screen.getByRole("tab", { name: "Second Input Paper" }));
     expect(screen.getByText("第二篇论文的研究问题")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "收起" })).not.toBeInTheDocument();
+    expect(screen.getByText("第二篇输入")).toBeInTheDocument();
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ behavior: "auto", block: "start" });
+    expect(screen.getByRole("button", { name: "输入，1 项" })).toHaveAttribute("aria-current", "location");
+    expect(screen.queryByRole("button", { name: /输出，/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /算法，/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /约束，/ })).not.toBeInTheDocument();
   });
 
   it("keeps representative full-text PDF evidence available when no V4 idea passes", async () => {
