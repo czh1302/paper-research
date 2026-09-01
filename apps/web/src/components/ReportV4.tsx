@@ -276,143 +276,28 @@ function ComparisonBoard({ board, title }: { board: IdeaComparisonBoard; title: 
   return <article className="panel overflow-hidden"><header className="flex flex-wrap items-start justify-between gap-3 border-b border-line p-5"><div><span className="report-rank">{text("论文证据对比", "Paper evidence comparison")}</span><h3 className="!mb-0 !mt-2 !text-lg !text-content">{title}</h3></div><span className="text-xs text-muted">{text(`${external.length} 篇完整全文档案`, `${external.length} complete full-text profiles`)}</span></header><div className="v4-comparison-desktop"><div className="v4-comparison-grid" style={{ gridTemplateColumns: `10.5rem repeat(${columns.length}, minmax(0, 1fr))` }}><div className="v4-comparison-corner">{text("比较维度", "Dimension")}</div>{columns.map((profile) => <div className="v4-comparison-heading" key={profile.paper_id}><span>{profile.role === "input" ? text("输入论文", "Input paper") : text("外部论文", "External paper")}</span><strong>{profile.title}</strong></div>)}{comparisonFields.map(({ key, zh, en }) => <div className="contents" key={key}><div className="v4-comparison-label">{text(zh, en)}</div>{columns.map((profile) => <ComparisonValue key={`${key}-${profile.paper_id}`} profile={profile} field={key}/>)}</div>)}</div></div><div className="v4-comparison-mobile p-4"><div className="mb-4 flex items-center justify-between gap-2"><button className="button button-secondary !min-h-9 !px-3" disabled={mobileIndex === 0} onClick={() => setMobileIndex((value) => Math.max(0, value - 1))}><ChevronLeft className="h-4 w-4"/>{text("上一篇", "Previous")}</button><span className="text-xs text-muted">{mobileIndex + 1} / {external.length}</span><button className="button button-secondary !min-h-9 !px-3" disabled={mobileIndex >= external.length - 1} onClick={() => setMobileIndex((value) => Math.min(external.length - 1, value + 1))}>{text("下一篇", "Next")}<ChevronRight className="h-4 w-4"/></button></div>{external[mobileIndex] && <div className="space-y-3">{comparisonFields.map(({ key, zh, en }) => <section className="rounded-xl border border-line" key={key}><h4 className="border-b border-line bg-subtle/60 px-4 py-3 text-xs font-semibold text-muted">{text(zh, en)}</h4><div className="grid grid-cols-2"><ComparisonValue profile={input} field={key}/><ComparisonValue profile={external[mobileIndex]} field={key}/></div></section>)}</div>}</div>{pages > 1 && <footer className="comparison-pagination"><button className="button button-secondary !min-h-9" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}><ChevronLeft className="h-4 w-4"/>{text("上一组", "Previous set")}</button><span>{page + 1} / {pages}</span><button className="button button-secondary !min-h-9" disabled={page >= pages - 1} onClick={() => setPage((value) => Math.min(pages - 1, value + 1))}>{text("下一组", "Next set")}<ChevronRight className="h-4 w-4"/></button></footer>}</article>;
 }
 
-type IdeaSectionType = "overview" | "method" | "review" | "experiment";
-
-function ideaSectionTypes(idea: SubmissionIdea, language: "zh" | "en"): IdeaSectionType[] {
-  const has = (values: string[]) => values.some((value) => value.trim());
-  const sections: IdeaSectionType[] = [];
-  if (has([localized(idea, "title", language), localized(idea, "one_sentence", language), localized(idea, "hypothesis", language), localized(idea, "pain_point", language), localized(idea, "core_contribution", language)])) sections.push("overview");
-  if (has([localized(idea, "mechanism", language), localized(idea, "change_from_input", language)])) sections.push("method");
-  sections.push("review");
-  if (has([localized(idea.experiment, "inputs", language), localized(idea.experiment, "baseline", language), localized(idea.experiment, "intervention", language), localized(idea.experiment, "metrics", language), localized(idea.experiment, "success_criterion", language), localized(idea.experiment, "resources", language)])) sections.push("experiment");
-  return sections;
-}
-
-function IdeaDefinitionList({ rows }: { rows: [string, string][] }) {
-  const visible = rows.filter(([, value]) => value.trim());
-  if (!visible.length) return null;
-  return <dl className="v4-idea-definitions">{visible.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
-}
-
-function IdeaReadingDocument({
-  idea,
-  review,
-  profiles,
-  sectionTypes,
-  setElement,
-  printMode = false,
-}: {
-  idea: SubmissionIdea;
-  review?: ReportPresentationV4["reviews"][number];
-  profiles: PaperEvidenceProfile[];
-  sectionTypes: IdeaSectionType[];
-  setElement?: (type: IdeaSectionType, element: HTMLElement | null) => void;
-  printMode?: boolean;
-}) {
+function IdeaCard({ idea, review, profiles }: { idea: SubmissionIdea; review?: ReportPresentationV4["reviews"][number]; profiles: PaperEvidenceProfile[] }) {
   const { language, text } = useLanguage();
   const sourceMap = new Map(profiles.map((item) => [item.paper_id, item.source_url]));
   const workIds = [...new Set([...idea.closest_work_ids, ...idea.supporting_work_ids, ...idea.counterevidence_work_ids])];
   const urls = workIds.map((id) => sourceMap.get(id)).filter((value): value is string => Boolean(value));
+  const fields = [
+    [text("当前研究痛点", "Research pain point"), localized(idea, "pain_point", language)],
+    [text("核心贡献", "Core contribution"), localized(idea, "core_contribution", language)],
+    [text("技术机制", "Technical mechanism"), localized(idea, "mechanism", language)],
+    [text("相对输入论文的改变", "Change from input paper"), localized(idea, "change_from_input", language)],
+  ];
+  const experiment = idea.experiment;
   const relaxed = idea.qualification_tier === "relaxed";
-  const missing = (language === "zh" ? idea.missing_evidence_zh : idea.missing_evidence_en) ?? [];
-  const unresolved = language === "zh" ? idea.unresolved_questions_zh : idea.unresolved_questions_en;
-  const sectionTitle = (type: IdeaSectionType) => ({
-    overview: text("方案概述", "Proposal overview"),
-    method: text("技术方案", "Technical proposal"),
-    review: text("审查与证据", "Review and evidence"),
-    experiment: text("首个实验", "First experiment"),
-  })[type];
-  const sectionClass = (type: IdeaSectionType) => `v4-idea-tone-${type}`;
-  const sectionHeader = (type: IdeaSectionType) => <header className="v4-idea-section-heading"><span className="v4-idea-section-mark"/><h4>{sectionTitle(type)}</h4></header>;
-  return <article className={`panel v4-idea-reader ${idea.rank === 1 ? "report-recommended" : ""} ${printMode ? "v4-idea-print-document" : ""}`}>
-    {sectionTypes.includes("overview") && <section className={`v4-idea-section ${sectionClass("overview")}`} data-idea-section="overview" ref={(element) => setElement?.("overview", element)} aria-label={sectionTitle("overview")}>
-      {sectionHeader("overview")}
-      <div className="v4-idea-title-row"><div><span className="report-rank">{idea.verdict === "recommended" ? text("主方案", "Primary proposal") : text(`备选方案 ${idea.rank}`, `Alternative ${idea.rank}`)}</span><h3>{localized(idea, "title", language)}</h3></div><div className="flex flex-wrap gap-2"><span className={`idea-status ${relaxed ? "idea-status-conditional" : "idea-status-viable"}`}>{relaxed ? text("条件通过", "Conditional pass") : text("严格审查通过", "Strict review passed")}</span>{idea.review_attempt && <span className="idea-status">{text(`第 ${idea.review_attempt} 次审查`, `Review ${idea.review_attempt}`)}</span>}</div></div>
-      {localized(idea, "one_sentence", language).trim() && <p className="v4-idea-lead">{localized(idea, "one_sentence", language)}</p>}
-      <IdeaDefinitionList rows={[
-        [text("可证伪假设", "Falsifiable hypothesis"), localized(idea, "hypothesis", language)],
-        [text("当前研究痛点", "Research pain point"), localized(idea, "pain_point", language)],
-        [text("核心贡献", "Core contribution"), localized(idea, "core_contribution", language)],
-      ]}/>
-    </section>}
-    {sectionTypes.includes("method") && <section className={`v4-idea-section ${sectionClass("method")}`} data-idea-section="method" ref={(element) => setElement?.("method", element)} aria-label={sectionTitle("method")}>
-      {sectionHeader("method")}
-      <IdeaDefinitionList rows={[
-        [text("技术机制", "Technical mechanism"), localized(idea, "mechanism", language)],
-        [text("相对输入论文的改变", "Change from input paper"), localized(idea, "change_from_input", language)],
-      ]}/>
-    </section>}
-    {sectionTypes.includes("review") && <section className={`v4-idea-section ${sectionClass("review")}`} data-idea-section="review" ref={(element) => setElement?.("review", element)} aria-label={sectionTitle("review")}>
-      {sectionHeader("review")}
-      {review && localized(review, "rationale", language).trim() && <IdeaDefinitionList rows={[[text("审查结论", "Review conclusion"), localized(review, "rationale", language)]]}/>}
-      <div className="v4-idea-scores"><span className="v4-score">{text("可行性", "Feasibility")} {Math.round(idea.feasibility * 100)}%</span><span className="v4-score">{text("投稿价值", "Submission value")} {Math.round(idea.submission_value * 100)}%</span><span className="v4-score">{text("证据置信度", "Evidence confidence")} {Math.round(idea.evidence_confidence * 100)}%</span></div>
-      {missing.length > 0 && <div className="v4-idea-list-row"><strong>{text("仍需补强的证据", "Evidence still to strengthen")}</strong><ul>{missing.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-      {unresolved.length > 0 && <div className="v4-idea-list-row"><strong>{text("仍未解决的问题", "Unresolved questions")}</strong><ul>{unresolved.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-      {urls.length > 0 && <div className="v4-idea-source-row"><strong>{text("支撑来源", "Supporting sources")}</strong><SourceCitations urls={urls} papers={[]}/></div>}
-    </section>}
-    {sectionTypes.includes("experiment") && <section className={`v4-idea-section ${sectionClass("experiment")}`} data-idea-section="experiment" ref={(element) => setElement?.("experiment", element)} aria-label={sectionTitle("experiment")}>
-      {sectionHeader("experiment")}
-      <IdeaDefinitionList rows={[
-        [text("实验输入", "Inputs"), localized(idea.experiment, "inputs", language)],
-        ["Baseline", localized(idea.experiment, "baseline", language)],
-        [text("核心改动", "Intervention"), localized(idea.experiment, "intervention", language)],
-        [text("评价指标", "Metrics"), localized(idea.experiment, "metrics", language)],
-        [text("成功条件", "Success criterion"), localized(idea.experiment, "success_criterion", language)],
-        [text("资源估计", "Resources"), localized(idea.experiment, "resources", language)],
-      ]}/>
-    </section>}
-  </article>;
-}
-
-function IdeaWorkspace({ ideas, reviews, profiles }: { ideas: SubmissionIdea[]; reviews: ReportPresentationV4["reviews"]; profiles: PaperEvidenceProfile[] }) {
-  const { language, text } = useLanguage();
-  const sortedIdeas = useMemo(() => [...ideas].sort((left, right) => left.rank - right.rank), [ideas]);
-  const [activeIdeaKey, setActiveIdeaKey] = useState(sortedIdeas[0]?.key ?? "");
-  const [activeSection, setActiveSection] = useState<IdeaSectionType>("overview");
-  const sectionElements = useRef<Partial<Record<IdeaSectionType, HTMLElement | null>>>({});
-  const resetScrollAfterIdeaChange = useRef(false);
-  const activeIdea = sortedIdeas.find((idea) => idea.key === activeIdeaKey) ?? sortedIdeas[0];
-  const activeReview = activeIdea ? reviews.find((review) => review.idea_key === activeIdea.key) : undefined;
-  const availableSections = useMemo(() => activeIdea ? ideaSectionTypes(activeIdea, language) : [], [activeIdea, language]);
-  const sectionKey = availableSections.join(":");
-  useEffect(() => {
-    if (activeIdea && activeIdea.key !== activeIdeaKey) setActiveIdeaKey(activeIdea.key);
-  }, [activeIdea, activeIdeaKey]);
-  useEffect(() => {
-    const firstSection = availableSections[0];
-    if (!firstSection) return;
-    setActiveSection(firstSection);
-    if (resetScrollAfterIdeaChange.current) {
-      resetScrollAfterIdeaChange.current = false;
-      sectionElements.current[firstSection]?.scrollIntoView?.({ behavior: "auto", block: "start" });
-    }
-  }, [activeIdea?.key, sectionKey]);
-  useEffect(() => {
-    if (typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries.filter((entry) => entry.isIntersecting).sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
-      const sectionType = visible?.target.getAttribute("data-idea-section") as IdeaSectionType | null;
-      if (sectionType) setActiveSection(sectionType);
-    }, { rootMargin: "-24% 0px -58% 0px", threshold: [0, .2, .5, .8] });
-    availableSections.forEach((section) => { const element = sectionElements.current[section]; if (element) observer.observe(element); });
-    return () => observer.disconnect();
-  }, [activeIdea?.key, sectionKey]);
-  if (!activeIdea) return null;
-  const sectionTitle = (type: IdeaSectionType) => ({ overview: text("概述", "Overview"), method: text("技术", "Method"), review: text("审查", "Review"), experiment: text("实验", "Experiment") })[type];
-  function selectIdea(key: string) {
-    resetScrollAfterIdeaChange.current = key !== activeIdea.key;
-    setActiveIdeaKey(key);
-  }
-  function openSection(type: IdeaSectionType) {
-    setActiveSection(type);
-    const behavior = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
-    sectionElements.current[type]?.scrollIntoView?.({ behavior, block: "start" });
-  }
-  return <>
-    <div className="v4-idea-tabs no-print" role="tablist" aria-label={text("选择论文级方案", "Select paper-level proposal")}>{sortedIdeas.map((idea) => { const relaxed = idea.qualification_tier === "relaxed"; const label = idea.rank === 1 ? text("主方案", "Primary proposal") : text(`备选方案 ${idea.rank}`, `Alternative ${idea.rank}`); const status = relaxed ? text("条件通过", "Conditional pass") : text("严格通过", "Strict pass"); return <button type="button" role="tab" aria-selected={idea.key === activeIdea.key} aria-label={`${label}，${status}，${localized(idea, "title", language)}`} className={idea.key === activeIdea.key ? "active" : ""} key={idea.key} onClick={() => selectIdea(idea.key)}><strong>{label}</strong><span>{status}</span></button>; })}</div>
-    <div className="v4-idea-workbench no-print"><nav className="v4-idea-directory" aria-label={text("Idea 章节", "Idea sections")}>{availableSections.map((section) => <button type="button" className={`v4-idea-tone-${section} ${activeSection === section ? "active" : ""}`} aria-current={activeSection === section ? "location" : undefined} key={section} onClick={() => openSection(section)}><span className="v4-idea-directory-mark"/><strong>{sectionTitle(section)}</strong></button>)}</nav><IdeaReadingDocument idea={activeIdea} review={activeReview} profiles={profiles} sectionTypes={availableSections} setElement={(type, element) => { sectionElements.current[type] = element; }}/></div>
-    <div className="print-only">{sortedIdeas.map((idea) => { const review = reviews.find((item) => item.idea_key === idea.key); return <IdeaReadingDocument key={idea.key} idea={idea} review={review} profiles={profiles} sectionTypes={ideaSectionTypes(idea, language)} printMode/>; })}</div>
-  </>;
+  const missing = language === "zh" ? idea.missing_evidence_zh : idea.missing_evidence_en;
+  return <article className={`panel p-5 sm:p-7 ${idea.rank === 1 ? "report-recommended" : ""}`}><div className="flex flex-wrap items-start justify-between gap-4"><div><span className="report-rank">{idea.verdict === "recommended" ? text("主方案", "Primary proposal") : text(`备选方案 ${idea.rank}`, `Alternative ${idea.rank}`)}</span><h3 className="!mt-2 !text-xl !text-content">{localized(idea, "title", language)}</h3></div><div className="flex flex-wrap gap-2 text-xs"><span className={`idea-status ${relaxed ? "idea-status-conditional" : "idea-status-viable"}`}>{relaxed ? text("条件通过", "Conditional pass") : text("严格审查通过", "Strict review passed")}</span>{idea.review_attempt && <span className="idea-status">{text(`第 ${idea.review_attempt} 次审查`, `Review ${idea.review_attempt}`)}</span>}</div></div><p className="mt-4 text-base font-medium leading-7 text-content">{localized(idea, "one_sentence", language)}</p><div className="v4-natural-columns mt-5">{fields.map(([label, value]) => <section className="v4-natural-card rounded-xl border border-line p-4" key={label}><h4 className="text-xs font-semibold text-muted">{label}</h4><p className="mt-2 text-sm leading-6 text-content">{value}</p></section>)}</div>{review && <div className="mt-5 rounded-xl bg-info/[.07] p-4"><strong className="text-sm text-content">{text("审查结论", "Review conclusion")}</strong><p className="mt-2 text-sm leading-6 text-muted">{localized(review, "rationale", language)}</p></div>}{relaxed && missing?.length ? <div className="mt-5 rounded-xl border border-warning/30 bg-warning/[.08] p-4"><strong className="text-sm text-content">{text("仍需补强的证据", "Evidence still to strengthen")}</strong><ul className="mt-2 space-y-1 text-sm leading-6 text-muted">{missing.map((item) => <li key={item}>• {item}</li>)}</ul></div> : null}<section className="mt-6"><h4 className="text-sm font-semibold text-content">{text("第一个可证伪实验", "First falsifiable experiment")}</h4><div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-3">{[
+    [text("实验输入", "Inputs"), localized(experiment, "inputs", language)],
+    ["Baseline", localized(experiment, "baseline", language)],
+    [text("核心改动", "Intervention"), localized(experiment, "intervention", language)],
+    [text("评价指标", "Metrics"), localized(experiment, "metrics", language)],
+    [text("成功条件", "Success criterion"), localized(experiment, "success_criterion", language)],
+    [text("资源估计", "Resources"), localized(experiment, "resources", language)],
+  ].map(([label, value]) => <div className="rounded-xl bg-subtle p-4" key={label}><span className="text-xs text-muted">{label}</span><p className="mt-1 text-sm leading-6 text-content">{value}</p></div>)}</div></section><div className="mt-5 flex flex-wrap gap-2"><span className="v4-score">{text("可行性", "Feasibility")} {Math.round(idea.feasibility * 100)}%</span><span className="v4-score">{text("投稿价值", "Submission value")} {Math.round(idea.submission_value * 100)}%</span><span className="v4-score">{text("证据置信度", "Evidence confidence")} {Math.round(idea.evidence_confidence * 100)}%</span></div><div className="mt-5"><SourceCitations urls={urls} papers={[]}/></div></article>;
 }
 
 export function ReportV4({ record, presentation, publicShare = false, hideShare = false, onSectionRequest }: { record: ReportRecord; presentation: ReportPresentationV4; publicShare?: boolean; hideShare?: boolean; onSectionRequest?: (section: ReportTab) => Promise<void> }) {
@@ -480,6 +365,6 @@ export function ReportV4({ record, presentation, publicShare = false, hideShare 
     {tab === "overview" && <section className="report-section mt-7"><div className="report-hero"><span className="report-rank">{text("调研结论", "Research conclusion")}</span><p className="mt-4 max-w-5xl text-lg font-medium leading-8 text-content sm:text-xl">{overviewConclusion}</p></div>{presentation.problem_briefs[0] && <OverviewBriefSummary brief={presentation.problem_briefs[0]} onOpen={() => setTab("problem")}/>}<OverviewLandscapeSummary presentation={presentation} idea={firstIdea} loading={overviewLandscapeLoading} onOpen={() => setTab("landscape")}/><div className="panel mt-6 p-5 sm:p-6">{firstIdea ? <><div className="flex flex-wrap items-center gap-3"><span className="report-rank">{text("主 Idea", "Primary idea")}</span><span className={`idea-status ${firstIdea.qualification_tier === "relaxed" ? "idea-status-conditional" : "idea-status-viable"}`}>{firstIdea.qualification_tier === "relaxed" ? text("条件通过", "Conditional pass") : text("严格审查通过", "Strict review passed")}</span></div><h3 className="!mt-3 !text-xl !text-content">{localized(firstIdea, "title", language)}</h3><p className="mt-2 text-sm leading-6 text-content">{localized(firstIdea, "one_sentence", language)}</p><div className="mt-4 grid gap-3 md:grid-cols-2"><div className="rounded-xl bg-subtle p-4"><span className="text-xs font-semibold text-muted">{text("首个实验", "First experiment")}</span><p className="mt-1 text-sm leading-6 text-content">{localized(firstIdea.experiment, "intervention", language)}</p></div><div className="rounded-xl bg-subtle p-4"><span className="text-xs font-semibold text-muted">{text("成功条件", "Success criterion")}</span><p className="mt-1 text-sm leading-6 text-content">{localized(firstIdea.experiment, "success_criterion", language)}</p></div></div><div className="mt-4 flex flex-wrap items-center gap-3"><button className="button button-secondary no-print" onClick={() => setTab("ideas")}>{text("查看完整方案", "View full proposal")}<ChevronRight className="h-4 w-4"/></button>{presentation.ideas.length > 1 && <span className="text-xs text-muted">{text(`另有 ${presentation.ideas.length - 1} 个备选方案`, `${presentation.ideas.length - 1} additional alternatives`)}</span>}</div></> : <><div className="flex items-center gap-2"><Info className="h-4 w-4 text-warning"/><strong className="text-content">{text("尚未形成通过审查的论文级 Idea", "No paper-level idea has passed review")}</strong></div>{bestUnverifiedReview && <div className="mt-4 rounded-xl border border-warning/25 bg-warning/[.06] p-4"><span className="text-xs font-semibold text-muted">{text("最接近门槛的方向", "Closest direction to the gate")}</span><h3 className="!mb-0 !mt-2 !text-base !text-content">{localized(bestUnverifiedReview, "idea_title", language) || text("仍需补证的候选方向", "Candidate direction requiring more evidence")}</h3><p className="mt-2 text-sm leading-6 text-muted">{localized(bestUnverifiedReview, "rationale", language)}</p></div>}<button className="button button-secondary no-print mt-4" onClick={() => setTab("ideas")}>{text("查看审查结果", "View review results")}<ChevronRight className="h-4 w-4"/></button></>}</div></section>}
     {tab === "problem" && <section className="report-section mt-7"><SectionTitle kicker="01" title={text("输入论文", "Input paper")} description={text("研究问题、输入、输出、算法和约束均来自输入论文；点击证据可查看对应页面与高亮片段。", "The research question, inputs, outputs, algorithm, and constraints all come from the input paper. Open evidence to view the cited page and highlighted passage.")}/><InputPaperView briefs={presentation.problem_briefs} headline={localized(presentation, "headline", language)} evidenceMap={evidenceMap} paperTitles={paperTitles}/></section>}
     {tab === "landscape" && <section className="report-section mt-7"><SectionTitle kicker="02" title={text("完整研究现状", "Research landscape")} description={text("先完成多平台检索和全文证据档案，再据此提出 Idea。按主题阅读研究脉络，或切换到 Idea 差异查看论文级对比。", "Ideas are proposed only after multi-source retrieval and full-text profiling. Read one research theme at a time or switch to paper-level Idea comparisons.")}/><div className="panel p-5 sm:p-6"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><div><span className="text-xs text-muted">{text("去重候选", "Deduplicated candidates")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(presentation.literature_landscape.candidate_count)}</strong></div><div><span className="text-xs text-muted">{text("摘要筛选", "Abstract screened")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(presentation.literature_landscape.screened_count)}</strong></div><div><span className="text-xs text-muted">{text("开放全文深读", "Open full texts reviewed")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(presentation.literature_landscape.full_text_count)}</strong></div><div><span className="text-xs text-muted">{text("覆盖平台", "Sources covered")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(Object.values(presentation.literature_landscape.source_counts).filter((count) => count > 0).length)}</strong></div></div><p className="mt-5 border-t border-line pt-5 text-sm leading-7 text-muted">{localized(presentation.literature_landscape, "overview", language)}</p></div><div className="mt-6"><LandscapeExplorer presentation={presentation} ideaMap={ideaMap}/></div></section>}
-    {tab === "ideas" && <section className="report-section mt-7"><SectionTitle kicker="03" title={text("论文级 Idea", "Paper-level ideas")} description={text("这些方案在完整研究现状之后生成，并经过撞车、可行性、证据和投稿价值审查。沙箱实验仍为可选功能，当前不会自动运行。", "These proposals are generated after the literature landscape and reviewed for collision, feasibility, evidence, and submission value. Sandbox experiments remain optional and never run automatically.")}/>{presentation.ideas.length > 0 && <IdeaWorkspace ideas={presentation.ideas} reviews={presentation.reviews} profiles={presentation.literature_landscape.profiles}/>} {presentation.ideas.length === 0 && <div className="panel p-8 text-center"><strong className="text-content">{text("本轮没有达到正式推荐门槛的 Idea", "No idea reached the recommendation gate")}</strong><p className="mt-2 text-sm leading-6 text-muted">{text("这不是空结果：下方保留了候选方向的审查结论、关键反证和下一步补证要求。", "This is not an empty result: the reviews, counterevidence, and next evidence requirements remain available below.")}</p></div>}{presentation.reviews.some((item) => !ideaMap.has(item.idea_key)) && <details className="panel mt-8 p-5" open={presentation.ideas.length === 0}><summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-semibold text-content"><span>{text("查看未通过审查的方向", "View directions that did not pass review")}</span><ChevronRight className="h-4 w-4"/></summary><div className="mt-4 divide-y divide-line">{presentation.reviews.filter((item) => !ideaMap.has(item.idea_key)).map((review, index) => { const missing = language === "zh" ? review.missing_evidence_zh : review.missing_evidence_en; return <article className="py-5" key={review.idea_key}><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm text-content">{localized(review, "idea_title", language) || text(`待补证方向 ${index + 1}`, `Direction ${index + 1} requiring evidence`)}</strong><span className="idea-status">{review.decision === "rejected" ? text("已淘汰", "Rejected") : text("尚未验证", "Not yet validated")}</span></div><p className="mt-2 text-sm leading-6 text-muted">{localized(review, "rationale", language)}</p>{missing.length > 0 && <div className="mt-3 rounded-lg bg-subtle p-3"><span className="text-xs font-semibold text-muted">{text("下一步必须补充的证据", "Evidence required next")}</span><ul className="mt-2 space-y-1 text-sm leading-6 text-content">{missing.map((item) => <li key={item}>· {item}</li>)}</ul></div>}</article>; })}</div></details>}</section>}
+    {tab === "ideas" && <section className="report-section mt-7"><SectionTitle kicker="03" title={text("论文级 Idea", "Paper-level ideas")} description={text("这些方案在完整研究现状之后生成，并经过撞车、可行性、证据和投稿价值审查。沙箱实验仍为可选功能，当前不会自动运行。", "These proposals are generated after the literature landscape and reviewed for collision, feasibility, evidence, and submission value. Sandbox experiments remain optional and never run automatically.")}/><div className="space-y-6">{presentation.ideas.map((idea) => <IdeaCard key={idea.key} idea={idea} review={presentation.reviews.find((item) => item.idea_key === idea.key)} profiles={presentation.literature_landscape.profiles}/>)}</div>{presentation.ideas.length === 0 && <div className="panel p-8 text-center"><strong className="text-content">{text("本轮没有达到正式推荐门槛的 Idea", "No idea reached the recommendation gate")}</strong><p className="mt-2 text-sm leading-6 text-muted">{text("这不是空结果：下方保留了候选方向的审查结论、关键反证和下一步补证要求。", "This is not an empty result: the reviews, counterevidence, and next evidence requirements remain available below.")}</p></div>}{presentation.reviews.some((item) => !ideaMap.has(item.idea_key)) && <details className="panel mt-8 p-5" open={presentation.ideas.length === 0}><summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-semibold text-content"><span>{text("查看未通过审查的方向", "View directions that did not pass review")}</span><ChevronRight className="h-4 w-4"/></summary><div className="mt-4 divide-y divide-line">{presentation.reviews.filter((item) => !ideaMap.has(item.idea_key)).map((review, index) => { const missing = language === "zh" ? review.missing_evidence_zh : review.missing_evidence_en; return <article className="py-5" key={review.idea_key}><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm text-content">{localized(review, "idea_title", language) || text(`待补证方向 ${index + 1}`, `Direction ${index + 1} requiring evidence`)}</strong><span className="idea-status">{review.decision === "rejected" ? text("已淘汰", "Rejected") : text("尚未验证", "Not yet validated")}</span></div><p className="mt-2 text-sm leading-6 text-muted">{localized(review, "rationale", language)}</p>{missing.length > 0 && <div className="mt-3 rounded-lg bg-subtle p-3"><span className="text-xs font-semibold text-muted">{text("下一步必须补充的证据", "Evidence required next")}</span><ul className="mt-2 space-y-1 text-sm leading-6 text-content">{missing.map((item) => <li key={item}>· {item}</li>)}</ul></div>}</article>; })}</div></details>}</section>}
   </article>;
 }
