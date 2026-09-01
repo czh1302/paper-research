@@ -306,6 +306,80 @@ describe("ReportPage", () => {
     expect(document.body.textContent).not.toContain("Not covered");
   });
 
+  it("renders V4 ideas as one structured proposal list with inline details", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    const presentation = record.content.presentation as ReportPresentationV4;
+    const primary = presentation.ideas[0];
+    const alternative = {
+      ...primary,
+      key: "idea-v4-alternative",
+      rank: 2,
+      title_zh: "面向复现偏差的运行时证据归因",
+      title_en: "Runtime evidence attribution for reproduction drift",
+      one_sentence_zh: "利用运行轨迹定位论文结论与复现结果之间的首个偏差点。",
+      one_sentence_en: "Use runtime traces to locate the first divergence between paper claims and reproduced results.",
+      pain_point_zh: "",
+      pain_point_en: "",
+      core_contribution_zh: "提出按因果顺序组织的偏差证据链。",
+      core_contribution_en: "A causally ordered evidence chain for reproduction drift.",
+      verdict: "alternative" as const,
+      qualification_tier: "relaxed" as const,
+      review_attempt: 4,
+      missing_evidence_zh: ["补充跨论文运行轨迹验证"],
+      missing_evidence_en: ["Add cross-paper runtime-trace validation"],
+    };
+    const third = {
+      ...primary,
+      key: "idea-v4-third",
+      rank: 3,
+      title_zh: "论文结果契约的跨环境校准",
+      title_en: "Cross-environment calibration of paper-result contracts",
+      one_sentence_zh: "校准不同执行环境下论文结果契约的容差边界。",
+      one_sentence_en: "Calibrate paper-result contract tolerances across execution environments.",
+      verdict: "alternative" as const,
+    };
+    presentation.ideas = [primary, alternative, third];
+    presentation.reviews.push(
+      { idea_key: alternative.key, decision: "alternative", rationale_zh: "方向可行，但仍需跨论文证据。", rationale_en: "The direction is feasible but needs cross-paper evidence.", missing_evidence_zh: alternative.missing_evidence_zh, missing_evidence_en: alternative.missing_evidence_en },
+      { idea_key: third.key, decision: "alternative", rationale_zh: "环境校准具备实验路径。", rationale_en: "Environment calibration has a viable experiment path.", missing_evidence_zh: [], missing_evidence_en: [] },
+    );
+    api.getReport.mockResolvedValue(record);
+    renderReport();
+
+    await screen.findByText("调研结论");
+    await user.click(screen.getByRole("tab", { name: "论文级 Idea" }));
+    const primaryButton = screen.getByRole("button", { name: /主方案.*证据契约驱动/ });
+    const alternativeButton = screen.getByRole("button", { name: /备选方案 2.*面向复现偏差/ });
+    const thirdButton = screen.getByRole("button", { name: /备选方案 3.*论文结果契约/ });
+    expect(primaryButton).toHaveAttribute("aria-expanded", "true");
+    expect(alternativeButton).toHaveAttribute("aria-expanded", "false");
+    expect(document.querySelector(".v4-natural-columns")).not.toBeInTheDocument();
+    expect(document.querySelectorAll(".v4-idea-portfolio > .v4-idea-row")).toHaveLength(3);
+
+    const primaryPanel = document.getElementById("v4-idea-idea-v4");
+    const alternativePanel = document.getElementById("v4-idea-idea-v4-alternative");
+    expect(primaryPanel).toHaveAttribute("aria-hidden", "false");
+    expect(alternativePanel).toHaveAttribute("aria-hidden", "true");
+    expect(primaryPanel?.textContent).toContain("研究命题");
+    expect(primaryPanel?.textContent).toContain("第一个可证伪实验");
+
+    await user.click(alternativeButton);
+    expect(primaryButton).toHaveAttribute("aria-expanded", "false");
+    expect(alternativeButton).toHaveAttribute("aria-expanded", "true");
+    expect(alternativePanel).toHaveAttribute("aria-hidden", "false");
+    expect(alternativePanel?.textContent).not.toContain("当前研究痛点");
+    expect(alternativePanel?.textContent).toContain("补充跨论文运行轨迹验证");
+
+    thirdButton.focus();
+    await user.keyboard("{Enter}");
+    expect(alternativeButton).toHaveAttribute("aria-expanded", "false");
+    expect(thirdButton).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Enter}");
+    expect(thirdButton).toHaveAttribute("aria-expanded", "false");
+    expect(primaryButton).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("keeps the overview concise and renders a stable input-paper reading workspace", async () => {
     const user = userEvent.setup();
     const record = v4Fixture();
