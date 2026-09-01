@@ -6,7 +6,7 @@ import { LanguageToggle } from "../components/LanguageToggle";
 import { LanguageProvider } from "../lib/language";
 import { ThemeProvider } from "../lib/theme";
 import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfile, PresentationIdea, ReportPresentationV4, ReportRecord } from "../lib/types";
-import { ReportPage } from "./ReportPage";
+import { ReportPage, SharedReportView } from "./ReportPage";
 
 const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), getReportSection: vi.fn().mockResolvedValue({ content: null }), prefetchSourcePdf: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
 const scrollIntoView = vi.fn();
@@ -311,6 +311,7 @@ describe("ReportPage", () => {
     const record = v4Fixture();
     const presentation = record.content.presentation as ReportPresentationV4;
     const primary = presentation.ideas[0];
+    primary.supporting_work_ids = [primary.closest_work_ids[0], ...primary.supporting_work_ids];
     const alternative = {
       ...primary,
       key: "idea-v4-alternative",
@@ -340,6 +341,7 @@ describe("ReportPage", () => {
       verdict: "alternative" as const,
     };
     presentation.ideas = [primary, alternative, third];
+    presentation.literature_landscape.profiles = [];
     presentation.reviews.push(
       { idea_key: alternative.key, decision: "alternative", rationale_zh: "方向可行，但仍需跨论文证据。", rationale_en: "The direction is feasible but needs cross-paper evidence.", missing_evidence_zh: alternative.missing_evidence_zh, missing_evidence_en: alternative.missing_evidence_en },
       { idea_key: third.key, decision: "alternative", rationale_zh: "环境校准具备实验路径。", rationale_en: "Environment calibration has a viable experiment path.", missing_evidence_zh: [], missing_evidence_en: [] },
@@ -363,6 +365,20 @@ describe("ReportPage", () => {
     expect(alternativePanel).toHaveAttribute("aria-hidden", "true");
     expect(primaryPanel?.textContent).toContain("研究命题");
     expect(primaryPanel?.textContent).toContain("第一个可证伪实验");
+    expect(primaryPanel?.textContent).toContain("Evidence Paper paper-0");
+    expect(primaryPanel?.textContent).toContain("最相似工作");
+    expect(primaryPanel?.textContent).toContain("可行性证据");
+    expect(primaryPanel?.textContent).toContain("全文证据");
+    expect(primaryPanel?.textContent).toContain("第 2 页");
+    expect(primaryPanel?.textContent).not.toContain("arXiv · arXiv");
+    expect(primaryPanel?.textContent).not.toContain("DOI · DOI");
+    expect(primaryPanel?.querySelectorAll(".v4-idea-evidence-row")).toHaveLength(6);
+    expect(primaryPanel?.querySelectorAll(".v4-idea-evidence-row h5")).toHaveLength(6);
+
+    await user.click(screen.getByRole("button", { name: /Evidence Paper paper-0.*第 2 页/ }));
+    expect(screen.getByText("外部论文证据")).toBeInTheDocument();
+    expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭" }));
 
     await user.click(alternativeButton);
     expect(primaryButton).toHaveAttribute("aria-expanded", "false");
@@ -378,6 +394,39 @@ describe("ReportPage", () => {
     await user.keyboard("{Enter}");
     expect(thirdButton).toHaveAttribute("aria-expanded", "false");
     expect(primaryButton).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("falls back to a real official paper link when an Idea profile has no PDF locator", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    const presentation = record.content.presentation as ReportPresentationV4;
+    const profile = presentation.comparison_boards[0].profiles.find((item) => item.paper_id === "paper-0")!;
+    for (const field of ["task", "input_or_data", "method", "output_or_evaluation", "constraints", "limitations"] as const) profile[field].evidence = [];
+    presentation.literature_landscape.profiles = [];
+    api.getReport.mockResolvedValue(record);
+    renderReport();
+
+    await screen.findByText("调研结论");
+    await user.click(screen.getByRole("tab", { name: "论文级 Idea" }));
+    const paperTitle = screen.getByText("Evidence Paper paper-0");
+    const row = paperTitle.closest(".v4-idea-evidence-row");
+    expect(row).not.toBeNull();
+    const officialLink = row?.querySelector<HTMLAnchorElement>(".v4-idea-official-link");
+    expect(officialLink).toHaveTextContent("打开官方原文");
+    expect(officialLink).toHaveAttribute("href", "https://papers.example/paper-0");
+    expect(row?.querySelector(".evidence-reference")).not.toBeInTheDocument();
+  });
+
+  it("keeps private Idea PDFs unavailable from the public share view", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    render(<LanguageProvider><ThemeProvider><MemoryRouter><SharedReportView record={record}/></MemoryRouter></ThemeProvider></LanguageProvider>);
+
+    await user.click(await screen.findByRole("tab", { name: "论文级 Idea" }));
+    await user.click(screen.getByRole("button", { name: /Evidence Paper paper-0.*第 2 页/ }));
+    expect(screen.getByText("外部论文证据")).toBeInTheDocument();
+    expect(screen.getByText("公开访问不提供原 PDF")).toBeInTheDocument();
+    expect(screen.queryByText("secure-pdf-viewer")).not.toBeInTheDocument();
   });
 
   it("keeps the overview concise and renders a stable input-paper reading workspace", async () => {
