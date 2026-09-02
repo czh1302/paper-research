@@ -2,7 +2,9 @@
   "name": "paper-research-platform",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["apps/web"],
+  "workspaces": [
+    "apps/web"
+  ],
   "scripts": {
     "dev": "npm --workspace apps/web run dev",
     "build": "npm --workspace apps/web run build",
@@ -11,6 +13,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "e2b": "2.46.1"
   }
 }
-

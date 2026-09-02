@@ -66,7 +66,11 @@ Deno.serve(async (request) => {
       })),
       // Assistant prompts and responses belong to the experiment owner. Admin audit
       // mode exposes code, terminal output, results and costs, but not private chat.
-      actions: access.adminMode ? [] : (actions.data ?? []).reverse().flatMap((row) => actionFeed(row)),
+      actions: access.adminMode
+        ? []
+        : ((actions.data ?? []) as unknown as Array<Record<string, unknown>>)
+          .reverse()
+          .flatMap((row) => actionFeed(row)),
       artifacts: (artifacts.data ?? []).filter((row) => !["source_file", "git_bundle"].includes(row.kind)).map((row) => ({
         id: row.id, name: row.file_name,
         kind: row.kind === "repository_zip" || row.kind === "git_bundle" ? "archive"
