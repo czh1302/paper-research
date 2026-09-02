@@ -10,7 +10,7 @@ import type { JobAttempt, JobEvent, JobRecord, ReportRecord } from "../lib/types
 const publicEventKinds = new Set([
   "queued", "resumed", "stage", "paper_parsed", "retrieval_batch",
   "retrieval_converged", "external_profile", "idea_attempt", "round_complete",
-  "evidence_previews", "completed", "auto_recovery", "waiting_resources",
+  "idea_generation_part", "evidence_previews", "completed", "auto_recovery", "waiting_resources",
 ]);
 
 const stages = [
@@ -66,8 +66,14 @@ function subprogress(job: JobRecord, events: JobEvent[], language: Language) {
   if (["waiting_resources", "budget_blocked"].includes(job.status)) return language === "zh" ? "等待限流、并发或预算窗口恢复，无需操作。" : "Waiting for rate limits, capacity, or the budget window. No action is needed.";
   const profiles = events.filter((item) => item.kind === "external_profile").length;
   const attempt = [...events].reverse().find((item) => item.kind === "idea_attempt")?.data;
+  const ideaPart = [...events].reverse().find((item) => item.kind === "idea_generation_part")?.data;
   if (job.stage === "v4_full_text") return language === "zh" ? `已建立 ${profiles} 篇全文证据档案` : `${profiles} full-text evidence profiles built`;
-  if (job.stage === "v4_ideas" && attempt) return language === "zh" ? `正在进行第 ${attempt.attempt}/${attempt.max_attempts} 次 Idea 审查` : `Idea review ${attempt.attempt}/${attempt.max_attempts}`;
+  if (job.stage === "v4_ideas" && attempt && ideaPart && ideaPart.attempt === attempt.attempt) {
+    return language === "zh"
+      ? `第 ${attempt.attempt}/${attempt.max_attempts} 轮 · 正在生成候选 Idea ${ideaPart.part}/${ideaPart.parts}`
+      : `Round ${attempt.attempt}/${attempt.max_attempts} · Generating candidate Idea ${ideaPart.part}/${ideaPart.parts}`;
+  }
+  if (job.stage === "v4_ideas" && attempt) return language === "zh" ? `正在进行第 ${attempt.attempt}/${attempt.max_attempts} 轮 Idea 审查` : `Idea review round ${attempt.attempt}/${attempt.max_attempts}`;
   const latest = events.at(-1); return latest ? eventLabel(latest, language) : (language === "zh" ? "准备开始" : "Preparing");
 }
 
@@ -78,6 +84,11 @@ function aggregateEvents(events: JobEvent[]) {
 }
 
 function eventLabel(event: JobEvent, language: Language) {
+  if (event.kind === "idea_generation_part") {
+    return language === "zh"
+      ? `正在生成第 ${event.data.part}/${event.data.parts} 个候选 Idea`
+      : `Generating candidate Idea ${event.data.part}/${event.data.parts}`;
+  }
   const labels: Record<string, [string, string]> = { queued: ["任务已进入队列", "Job queued"], resumed: ["已从检查点恢复任务", "Resumed from the latest checkpoint"], stage: ["处理阶段已更新", "Processing stage updated"], paper_parsed: ["论文解析完成", "PDF parsing completed"], retrieval_batch: ["完成一批多平台检索", "Completed a retrieval batch"], retrieval_converged: ["检索覆盖已收敛", "Literature retrieval converged"], external_profile: ["已建立一篇全文证据档案", "Built a full-text evidence profile"], idea_attempt: ["正在生成并审查论文级 Idea", "Generating and reviewing paper-level Ideas"], round_complete: ["一轮检索与分析已完成", "Research loop completed"], evidence_previews: ["引用页面快照已准备", "Evidence page previews are ready"], completed: ["报告已生成", "Report generated"], auto_recovery: ["系统正在从最近检查点自动恢复", "Automatically recovering from the latest checkpoint"], waiting_resources: ["正在等待资源恢复", "Waiting for resources to recover"] };
   return (labels[event.kind] ?? ["系统正在继续处理", "Processing continues"])[language === "zh" ? 0 : 1];
 }

@@ -25,6 +25,7 @@ const supabase = vi.hoisted(() => {
   channel.on.mockReturnValue(channel);
   channel.subscribe.mockReturnValue(channel);
   return {
+    query,
     from: vi.fn(() => query),
     channel: vi.fn(() => channel),
     removeChannel: vi.fn(),
@@ -99,5 +100,37 @@ describe("JobPage", () => {
     expect(screen.queryByText(/RAW_PROVIDER_EXCEPTION/)).not.toBeInTheDocument();
     expect(screen.queryByText(/技术日志/)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("失败");
+  });
+
+  it("shows the Idea round and the candidate-within-round progress separately", async () => {
+    api.getJob.mockResolvedValue({
+      id: "job-idea-progress",
+      mode: "single",
+      max_rounds: 1,
+      current_round: 1,
+      status: "analyzing",
+      stage: "v4_ideas",
+      progress: 74,
+      created_at: "2026-09-02T00:00:00Z",
+      file_names: ["paper.pdf"],
+    });
+    supabase.query.order.mockResolvedValueOnce({
+      data: [
+        { id: 1, kind: "idea_attempt", data: { attempt: 1, max_attempts: 8 }, created_at: "2026-09-02T00:01:00Z" },
+        { id: 2, kind: "idea_generation_part", data: { attempt: 1, part: 4, parts: 8 }, created_at: "2026-09-02T00:02:00Z" },
+      ],
+      error: null,
+    });
+
+    render(
+      <LanguageProvider>
+        <MemoryRouter initialEntries={["/jobs/job-idea-progress"]}>
+          <Routes><Route path="/jobs/:id" element={<JobPage />} /></Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
+    );
+
+    expect(await screen.findByText("第 1/8 轮 · 正在生成候选 Idea 4/8")).toBeInTheDocument();
+    expect(screen.getByText("正在生成第 4/8 个候选 Idea")).toBeInTheDocument();
   });
 });
