@@ -132,6 +132,7 @@ class ClaudeCodeClient:
         *,
         allow_web_search: bool = False,
         model: str | None = None,
+        stage: str = "unspecified",
     ) -> SchemaModel:
         provider_model = model or self.model
         cli_model = self.cli_model if model is None else self._claude_cli_model(provider_model)
@@ -168,7 +169,11 @@ class ClaudeCodeClient:
         except json.JSONDecodeError:
             pass
         await self._emit_usage(
-            payload, provider_model, failed=process.returncode != 0
+            payload,
+            provider_model,
+            cli_model,
+            stage,
+            failed=process.returncode != 0,
         )
 
         if process.returncode != 0:
@@ -194,6 +199,8 @@ class ClaudeCodeClient:
         self,
         payload: dict[str, Any],
         provider_model: str,
+        cli_model: str,
+        stage: str,
         *,
         failed: bool,
     ) -> None:
@@ -211,6 +218,9 @@ class ClaudeCodeClient:
                 "client_cost_usd": payload.get("total_cost_usd"),
                 "failed": failed,
                 "subtype": payload.get("subtype"),
+                "transport": "claude_code",
+                "stage": stage,
+                "claude_cli_model": cli_model,
             },
         )
         if self.usage_callback:

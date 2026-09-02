@@ -9,7 +9,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -94,6 +94,20 @@ from .sources.web import SerperSource, TavilySource
 
 LOGGER = logging.getLogger(__name__)
 IDEA_REVIEW_PROMPT_VERSION = 2
+PRO_LLM_STAGES = frozenset(
+    {
+        "baseline_problem_and_report",
+        "joint_problem_statement",
+        "problem_brief_draft",
+        "problem_brief_review",
+        "problem_statement_fragment",
+        "problem_statement_merge",
+        "v3_idea_assessment",
+        "v3_idea_generation",
+        "v4_idea_generation",
+        "v4_idea_review",
+    }
+)
 
 
 class JobCancelled(RuntimeError):
@@ -1504,11 +1518,7 @@ class AnalysisPipeline:
         self.llm = ClaudeCodeClient(
             Settings.reveal(settings.DEEPSEEK_API_KEY) or "mock",
             binary=settings.CLAUDE_BIN,
-            model=(
-                "deepseek-v4-flash"
-                if settings.IDEA_EVOLUTION_LOOP_ENABLED
-                else settings.CLAUDE_MODEL
-            ),
+            model=settings.CLAUDE_MODEL,
             effort=settings.CLAUDE_EFFORT,
             timeout_seconds=settings.CLAUDE_TIMEOUT_SECONDS,
             analysis_max_turns=settings.CLAUDE_ANALYSIS_MAX_TURNS,
@@ -1665,9 +1675,33 @@ class AnalysisPipeline:
         if spend >= self.settings.BUDGET_GUARD_CNY:
             raise BudgetBlocked(f"Monthly DeepSeek guard reached: CNY {spend:.2f}")
 
-    async def _call_llm(self, prompt: str, model: type[Any], *, web: bool = False) -> Any:
+    async def _call_llm(
+        self,
+        prompt: str,
+        model: type[Any],
+        *,
+        stage: str,
+        route: Literal["flash", "pro"] = "flash",
+        web: bool = False,
+    ) -> Any:
         await self._check_budget()
-        return await self.llm.structured(prompt, model, allow_web_search=web)
+        expected_route = "pro" if stage in PRO_LLM_STAGES else "flash"
+        if route != expected_route:
+            raise ValueError(
+                f"LLM stage {stage!r} requires route {expected_route!r}, got {route!r}"
+            )
+        provider_model = (
+            self.settings.CLAUDE_PRO_MODEL
+            if route == "pro"
+            else self.settings.CLAUDE_MODEL
+        )
+        return await self.llm.structured(
+            prompt,
+            model,
+            allow_web_search=web,
+            model=provider_model,
+            stage=stage,
+        )
 
     async def _event(
         self, job_id: str, kind: str, message: str, data: dict[str, Any] | None = None
@@ -1716,20 +1750,35 @@ class AnalysisPipeline:
                     document.paper_id, document.title, blocks_as_prompt(blocks)
                 ),
                 ProblemStatement,
+                stage="problem_statement_fragment",
+                route="pro",
             )
             fragments.append(ground_problem(fragment, blocks))
         if not fragments:
             raise ValueError(f"No readable blocks in {document.title}")
         if len(fragments) == 1:
             return fragments[0]
-        merged = await self._call_llm(merge_problem_prompt(fragments), ProblemStatement)
+        merged = await self._call_llm(
+            merge_problem_prompt(fragments),
+            ProblemStatement,
+            stage="problem_statement_merge",
+            route="pro",
+        )
         return ground_problem(merged, document.blocks)
 
     async def extract_problem_brief(self, problem: ProblemStatement) -> ProblemBrief:
-        draft = await self._call_llm(problem_brief_prompt(problem), ProblemBrief)
+        draft = await self._call_llm(
+            problem_brief_prompt(problem),
+            ProblemBrief,
+            stage="problem_brief_draft",
+            route="pro",
+        )
         draft = ground_problem_brief(draft, problem)
         reviewed = await self._call_llm(
-            problem_brief_review_prompt(problem, draft), ProblemBrief
+            problem_brief_review_prompt(problem, draft),
+            ProblemBrief,
+            stage="problem_brief_review",
+            route="pro",
         )
         return ground_problem_brief(reviewed, problem)
 
@@ -1879,6 +1928,8 @@ class AnalysisPipeline:
                         full_text_excerpts=full_text_excerpts,
                     ),
                     IdeaAssessmentBatch,
+                    stage="v3_idea_assessment",
+                    route="pro",
                 )
             grounded = ground_idea_assessments(
                 batch,
@@ -1928,6 +1979,8 @@ class AnalysisPipeline:
             batch = await self._call_llm(
                 brainstorm_ideas_prompt(problems, briefs, job.research_brief, prior),
                 IdeaDraftBatch,
+                stage="v3_idea_generation",
+                route="pro",
             )
             ideas = ground_idea_drafts(
                 batch, problems, expected_count=8 if round_number == 1 else None
@@ -1939,7 +1992,9 @@ class AnalysisPipeline:
             bundle = QueryBundle.model_validate(round_checkpoint["bundle"])
         else:
             query_plans = await self._call_llm(
-                idea_query_plan_prompt(ideas, round_number), IdeaQueryPlanBatch
+                idea_query_plan_prompt(ideas, round_number),
+                IdeaQueryPlanBatch,
+                stage="v3_idea_evidence_query",
             )
             bundle = query_bundle_from_plan(query_plans, ideas, round_number)
             await save_checkpoint(bundle=bundle.model_dump(mode="json"))
@@ -2109,7 +2164,9 @@ class AnalysisPipeline:
             )
             if batch_number == 1:
                 bundle = await self._call_llm(
-                    query_prompt(problems, 1, None), QueryBundle
+                    query_prompt(problems, 1, None),
+                    QueryBundle,
+                    stage="v4_initial_retrieval_query",
                 )
             else:
                 bundle = await self._call_llm(
@@ -2117,6 +2174,7 @@ class AnalysisPipeline:
                         problems, all_candidates, batch_number
                     ),
                     QueryBundle,
+                    stage="v4_landscape_followup_query",
                 )
             bundle.round_number = 1
             bundles.append(bundle)
@@ -2211,7 +2269,9 @@ class AnalysisPipeline:
         if not eligible:
             return []
         batch = await self._call_llm(
-            paper_ranking_prompt(problems, eligible), PaperRankingBatch
+            paper_ranking_prompt(problems, eligible),
+            PaperRankingBatch,
+            stage="v4_full_text_ranking",
         )
         scores = {
             item.paper_id: item.relevance
@@ -2307,6 +2367,7 @@ class AnalysisPipeline:
                     draft = await self._call_llm(
                         paper_profile_prompt(paper, document, placeholder),
                         PaperEvidenceProfile,
+                        stage="v4_paper_profile",
                     )
                     grounded = ground_paper_profile(
                         draft, paper, document, placeholder
@@ -2499,7 +2560,9 @@ class AnalysisPipeline:
                 f"Synthesizing research landscape from {len(external_profiles)} full-text papers",
             )
             landscape_draft = await self._call_llm(
-                landscape_prompt(profiles), LiteratureLandscapeDraft
+                landscape_prompt(profiles),
+                LiteratureLandscapeDraft,
+                stage="v4_landscape_synthesis",
             )
             allowed_ids = {item.paper_id for item in profiles}
             themes = [
@@ -2660,6 +2723,8 @@ class AnalysisPipeline:
                             evolution_mode=evolution_mode,
                         ),
                         SubmissionIdeaSingleBatch,
+                        stage="v4_idea_generation",
+                        route="pro",
                     )
                     generated = single.ideas[0]
                     if target and evolution_mode == "revise":
@@ -2766,6 +2831,8 @@ class AnalysisPipeline:
                         profiles,
                     ),
                     IdeaReviewBatch,
+                    stage="v4_idea_review",
+                    route="pro",
                 )
                 review_batch = IdeaReviewBatch(
                     reviews=[
@@ -2934,6 +3001,7 @@ class AnalysisPipeline:
                         attempt + 1,
                     ),
                     QueryBundle,
+                    stage="v4_idea_followup_query",
                 )
                 attempt_checkpoint["followup_bundle"] = bundle.model_dump(mode="json")
                 attempt_checkpoints[str(attempt)] = attempt_checkpoint
@@ -2987,7 +3055,9 @@ class AnalysisPipeline:
             )
             try:
                 landscape_draft = await self._call_llm(
-                    landscape_prompt(profiles), LiteratureLandscapeDraft
+                    landscape_prompt(profiles),
+                    LiteratureLandscapeDraft,
+                    stage="v4_landscape_refresh",
                 )
                 allowed_ids = {item.paper_id for item in profiles}
                 next_themes = [
@@ -3114,6 +3184,7 @@ class AnalysisPipeline:
             return await self._call_llm(
                 web_discovery_prompt([item.query for item in bundle.queries]),
                 WebDiscovery,
+                stage="web_discovery",
                 web=True,
             )
         except Exception as error:  # WebSearch is fail-soft; structured APIs still run.
@@ -3136,6 +3207,8 @@ class AnalysisPipeline:
             report = await self._call_llm(
                 baseline_report_prompt(job.id, document),
                 AnalysisReport,
+                stage="baseline_problem_and_report",
+                route="pro",
                 web=True,
             )
             if len(report.problem_statements) != 1:
@@ -3310,7 +3383,10 @@ class AnalysisPipeline:
                     joint = JointProblemStatement.model_validate(stored_joint["content"])
                 else:
                     joint = await self._call_llm(
-                        joint_problem_prompt(problems), JointProblemStatement
+                        joint_problem_prompt(problems),
+                        JointProblemStatement,
+                        stage="joint_problem_statement",
+                        route="pro",
                     )
                     if self.repository and persist:
                         await self.repository.save_problem_statement(
@@ -3621,7 +3697,9 @@ class AnalysisPipeline:
                     )
                 else:
                     bundle = await self._call_llm(
-                        query_prompt(problems, round_number, previous), QueryBundle
+                        query_prompt(problems, round_number, previous),
+                        QueryBundle,
+                        stage="legacy_retrieval_query",
                     )
                     # The schema cannot enforce a prompt-derived number.
                     bundle.round_number = round_number
@@ -3659,7 +3737,9 @@ class AnalysisPipeline:
 
                 await self._update(job.id, JobStatus.ANALYZING, "analyzing", 55)
                 analysis = await self._call_llm(
-                    round_analysis_prompt(problems, all_candidates, previous), RoundAnalysis
+                    round_analysis_prompt(problems, all_candidates, previous),
+                    RoundAnalysis,
+                    stage="legacy_round_analysis",
                 )
                 analysis = ground_analysis(analysis, all_candidates)
                 rounds.append(analysis)
@@ -3727,6 +3807,7 @@ class AnalysisPipeline:
                     presentation = await self._call_llm(
                         report_presentation_prompt(problems, joint, all_candidates, rounds),
                         ReportPresentation,
+                        stage="legacy_report_presentation",
                     )
                     presentation = ground_presentation(
                         presentation, problems, all_candidates, rounds

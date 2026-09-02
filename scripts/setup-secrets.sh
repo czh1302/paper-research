@@ -40,6 +40,8 @@ printf '%s\n' \
   'MAX_PROVIDER_CONCURRENCY=4' \
   'SEARCH_PROFILE=academic_web' \
   'CLAUDE_BIN=/home/czh/.local/bin/claude' \
+  'CLAUDE_MODEL=deepseek-v4-flash' \
+  'CLAUDE_PRO_MODEL=deepseek-v4-pro' \
   'CLAUDE_TIMEOUT_SECONDS=900' \
   'MINERU_POLL_SECONDS=5' \
   'MINERU_TIMEOUT_SECONDS=900' >> "${secrets_file}.new"

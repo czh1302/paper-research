@@ -91,10 +91,19 @@ async def test_failed_cli_result_still_records_token_usage(monkeypatch) -> None:
     client = ClaudeCodeClient("test", usage_callback=records.append)
 
     with pytest.raises(ClaudeCodeError, match="exited with 1"):
-        await client.structured("prompt", ExampleOutput)
+        await client.structured(
+            "prompt",
+            ExampleOutput,
+            model="deepseek-v4-pro",
+            stage="v4_idea_review",
+        )
 
     assert len(records) == 1
     assert records[0].input_tokens == 1200
     assert records[0].output_tokens == 300
+    assert records[0].model == "deepseek-v4-pro"
     assert records[0].metadata["failed"] is True
     assert records[0].metadata["subtype"] == "error_max_turns"
+    assert records[0].metadata["transport"] == "claude_code"
+    assert records[0].metadata["stage"] == "v4_idea_review"
+    assert records[0].metadata["claude_cli_model"] == "claude-opus-4-5"

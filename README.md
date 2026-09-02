@@ -189,6 +189,10 @@ that command with the credentials exposed in chat.
 
 ## Search and report behavior
 
+- Every DeepSeek reasoning call is launched through the pinned Claude Code CLI. Problem Statement,
+  Problem Brief, Idea generation/revision and Idea review use V4 Pro; retrieval planning, WebSearch,
+  paper profiling, landscape synthesis and report rendering use V4 Flash. Usage records include the
+  pipeline stage, provider model, Claude Code transport and mapped Claude CLI model.
 - With `IDEA_PIPELINE_V3=true`, each round extracts an evidence-reviewed Problem Brief, generates
   falsifiable Ideas, runs Idea-specific academic and web queries, parses selected open full text,
   and validates collision risk, feasibility and a first experiment.
@@ -216,6 +220,18 @@ that command with the credentials exposed in chat.
 - The whole site defaults to Chinese and can switch immediately to English. PDF and Markdown exports
   use the active language; JSON and CSV preserve the complete bilingual and audit data. Read-only
   share links are hashed in the database, expire after 30 days, and can be revoked.
+
+To rerun only Gap, Idea and review stages from an existing V4 checkpoint without modifying the
+source checkpoint or production database:
+
+```bash
+paper-research idea-replay \
+  --checkpoint .artifacts/pipeline-checkpoints/JOB_ID.json \
+  --output .artifacts/idea-quality-replay-new
+```
+
+The replay classifies papers with V4 Flash and runs every Gap, Idea, review and final-gate stage
+with V4 Pro. Use a new output directory when changing replay versions or model policies.
 
 ## Verification and benchmark
 

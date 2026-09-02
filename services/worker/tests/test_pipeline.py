@@ -36,6 +36,7 @@ from paper_research.models import (
     SubmissionIdea,
 )
 from paper_research.pipeline import (
+    PRO_LLM_STAGES,
     AnalysisPipeline,
     build_input_profile,
     build_presentation_v3,
@@ -104,6 +105,71 @@ def test_conservative_cost_estimate() -> None:
         output_tokens=100_000,
     )
     assert estimate_usage_cny(pro) == pytest.approx(3 * estimate_usage_cny(usage))
+
+
+async def test_pipeline_routes_problem_and_idea_to_pro_and_retrieval_to_flash(
+    tmp_path,
+) -> None:
+    calls: list[dict] = []
+
+    class CaptureClient:
+        async def structured(self, _prompt, _response_model, **kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+    settings = Settings(
+        _env_file=None,
+        ARTIFACT_ROOT=tmp_path,
+        CLAUDE_MODEL="deepseek-v4-flash",
+        CLAUDE_PRO_MODEL="deepseek-v4-pro",
+    )
+    pipeline = AnalysisPipeline(settings)
+    pipeline.llm = CaptureClient()
+
+    async def allow_budget() -> None:
+        return None
+
+    pipeline._check_budget = allow_budget
+
+    await pipeline._call_llm(
+        "problem",
+        ProblemStatement,
+        stage="problem_statement_fragment",
+        route="pro",
+    )
+    await pipeline._call_llm(
+        "idea",
+        SubmissionIdea,
+        stage="v4_idea_generation",
+        route="pro",
+    )
+    await pipeline._call_llm(
+        "query",
+        RoundAnalysis,
+        stage="legacy_retrieval_query",
+    )
+
+    assert PRO_LLM_STAGES.issuperset(
+        {"problem_statement_fragment", "v4_idea_generation", "v4_idea_review"}
+    )
+    assert [item["model"] for item in calls] == [
+        "deepseek-v4-pro",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    ]
+    assert [item["stage"] for item in calls] == [
+        "problem_statement_fragment",
+        "v4_idea_generation",
+        "legacy_retrieval_query",
+    ]
+
+    with pytest.raises(ValueError, match="requires route 'pro'"):
+        await pipeline._call_llm(
+            "wrong route",
+            ProblemStatement,
+            stage="problem_brief_review",
+        )
+    await pipeline.close()
 
 
 def test_v4_runtime_budget_and_full_text_target_resume_from_checkpoint() -> None:

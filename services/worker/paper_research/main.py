@@ -11,11 +11,13 @@ import sys
 import uuid
 from pathlib import Path
 
+from .clients.llm import ClaudeCodeClient
 from .clients.local import LocalCheckpointRepository
 from .config import DEFAULT_SECRETS_FILE, Settings
 from .document import validate_pdf
+from .idea_replay import IdeaReplayRunner
 from .models import AnalysisMode, AnalysisReport, Job, JobFile, JobStatus
-from .pipeline import AnalysisPipeline
+from .pipeline import AnalysisPipeline, estimate_usage_cny
 from .reporting import comparison_csv, report_markdown
 from .worker import Worker
 
@@ -64,6 +66,15 @@ def doctor(settings: Settings) -> int:
             {
                 **checks,
                 "turnstile_mode": "test" if settings.TURNSTILE_TEST_MODE else "production",
+                "llm_transport": "claude_code",
+                "flash_model": settings.CLAUDE_MODEL,
+                "pro_model": settings.CLAUDE_PRO_MODEL,
+                "flash_cli_alias": ClaudeCodeClient._claude_cli_model(
+                    settings.CLAUDE_MODEL
+                ),
+                "pro_cli_alias": ClaudeCodeClient._claude_cli_model(
+                    settings.CLAUDE_PRO_MODEL
+                ),
             },
             indent=2,
         )
@@ -165,6 +176,40 @@ async def analyze_baseline_local(settings: Settings, file: Path, output: Path) -
     return 0
 
 
+async def replay_ideas_local(
+    settings: Settings, checkpoint: Path, output: Path
+) -> int:
+    if not checkpoint.is_file():
+        raise ValueError(f"Idea replay checkpoint does not exist: {checkpoint}")
+    output.mkdir(parents=True, exist_ok=True)
+    usage_path = output / "provider-usage.jsonl"
+
+    async def record_usage(usage) -> None:
+        usage.estimated_cny = estimate_usage_cny(usage)
+        with usage_path.open("a", encoding="utf-8") as stream:
+            stream.write(usage.model_dump_json() + "\n")
+
+    client = ClaudeCodeClient(
+        Settings.reveal(settings.DEEPSEEK_API_KEY) or "mock",
+        binary=settings.CLAUDE_BIN,
+        model=settings.CLAUDE_MODEL,
+        effort=settings.CLAUDE_EFFORT,
+        timeout_seconds=settings.CLAUDE_TIMEOUT_SECONDS,
+        analysis_max_turns=settings.CLAUDE_ANALYSIS_MAX_TURNS,
+        web_max_turns=settings.CLAUDE_WEB_MAX_TURNS,
+        usage_callback=record_usage,
+    )
+    runner = IdeaReplayRunner(
+        client,
+        classification_model=settings.CLAUDE_MODEL,
+        idea_model=settings.CLAUDE_PRO_MODEL,
+        output=output,
+    )
+    result = await runner.run(checkpoint)
+    print(f"Idea replay written to {output} ({result.decision})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Paper research worker")
     parser.add_argument("--verbose", action="store_true")
@@ -185,6 +230,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     baseline.add_argument("file", type=Path)
     baseline.add_argument("--output", type=Path, default=Path(".artifacts/baseline-report"))
+    replay = subparsers.add_parser(
+        "idea-replay", help="Re-run only gap, Idea, and review stages from a V4 checkpoint"
+    )
+    replay.add_argument("--checkpoint", type=Path, required=True)
+    replay.add_argument(
+        "--output", type=Path, default=Path(".artifacts/idea-quality-replay")
+    )
     return parser
 
 
@@ -205,10 +257,20 @@ def main() -> None:
                 raise RuntimeError("Rotated DEEPSEEK_API_KEY and MINERU_API_TOKEN are required")
             settings.SEARCH_PROFILE = args.search_profile
             code = asyncio.run(analyze_local(settings, args.files, args.rounds, args.output))
-        else:
+        elif args.command == "baseline-local":
             if not settings.DEEPSEEK_API_KEY or not settings.MINERU_API_TOKEN:
                 raise RuntimeError("Rotated DEEPSEEK_API_KEY and MINERU_API_TOKEN are required")
             code = asyncio.run(analyze_baseline_local(settings, args.file, args.output))
+        else:
+            if not settings.DEEPSEEK_API_KEY:
+                raise RuntimeError("A rotated DEEPSEEK_API_KEY is required")
+            code = asyncio.run(
+                replay_ideas_local(
+                    settings,
+                    args.checkpoint,
+                    args.output,
+                )
+            )
     except (RuntimeError, ValueError) as error:
         parser.error(str(error))
         return
