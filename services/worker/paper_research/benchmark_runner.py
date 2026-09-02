@@ -1012,9 +1012,13 @@ class BenchmarkSupervisor:
         )
         while True:
             try:
+                # Keep local baseline/metric work moving even when the remote
+                # production-status poll is temporarily unavailable. Managed
+                # subprocesses have their own durable checkpoints, so they do
+                # not need to wait behind Supabase retry backoff.
+                await self._manage_subprocesses()
                 await self._refresh_jobs_and_reports()
                 await self._refresh_experiments()
-                await self._manage_subprocesses()
                 self._write_metric_summary()
                 self.state.pop("supervisor_recovery", None)
             except Exception as error:
@@ -1025,7 +1029,7 @@ class BenchmarkSupervisor:
                     {
                         "phase": "polling",
                         "attempts": attempt,
-                        "safe_error": redact(str(error))[-2000:],
+                        "safe_error": redact(str(error) or type(error).__name__)[-2000:],
                         "next_retry_at": _iso(_utcnow() + timedelta(seconds=delay)),
                     }
                 )
