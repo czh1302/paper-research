@@ -4191,7 +4191,6 @@ class AnalysisPipeline:
             return grounded
         finally:
             self._active_job_id = None
-            self._workflow_state.pop(job.id, None)
             shutil.rmtree(workspace_path, ignore_errors=True)
 
     async def analyze_files(
