@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,8 @@ from paper_research.benchmark_metrics import PaperMetricRecordProxy
 from paper_research.benchmark_runner import (
     BenchmarkManifestError,
     BenchmarkSupervisor,
+    _json_file_is_valid,
+    _managed_output_is_valid,
     load_benchmark_manifest,
     retry_delay_seconds,
 )
@@ -121,6 +124,12 @@ async def test_cold_submission_is_persisted_and_resume_is_idempotent(tmp_path: P
     ]
     assert len(reservations) == 6
     saved = json.loads((output / "run-state.json").read_text(encoding="utf-8"))
+    run_id = saved["run_id"]
+    job_ids = {
+        paper_id: row["production"]["job_id"]
+        for paper_id, row in saved["papers"].items()
+    }
+    calls_before_resume = list(repository.calls)
     assert len({row["production"]["job_id"] for row in saved["papers"].values()}) == 6
 
     resumed = BenchmarkSupervisor(
@@ -133,9 +142,13 @@ async def test_cold_submission_is_persisted_and_resume_is_idempotent(tmp_path: P
         project_root=tmp_path,
     )
     await resumed.submit_cold_jobs()
-    assert len(
-        [call for call in repository.calls if call[1] == "/rest/v1/rpc/reserve_benchmark_job"]
-    ) == 6
+    resumed_state = json.loads((output / "run-state.json").read_text(encoding="utf-8"))
+    assert resumed_state["run_id"] == run_id
+    assert {
+        paper_id: row["production"]["job_id"]
+        for paper_id, row in resumed_state["papers"].items()
+    } == job_ids
+    assert repository.calls == calls_before_resume
 
 
 def test_retry_schedule_has_stable_jitter_and_six_hour_cap() -> None:
@@ -143,6 +156,80 @@ def test_retry_schedule_has_stable_jitter_and_six_hour_cap() -> None:
     assert values == [retry_delay_seconds("paper", attempt) for attempt in range(1, 9)]
     assert 24 <= values[0] <= 36
     assert all(value <= round(21600 * 1.2) for value in values)
+
+
+def test_json_output_validation_requires_a_valid_object(tmp_path: Path) -> None:
+    valid = tmp_path / "valid.json"
+    valid.write_text('{"report": true}', encoding="utf-8")
+    assert _json_file_is_valid(valid) is True
+
+    array = tmp_path / "array.json"
+    array.write_text("[]", encoding="utf-8")
+    assert _json_file_is_valid(array) is False
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{", encoding="utf-8")
+    assert _json_file_is_valid(corrupt) is False
+    assert _json_file_is_valid(tmp_path / "missing.json") is False
+
+    incomplete_report = tmp_path / "incomplete-report.json"
+    incomplete_report.write_text("{}", encoding="utf-8")
+    assert _managed_output_is_valid("baseline", incomplete_report) is False
+
+
+@pytest.mark.asyncio
+async def test_resume_reconciles_existing_baselines_without_relaunch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = load_benchmark_manifest(_manifest(tmp_path), project_root=tmp_path)
+    supervisor = BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        tmp_path / "output",
+        "owner-job",
+        repository=SubmissionRepository(),
+        project_root=tmp_path,
+    )
+    completed_ids = [paper.id for paper in manifest.papers[:4]]
+    for index, paper_id in enumerate(completed_ids):
+        output = supervisor._baseline_output(paper_id)
+        output.mkdir(parents=True, exist_ok=True)
+        report = AnalysisReport(
+            job_id=f"baseline-{paper_id}",
+            problem_statements=[],
+            related_papers=[],
+            rounds=[],
+            search_audit=[],
+            source_coverage={},
+            limitations_zh="有限",
+            limitations_en="Limited",
+        )
+        (output / "report.json").write_text(
+            report.model_dump_json(), encoding="utf-8"
+        )
+        child = supervisor.state["papers"][paper_id]["baseline"]
+        child.update(
+            {
+                "status": "retrying" if index < 2 else "running",
+                "attempts": 1,
+                "pid": 999_999,
+                "process_start_token": "missing",
+            }
+        )
+    for paper in manifest.papers[4:]:
+        supervisor.state["papers"][paper.id]["baseline"]["status"] = "skipped"
+
+    async def unexpected_relaunch(*_args, **_kwargs):
+        raise AssertionError("an existing valid baseline must not be relaunched")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unexpected_relaunch)
+    await supervisor._inspect_managed_commands("baseline")
+    await supervisor._launch_managed_commands("baseline", concurrency=4)
+
+    for paper_id in completed_ids:
+        child = supervisor.state["papers"][paper_id]["baseline"]
+        assert child["status"] == "completed"
+        assert child["attempts"] == 1
 
 
 def test_cli_exposes_frozen_parallel_benchmark_options() -> None:

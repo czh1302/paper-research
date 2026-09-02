@@ -121,24 +121,29 @@ def _atomic_json(path: Path, payload: Any) -> None:
 def _json_file_is_valid(path: Path) -> bool:
     if not path.is_file():
         return False
+    try:
+        return isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
 
 
 def _managed_output_is_valid(kind: str, path: Path) -> bool:
     if not _json_file_is_valid(path):
         return False
-    if kind != "metrics":
-        return True
     try:
-        from .benchmark_metrics import PaperMetricRecordProxy
+        if kind == "baseline":
+            from .models import AnalysisReport
 
-        PaperMetricRecordProxy.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+            AnalysisReport.model_validate_json(path.read_text(encoding="utf-8"))
+        elif kind == "metrics":
+            from .benchmark_metrics import PaperMetricRecordProxy
+
+            PaperMetricRecordProxy.model_validate_json(path.read_text(encoding="utf-8"))
+        else:
+            return False
+    except (OSError, UnicodeError, ValueError):
         return False
     return True
-    try:
-        return isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
-    except (OSError, json.JSONDecodeError):
-        return False
 
 
 def _inside_project(path: Path, project_root: Path) -> bool:
