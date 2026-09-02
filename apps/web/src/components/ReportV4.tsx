@@ -44,7 +44,7 @@ export function locatorEvidence(locator: EvidenceLocator): Evidence {
 }
 
 function SectionTitle({ kicker, title, description }: { kicker: string; title: string; description?: string }) {
-  return <div className="mb-6"><p className="report-kicker">{kicker}</p><h2 className="!mt-2 !text-2xl">{title}</h2>{description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">{description}</p>}</div>;
+  return <div className="mb-6"><p className="report-kicker">{kicker}</p><h2 className="!mt-2 !text-2xl">{title}</h2>{description && <p className="report-copy mt-2">{description}</p>}</div>;
 }
 
 function ClaimCitation({ claim, title }: { claim: GroundedClaim; title: string }) {
@@ -66,7 +66,7 @@ function OverviewBriefSummary({ brief, onOpen }: { brief: ProblemBrief; onOpen: 
   return <div className="v4-overview-brief mt-6">
     {summaries.map((item) => <button className={`panel v4-brief-card ${item.className} p-5 text-left`} key={item.title} onClick={onOpen}>
       <span className="text-xs font-semibold text-muted">{item.title}</span>
-      <p className="mt-2 text-sm font-medium leading-6 text-content">{item.value}</p>
+      <p className="report-copy mt-2 font-medium">{item.value}</p>
       <span className="v4-summary-link mt-3 inline-flex items-center gap-1 text-xs font-semibold">{text("查看输入论文", "View input paper")}<ChevronRight className="h-3.5 w-3.5"/></span>
     </button>)}
   </div>;
@@ -208,7 +208,7 @@ function OverviewLandscapeSummary({ presentation, idea, loading, onOpen }: { pre
     {profiles.length > 0 ? <>
       <div className="v4-overview-table mt-5"><table><thead><tr><th>{text("论文", "Paper")}</th><th>{text("解决的问题", "Problem addressed")}</th><th>{text("核心方法", "Core method")}</th><th>{text("仍有局限", "Remaining limitation")}</th></tr></thead><tbody>{profiles.map((profile) => <tr key={profile.paper_id}><td><strong>{profile.title}</strong><small>{[profile.year, profile.venue].filter(Boolean).join(" · ")}</small></td><td>{localized(profile.task, "claim", language)}</td><td>{localized(profile.method, "claim", language)}</td><td>{localized(profile.limitations, "claim", language)}</td></tr>)}</tbody></table></div>
       <div className="v4-overview-paper-cards mt-5">{profiles.map((profile) => <article className="rounded-xl border border-line p-4" key={profile.paper_id}><strong className="text-sm leading-5 text-content">{profile.title}</strong><p className="mt-1 text-xs text-muted">{[profile.year, profile.venue].filter(Boolean).join(" · ")}</p><dl className="mt-3 space-y-3 text-sm"><div><dt>{text("解决的问题", "Problem")}</dt><dd>{localized(profile.task, "claim", language)}</dd></div><div><dt>{text("核心方法", "Method")}</dt><dd>{localized(profile.method, "claim", language)}</dd></div><div><dt>{text("仍有局限", "Limitation")}</dt><dd>{localized(profile.limitations, "claim", language)}</dd></div></dl></article>)}</div>
-    </> : <div className="mt-5 rounded-xl bg-subtle/65 p-5 text-sm leading-6 text-muted">{loading ? text("正在载入已有的全文证据档案…", "Loading existing full-text evidence profiles…") : text("该旧版报告缺少可完整对比的结构化全文证据，不展示空表或推测内容。", "This legacy report has no complete structured full-text profiles, so no empty or inferred table is shown.")}</div>}
+    </> : <div className="report-copy report-copy-wide mt-5 rounded-xl bg-subtle/65 p-5">{loading ? text("正在载入已有的全文证据档案…", "Loading existing full-text evidence profiles…") : text("该旧版报告缺少可完整对比的结构化全文证据，不展示空表或推测内容。", "This legacy report has no complete structured full-text profiles, so no empty or inferred table is shown.")}</div>}
   </section>;
 }
 
@@ -236,7 +236,7 @@ function LandscapeExplorer({ presentation, ideaMap }: { presentation: ReportPres
   const active = themes.find((item) => item.theme.key === activeKey) ?? themes[0];
   useEffect(() => { if (active && active.theme.key !== activeKey) setActiveKey(active.theme.key); }, [active, activeKey]);
   useEffect(() => { setExpanded(false); }, [activeKey]);
-  if (!themes.length && !presentation.comparison_boards.length) return <div className="panel p-8 text-center text-sm text-muted">{text("这份报告没有可展示的完整全文结构化证据。", "This report has no complete full-text structured evidence to display.")}</div>;
+  if (!themes.length && !presentation.comparison_boards.length) return <div className="panel report-copy report-copy-wide p-8 text-center">{text("这份报告没有可展示的完整全文结构化证据。", "This report has no complete full-text structured evidence to display.")}</div>;
   const visible = active ? (expanded ? active.profiles : active.profiles.slice(0, 3)) : [];
   const directional = active?.profiles.slice(0, 3) ?? [];
   return <>
@@ -247,7 +247,7 @@ function LandscapeExplorer({ presentation, ideaMap }: { presentation: ReportPres
       </aside>
       <div className="v4-theme-mobile-select no-print"><label htmlFor="v4-theme-select">{text("选择研究主题", "Choose a research theme")}</label><select id="v4-theme-select" value={active.theme.key} onChange={(event) => setActiveKey(event.target.value)}>{themes.map(({ theme, profiles }) => <option key={theme.key} value={theme.key}>{localized(theme, "title", language)} · {profiles.length}</option>)}</select></div>
       <section className="v4-theme-reader">
-        <div className="border-b border-line pb-5"><span className="report-rank">{text("当前主题", "Current theme")}</span><h3 className="!mb-0 !mt-3 !text-xl !text-content">{localized(active.theme, "title", language)}</h3><p className="mt-3 text-sm leading-7 text-muted">{localized(active.theme, "summary", language)}</p></div>
+        <div className="border-b border-line pb-5"><span className="report-rank">{text("当前主题", "Current theme")}</span><h3 className="!mb-0 !mt-3 !text-xl !text-content">{localized(active.theme, "title", language)}</h3><p className="report-copy mt-3">{localized(active.theme, "summary", language)}</p></div>
         <dl className="v4-theme-synthesis"><div><dt>{text("该方向解决的问题", "Problems addressed")}</dt><dd>{directional.map((profile) => localized(profile.task, "claim", language)).filter(Boolean).slice(0, 2).join(text("；", "; "))}</dd></div><div><dt>{text("代表方法", "Representative methods")}</dt><dd>{directional.map((profile) => localized(profile.method, "claim", language)).filter(Boolean).slice(0, 2).join(text("；", "; "))}</dd></div><div><dt>{text("共同局限", "Shared limitations")}</dt><dd>{directional.map((profile) => localized(profile.limitations, "claim", language)).filter(Boolean).slice(0, 2).join(text("；", "; "))}</dd></div></dl>
         <div className="mt-6"><div className="flex items-center justify-between gap-3"><h4 className="font-semibold text-content">{text("关键论文", "Key papers")}</h4><span className="text-xs text-muted">{text(`${active.profiles.length} 篇`, `${active.profiles.length} papers`)}</span></div><div className="mt-3 divide-y divide-line rounded-xl border border-line">{visible.map((profile) => <ThemePaperRow key={profile.paper_id} profile={profile}/>)}</div>{active.profiles.length > 3 && <button className="button button-secondary no-print mt-4" onClick={() => setExpanded((value) => !value)}>{expanded ? text("收起", "Collapse") : text(`查看全部（${active.profiles.length}）`, `View all (${active.profiles.length})`)}<ChevronRight className={`h-4 w-4 transition ${expanded ? "rotate-90" : ""}`}/></button>}</div>
       </section>

@@ -225,7 +225,7 @@ describe("ReportPage", () => {
     api.getReport.mockResolvedValue(record);
     renderReport();
     expect(await screen.findByText("结构化一句话结论")).toBeInTheDocument();
-    expect(screen.getByText("精简执行摘要")).toBeInTheDocument();
+    expect(screen.getByText("精简执行摘要")).toHaveClass("report-copy");
     expect(screen.queryByText("中文摘要结论。")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("paperhash:b1");
   });
@@ -257,6 +257,7 @@ describe("ReportPage", () => {
 
     renderReport();
     expect(await screen.findByText("如何更可靠地复现网络研究结果？")).toBeInTheDocument();
+    expect(screen.getByText("包含实验描述的 PDF")).toHaveClass("report-copy");
     expect(screen.getByText(/V4 完整调研前不视为论文级推荐/)).toBeInTheDocument();
     expect(screen.getAllByText("输入论文").length).toBeGreaterThan(0);
     expect(screen.getAllByText("复现结果").length).toBeGreaterThan(0);
@@ -283,6 +284,7 @@ describe("ReportPage", () => {
     renderReport();
 
     expect(await screen.findByText("调研结论")).toBeInTheDocument();
+    expect(document.querySelectorAll(".v4-overview-brief .report-copy")).toHaveLength(4);
     expect(screen.getByText(/围绕“如何验证网络实验复现结果与论文结论的一致性？”/)).toBeInTheDocument();
     expect(screen.getByText("证据契约驱动的网络实验忠实度验证")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("当前证据未覆盖");
@@ -365,6 +367,7 @@ describe("ReportPage", () => {
     expect(alternativePanel).toHaveAttribute("aria-hidden", "true");
     expect(primaryPanel?.textContent).toContain("研究命题");
     expect(primaryPanel?.textContent).toContain("第一个可证伪实验");
+    expect(primaryPanel?.querySelectorAll(".v4-idea-definition-list dd").length).toBeGreaterThan(0);
     expect(primaryPanel?.textContent).toContain("Evidence Paper paper-0");
     expect(primaryPanel?.textContent).toContain("最相似工作");
     expect(primaryPanel?.textContent).toContain("可行性证据");
@@ -426,6 +429,7 @@ describe("ReportPage", () => {
     await user.click(screen.getByRole("button", { name: /Evidence Paper paper-0.*第 2 页/ }));
     expect(screen.getByText("外部论文证据")).toBeInTheDocument();
     expect(screen.getByText("公开访问不提供原 PDF")).toBeInTheDocument();
+    expect(screen.getByText(/公开分享只提供保存的页码/)).toHaveClass("report-copy");
     expect(screen.queryByText("secure-pdf-viewer")).not.toBeInTheDocument();
   });
 
