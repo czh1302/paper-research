@@ -1675,3 +1675,7 @@ async def test_e2b_command_output_is_bounded_inside_the_sandbox() -> None:
     assert execution.exit_code == 7
     assert execution.stdout == "bounded stdout"
     assert execution.stderr == "bounded stderr"
+
+
+def test_experiment_checkpoint_retry_is_always_thirty_seconds() -> None:
+    assert [ExperimentWorker._retry_delay(attempt) for attempt in range(8)] == [30] * 8

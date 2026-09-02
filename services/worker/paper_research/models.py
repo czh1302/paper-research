@@ -122,15 +122,74 @@ class ProblemStatement(BaseModel):
         return self
 
 
+class JointPaperClaim(BaseModel):
+    """One input paper's grounded perspective inside a joint comparison."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paper_id: str
+    claim_zh: str = Field(min_length=2, max_length=500)
+    claim_en: str = Field(min_length=3, max_length=900)
+    evidence_ids: list[str] = Field(min_length=1, max_length=12)
+
+
+class JointConceptAlignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    concept_zh: str = Field(min_length=2, max_length=160)
+    concept_en: str = Field(min_length=3, max_length=280)
+    papers: list[JointPaperClaim] = Field(min_length=2, max_length=5)
+
+
+class JointDifference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dimension_zh: str = Field(min_length=2, max_length=160)
+    dimension_en: str = Field(min_length=3, max_length=280)
+    papers: list[JointPaperClaim] = Field(min_length=2, max_length=5)
+
+
+class JointAssumption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_zh: str = Field(min_length=2, max_length=500)
+    claim_en: str = Field(min_length=3, max_length=900)
+    paper_ids: list[str] = Field(min_length=2, max_length=5)
+    evidence_ids: list[str] = Field(min_length=2, max_length=20)
+
+
 class JointProblemStatement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     paper_ids: list[str] = Field(min_length=2, max_length=5)
     common_problem_zh: str
     common_problem_en: str
-    aligned_concepts: list[dict[str, Any]]
-    differences: list[dict[str, Any]]
-    compatible_assumptions: list[str]
-    conflicting_assumptions: list[str]
+    common_problem_evidence_ids: list[str] = Field(min_length=2, max_length=20)
+    aligned_concepts: list[JointConceptAlignment] = Field(min_length=1, max_length=20)
+    differences: list[JointDifference] = Field(min_length=1, max_length=20)
+    compatible_assumptions: list[JointAssumption]
+    conflicting_assumptions: list[JointAssumption]
     formalization: str | None = None
+    formalization_evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def formalization_requires_evidence(self) -> JointProblemStatement:
+        if self.formalization and not self.formalization_evidence_ids:
+            raise ValueError("joint formalization requires evidence")
+        return self
+
+
+class IdeaInputRelationship(BaseModel):
+    """How one delivered Idea uses and changes one uploaded input paper."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paper_id: str
+    role_zh: str = Field(min_length=4, max_length=300)
+    role_en: str = Field(min_length=8, max_length=600)
+    change_zh: str = Field(min_length=4, max_length=500)
+    change_en: str = Field(min_length=8, max_length=900)
+    evidence_ids: list[str] = Field(min_length=1, max_length=12)
 
 
 class DocumentBlock(BaseModel):
@@ -781,6 +840,8 @@ class CandidatePaper(BaseModel):
     idea_keys: list[str] = Field(default_factory=list)
     relevance_score: float = Field(default=0, ge=0, le=1)
     evidence_grade: Literal["full_text", "abstract", "snippet", "metadata"] = "metadata"
+    related_input_paper_ids: list[str] = Field(default_factory=list, max_length=5)
+    bridge_relevance: bool = False
     retrieved_at: datetime = Field(default_factory=datetime.utcnow)
 
     @field_validator("url")
@@ -991,6 +1052,14 @@ class LiteratureThemeV4(BaseModel):
     paper_ids: list[str] = Field(min_length=1, max_length=12)
 
 
+class JointLandscapeCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_paper_ids: list[str] = Field(min_length=2, max_length=5)
+    profile_ids_by_input: dict[str, list[str]]
+    bridge_paper_ids: list[str] = Field(min_length=1, max_length=30)
+
+
 class LiteratureLandscape(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1002,6 +1071,7 @@ class LiteratureLandscape(BaseModel):
     source_counts: dict[str, int]
     themes: list[LiteratureThemeV4] = Field(min_length=2, max_length=8)
     profiles: list[PaperEvidenceProfile] = Field(min_length=1, max_length=31)
+    joint_coverage: JointLandscapeCoverage | None = None
 
 
 class LiteratureLandscapeDraft(BaseModel):
@@ -1014,6 +1084,8 @@ class PaperRanking(BaseModel):
     paper_id: str
     relevance: float = Field(ge=0, le=1)
     reason: str = Field(max_length=240)
+    related_input_paper_ids: list[str] = Field(default_factory=list, max_length=5)
+    bridge_relevance: bool = False
 
 
 class PaperRankingBatch(BaseModel):
@@ -1039,10 +1111,13 @@ class SubmissionIdea(BaseModel):
     mechanism_en: str = Field(min_length=30, max_length=1000)
     change_from_input_zh: str = Field(min_length=20, max_length=500)
     change_from_input_en: str = Field(min_length=30, max_length=900)
+    input_relationships: list[IdeaInputRelationship] = Field(
+        default_factory=list, max_length=5
+    )
     experiment: ExperimentPlan
     pilot_specification: PilotSpecification | None = None
-    closest_work_ids: list[str] = Field(min_length=2, max_length=10)
-    supporting_work_ids: list[str] = Field(min_length=2, max_length=10)
+    closest_work_ids: list[str] = Field(min_length=1, max_length=10)
+    supporting_work_ids: list[str] = Field(min_length=1, max_length=10)
     counterevidence_work_ids: list[str] = Field(default_factory=list, max_length=6)
     unresolved_questions_zh: list[str] = Field(default_factory=list, max_length=5)
     unresolved_questions_en: list[str] = Field(default_factory=list, max_length=5)
@@ -1081,8 +1156,8 @@ class IdeaReview(BaseModel):
     decision: Literal["recommended", "alternative", "needs_evidence", "rejected"]
     rationale_zh: str = Field(min_length=12, max_length=500)
     rationale_en: str = Field(min_length=20, max_length=900)
-    closest_work_ids: list[str] = Field(min_length=2, max_length=10)
-    supporting_work_ids: list[str] = Field(min_length=2, max_length=10)
+    closest_work_ids: list[str] = Field(min_length=1, max_length=10)
+    supporting_work_ids: list[str] = Field(min_length=1, max_length=10)
     counterevidence_work_ids: list[str] = Field(default_factory=list, max_length=6)
     missing_evidence_zh: list[str] = Field(default_factory=list, max_length=5)
     missing_evidence_en: list[str] = Field(default_factory=list, max_length=5)
@@ -1110,8 +1185,19 @@ class IdeaAttemptSummary(BaseModel):
 class IdeaComparisonBoard(BaseModel):
     idea_key: str
     input_paper_id: str
+    input_paper_ids: list[str] = Field(default_factory=list, max_length=5)
     external_paper_ids: list[str] = Field(min_length=1, max_length=10)
-    profiles: list[PaperEvidenceProfile] = Field(min_length=2, max_length=11)
+    profiles: list[PaperEvidenceProfile] = Field(min_length=2, max_length=15)
+
+    @model_validator(mode="after")
+    def populate_input_paper_ids(self) -> IdeaComparisonBoard:
+        if not self.input_paper_ids:
+            self.input_paper_ids = [self.input_paper_id]
+        if self.input_paper_id != self.input_paper_ids[0]:
+            raise ValueError("input_paper_id must be the first input_paper_ids entry")
+        if len(set(self.input_paper_ids)) != len(self.input_paper_ids):
+            raise ValueError("input_paper_ids must be unique")
+        return self
 
 
 class ReportPresentationV4(BaseModel):
@@ -1164,6 +1250,7 @@ class JobFile(BaseModel):
     original_name: str
     size_bytes: int
     sha256: str | None = None
+    position: int | None = Field(default=None, ge=1, le=5)
 
 
 class Job(BaseModel):
@@ -1189,6 +1276,14 @@ class Job(BaseModel):
             raise ValueError("single mode requires exactly one PDF")
         if self.mode == AnalysisMode.MULTI and not 2 <= count <= 5:
             raise ValueError("multi mode requires two to five PDFs")
+        positions = [item.position for item in self.files]
+        if any(position is not None for position in positions):
+            if any(position is None for position in positions):
+                raise ValueError("job file positions must either all be set or all be omitted")
+            normalized = [int(position) for position in positions if position is not None]
+            if sorted(normalized) != list(range(1, count + 1)):
+                raise ValueError("job file positions must be unique and contiguous from one")
+            self.files.sort(key=lambda item: int(item.position or 1))
         return self
 
 

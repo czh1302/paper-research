@@ -106,7 +106,8 @@ class SupabaseRepository:
         row = rows[0] if isinstance(rows, list) else rows
         files_response = await self._request(
             "GET",
-            f"/rest/v1/job_files?job_id=eq.{quote(str(row['id']))}&select=upload:uploads(*)",
+            f"/rest/v1/job_files?job_id=eq.{quote(str(row['id']))}"
+            "&select=position,upload:uploads(*)&order=position.asc",
         )
         files = [
             JobFile(
@@ -115,8 +116,11 @@ class SupabaseRepository:
                 original_name=item["upload"]["original_name"],
                 size_bytes=item["upload"]["size_bytes"],
                 sha256=item["upload"].get("sha256"),
+                position=int(item["position"]),
             )
-            for item in files_response.json()
+            for item in sorted(
+                files_response.json(), key=lambda value: int(value["position"])
+            )
         ]
         return Job(
             id=row["id"],
@@ -1147,7 +1151,7 @@ class SupabaseRepository:
         worker_id: str,
         sandbox_id: str | None,
         destroyed: bool,
-        retry_seconds: int = 300,
+        retry_seconds: int = 30,
         safe_error: str | None = None,
     ) -> dict[str, Any]:
         response = await self._request(
@@ -1182,7 +1186,7 @@ class SupabaseRepository:
         *,
         claim_token: str,
         destroyed: bool,
-        retry_seconds: int = 300,
+        retry_seconds: int = 30,
         safe_error: str | None = None,
     ) -> dict[str, Any]:
         response = await self._request(
@@ -1287,7 +1291,7 @@ class SupabaseRepository:
         worker_id: str,
         action_id: str | None = None,
         sandbox_id: str,
-        retry_seconds: int = 300,
+        retry_seconds: int = 30,
         safe_error: str | None = None,
     ) -> dict[str, Any]:
         response = await self._request(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 from collections import defaultdict, deque
@@ -14,6 +13,7 @@ from .pipeline import AnalysisPipeline, BudgetBlocked, JobCancelled
 from .security import redact
 
 LOGGER = logging.getLogger(__name__)
+_CIRCUIT_FAILURE_CATEGORIES = {"network", "model", "mineru", "database", "rate_limit"}
 
 
 class Worker:
@@ -67,22 +67,23 @@ class Worker:
         )
 
     def _retry_delay(self, job_id: str, retry_count: int, category: str) -> int:
-        schedule = (30, 120, 600, 1800, 7200)
-        base = schedule[retry_count] if retry_count < len(schedule) else 21600
-        base = min(base, self.settings.JOB_RETRY_MAX_DELAY_SECONDS)
-        digest = hashlib.sha256(f"{job_id}:{retry_count}:{category}".encode()).digest()
-        jitter = 0.8 + (int.from_bytes(digest[:2], "big") / 65535) * 0.4
-        delay = max(1, round(base * jitter))
+        # Checkpoint recovery is intentionally constant-time.  Repeated failures
+        # must not make a resumable job disappear for hours merely because its
+        # retry counter is old.  The independent circuit breaker below still
+        # protects a provider that is failing repeatedly in a short window.
+        del job_id, retry_count
+        delay = min(30, self.settings.JOB_RETRY_MAX_DELAY_SECONDS)
 
         now = time.monotonic()
-        failures = self._failure_windows[category]
-        failures.append(now)
-        while failures and failures[0] < now - 300:
-            failures.popleft()
-        if len(failures) >= 5:
-            self._circuit_open_until[category] = max(
-                self._circuit_open_until.get(category, 0), now + 600
-            )
+        if category in _CIRCUIT_FAILURE_CATEGORIES:
+            failures = self._failure_windows[category]
+            failures.append(now)
+            while failures and failures[0] < now - 300:
+                failures.popleft()
+            if len(failures) >= 5:
+                self._circuit_open_until[category] = max(
+                    self._circuit_open_until.get(category, 0), now + 600
+                )
         opened_until = self._circuit_open_until.get(category, 0)
         if opened_until > now:
             delay = max(delay, round(opened_until - now))

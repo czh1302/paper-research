@@ -195,6 +195,13 @@ export interface SubmissionIdea {
   missing_evidence_zh?: string[]; missing_evidence_en?: string[];
   lineage_id?: string | null; parent_key?: string | null; revision_number?: number;
   pilot_specification?: PilotSpecification | null;
+  input_relationships?: IdeaInputRelationship[];
+}
+export interface IdeaInputRelationship {
+  paper_id: string;
+  role_zh: string; role_en: string;
+  change_zh: string; change_en: string;
+  evidence_ids: string[];
 }
 export interface IdeaReview {
   idea_key: string; decision: SubmissionIdea["verdict"]; rationale_zh: string; rationale_en: string;
@@ -203,7 +210,7 @@ export interface IdeaReview {
   closest_work_ids?: string[]; supporting_work_ids?: string[]; counterevidence_work_ids?: string[];
   feasibility?: number; submission_value?: number; evidence_confidence?: number; collision_risk?: "low" | "medium" | "high";
 }
-export interface IdeaComparisonBoard { idea_key: string; input_paper_id: string; external_paper_ids: string[]; profiles: PaperEvidenceProfile[]; }
+export interface IdeaComparisonBoard { idea_key: string; input_paper_id: string; input_paper_ids?: string[]; external_paper_ids: string[]; profiles: PaperEvidenceProfile[]; }
 export interface ReportPresentationV4 {
   version: 4; generation_id?: string | null; headline_zh: string; headline_en: string; problem_briefs: ProblemBrief[];
   literature_landscape: LiteratureLandscape; ideas: SubmissionIdea[]; reviews: IdeaReview[]; comparison_boards: IdeaComparisonBoard[];
@@ -211,7 +218,22 @@ export interface ReportPresentationV4 {
   idea_evolution_audit?: Record<string, unknown>[];
 }
 export interface IdeaAttemptSummary { attempt: number; generated: number; grounded: number; strict_passed: number; added_candidates: number; added_full_text: number; rejection_reasons_zh: string[]; rejection_reasons_en: string[]; }
-export interface JointProblemStatement { common_problem_zh: string; common_problem_en: string; aligned_concepts: Record<string, unknown>[]; differences: Record<string, unknown>[]; compatible_assumptions: string[]; conflicting_assumptions: string[]; formalization?: string; }
+export interface JointEvidenceClaim { claim_zh: string; claim_en: string; paper_ids?: string[]; evidence_ids: string[]; }
+export interface JointConceptMapping { paper_id: string; claim_zh: string; claim_en: string; evidence_ids: string[]; }
+export interface JointAlignedConcept { concept_zh: string; concept_en: string; papers: JointConceptMapping[]; }
+export interface JointDifferenceClaim { paper_id: string; claim_zh: string; claim_en: string; evidence_ids: string[]; }
+export interface JointDifference { dimension_zh: string; dimension_en: string; papers: JointDifferenceClaim[]; }
+export interface JointProblemStatement {
+  paper_ids?: string[];
+  common_problem_zh: string; common_problem_en: string;
+  common_problem_evidence_ids?: string[];
+  aligned_concepts: (JointAlignedConcept | Record<string, unknown>)[];
+  differences: (JointDifference | Record<string, unknown>)[];
+  compatible_assumptions: (string | JointEvidenceClaim)[];
+  conflicting_assumptions: (string | JointEvidenceClaim)[];
+  formalization?: string;
+  formalization_evidence_ids?: string[];
+}
 export interface GraphNode { id: string; name: string; year?: number; }
 export interface GraphLink { source: string; target: string; }
 export interface VisualizationData { timeline: {year: number; count: number}[]; sources: {source: string; count: number}[]; opportunities: {name_zh: string; name_en: string; feasibility: number; impact: number; uncertainty: number}[]; graph: {nodes: GraphNode[]; links: GraphLink[]}; }

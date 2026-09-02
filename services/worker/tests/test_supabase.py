@@ -11,12 +11,57 @@ def test_postgres_json_removes_null_characters_and_non_finite_numbers() -> None:
         "quote": "before\x00after",
         "bboxes": [[0.0, math.nan, math.inf, 1000.0]],
     }
-
     assert _postgres_json(payload) == {
         "quote": "beforeafter",
         "bboxes": [[0.0, None, None, 1000.0]],
     }
 
+
+@pytest.mark.asyncio
+async def test_claimed_job_files_follow_database_position_not_response_order() -> None:
+    def upload(number: int) -> dict[str, object]:
+        return {
+            "id": f"upload-{number}",
+            "storage_path": f"user/upload-{number}.pdf",
+            "original_name": f"paper-{number}.pdf",
+            "size_bytes": 100,
+            "sha256": f"sha-{number}",
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/rpc/claim_next_job"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "job-1",
+                        "user_id": "user-1",
+                        "mode": "multi",
+                        "max_rounds": 1,
+                        "status": "queued",
+                    }
+                ],
+            )
+        assert request.url.path.endswith("/job_files")
+        assert request.url.params["order"] == "position.asc"
+        assert "position" in request.url.params["select"]
+        return httpx.Response(
+            200,
+            json=[
+                {"position": 2, "upload": upload(2)},
+                {"position": 1, "upload": upload(1)},
+            ],
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    repository = SupabaseRepository("https://example.test", "service-key", client=client)
+    try:
+        job = await repository.claim_next_job("worker-1", 300)
+        assert job is not None
+        assert [item.id for item in job.files] == ["upload-1", "upload-2"]
+        assert [item.position for item in job.files] == [1, 2]
+    finally:
+        await client.aclose()
 
 @pytest.mark.asyncio
 async def test_all_repository_json_requests_remove_null_characters() -> None:

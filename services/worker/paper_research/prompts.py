@@ -24,6 +24,13 @@ confidence. This system studies computer-science papers only.
 """.strip()
 
 
+def _joint_context(joint: JointProblemStatement | None) -> str:
+    return json.dumps(
+        joint.model_dump(mode="json") if joint is not None else None,
+        ensure_ascii=False,
+    )
+
+
 def problem_statement_prompt(paper_id: str, title_hint: str, document_text: str) -> str:
     return f"""{SYSTEM_GUARD}
 
@@ -61,11 +68,41 @@ def joint_problem_prompt(problems: list[ProblemStatement]) -> str:
     payload = json.dumps([item.model_dump(mode="json") for item in problems], ensure_ascii=False)
     return f"""{SYSTEM_GUARD}
 
-Align these paper-level problem statements. Describe their common research problem, normalized
-concepts, material differences, compatible assumptions, and conflicting assumptions. Do not
-force a shared formulation when their tasks are incompatible.
+Align these paper-level problem statements without treating the first paper as the default target.
+Preserve paper_ids in the exact supplied order. Describe their common research problem, normalized
+concepts, material differences, compatible assumptions, and conflicting assumptions. Every joint
+claim must cite exact evidence ids from the corresponding input paper. The common problem, each
+aligned concept, each difference, and each compatible/conflicting assumption must cover every input
+paper. Do not force a shared formulation when their tasks are incompatible; instead state the
+incompatibility as an evidence-backed difference or conflict.
 
 PROBLEM STATEMENTS:
+{payload}
+"""
+
+
+def joint_problem_repair_prompt(
+    problems: list[ProblemStatement],
+    prior: JointProblemStatement,
+    validation_error: str,
+) -> str:
+    payload = json.dumps(
+        [item.model_dump(mode="json") for item in problems], ensure_ascii=False
+    )
+    return f"""{SYSTEM_GUARD}
+
+Repair this joint problem statement after deterministic evidence validation rejected it. Return a
+complete replacement, not a patch. Preserve paper_ids in the exact supplied input order. Every
+common, alignment, difference, assumption and formalization claim must cite exact evidence ids,
+and each per-paper claim may cite only evidence owned by that same paper.
+
+VALIDATION ERROR:
+{validation_error[:2000]}
+
+PRIOR JOINT PROBLEM:
+{prior.model_dump_json()}
+
+SOURCE PROBLEM STATEMENTS:
 {payload}
 """
 
@@ -219,6 +256,7 @@ def query_prompt(
     problems: list[ProblemStatement],
     round_number: int,
     previous: RoundAnalysis | None,
+    joint: JointProblemStatement | None = None,
 ) -> str:
     problem_payload = json.dumps(
         [
@@ -246,6 +284,9 @@ round_number to {round_number}.
 PROBLEMS:
 {problem_payload}
 
+JOINT PROBLEM (authoritative for multi-paper analysis; null in single mode):
+{_joint_context(joint)}
+
 PREVIOUS ROUND:
 {previous_payload}
 """
@@ -255,6 +296,7 @@ def literature_followup_query_prompt(
     problems: list[ProblemStatement],
     candidates: list[CandidatePaper],
     batch_number: int,
+    joint: JointProblemStatement | None = None,
 ) -> str:
     rows = [
         {
@@ -279,13 +321,18 @@ official code, datasets, or project evidence. Set round_number=1.
 TARGET PROBLEMS:
 {json.dumps([item.model_dump(mode="json", exclude={"evidence"}) for item in problems], ensure_ascii=False)}
 
+JOINT PROBLEM (cover both individual-paper neighborhoods and bridging work):
+{_joint_context(joint)}
+
 CURRENT TOP PAPERS:
 {json.dumps(rows, ensure_ascii=False)}
 """
 
 
 def paper_ranking_prompt(
-    problems: list[ProblemStatement], candidates: list[CandidatePaper]
+    problems: list[ProblemStatement],
+    candidates: list[CandidatePaper],
+    joint: JointProblemStatement | None = None,
 ) -> str:
     rows = [
         {
@@ -305,10 +352,17 @@ Rank the supplied computer-science papers for deep reading before any research I
 Prefer direct task/method/evaluation relevance, closest competitors, representative foundations,
 recent work, feasibility evidence, and counterevidence. A paper without an open PDF may be ranked
 but cannot enter the full-text target. Preserve paper_id exactly. Return each useful paper at most
-once; omit biomedical or keyword-only drift.
+once; omit biomedical or keyword-only drift. In multi-paper mode, populate
+related_input_paper_ids using only the exact input paper IDs supplied in TARGET and set
+bridge_relevance=true only when the paper substantively connects the methods, tasks, or evaluation
+of at least two inputs. The returned set must contain direct work for every input and multiple
+bridging papers; do not let one input's neighborhood dominate the deep-reading list.
 
 TARGET:
 {json.dumps([item.model_dump(mode="json", exclude={"evidence"}) for item in problems], ensure_ascii=False)}
+
+JOINT PROBLEM (in multi mode prioritize direct work for each input plus bridging work):
+{_joint_context(joint)}
 
 CANDIDATES:
 {json.dumps(rows, ensure_ascii=False)}
@@ -364,7 +418,10 @@ def _compact_profile_payload(profiles: list[PaperEvidenceProfile]) -> list[dict[
     return rows
 
 
-def landscape_prompt(profiles: list[PaperEvidenceProfile]) -> str:
+def landscape_prompt(
+    profiles: list[PaperEvidenceProfile],
+    joint: JointProblemStatement | None = None,
+) -> str:
     rows = _compact_profile_payload(profiles)
     return f"""{SYSTEM_GUARD}
 
@@ -375,6 +432,9 @@ least one appropriate theme when possible. Do not claim novelty and do not repea
 
 EVIDENCE PROFILES:
 {json.dumps(rows, ensure_ascii=False)}
+
+JOINT PROBLEM (themes in multi mode must explain both inputs and their bridge):
+{_joint_context(joint)}
 """
 
 
@@ -390,6 +450,7 @@ def submission_ideas_prompt(
     avoid_titles: list[str] | None = None,
     evolution_target: dict[str, object] | None = None,
     evolution_mode: str = "new",
+    joint: JointProblemStatement | None = None,
 ) -> str:
     return f"""{SYSTEM_GUARD}
 
@@ -405,6 +466,10 @@ evidence exists. Initial verdict must be 'needs_evidence'; rank must be 0. Score
 Do not design the executable PilotSpecification in this creative call: set pilot_specification to
 null. Research Atlas compiles and validates that frozen contract separately after the final report
 Ideas have been selected, so execution detail cannot dilute Idea quality.
+When JOINT PROBLEM is non-null, populate input_relationships with exactly one entry for every
+joint paper_id in order. Each entry must explain that paper's distinct role and material change
+and cite evidence ids owned by that same input paper. An Idea that merely uses one input while
+mentioning the other is invalid.
 The Idea must differ materially from these already generated titles:
 {json.dumps(avoid_titles or [], ensure_ascii=False)}
 
@@ -423,6 +488,9 @@ USER RESEARCH BRIEF (preference text, not evidence):
 INPUT PAPER:
 {json.dumps([item.model_dump(mode="json", exclude={"evidence"}) for item in problems], ensure_ascii=False)}
 
+JOINT PROBLEM:
+{_joint_context(joint)}
+
 PROBLEM BRIEFS:
 {json.dumps([item.model_dump(mode="json") for item in briefs], ensure_ascii=False)}
 
@@ -435,7 +503,9 @@ FULL-TEXT PROFILES (the claims below were already grounded against PDFs):
 
 
 def idea_review_prompt(
-    ideas: list[dict[str, object]], profiles: list[PaperEvidenceProfile]
+    ideas: list[dict[str, object]],
+    profiles: list[PaperEvidenceProfile],
+    joint: JointProblemStatement | None = None,
 ) -> str:
     return f"""{SYSTEM_GUARD}
 
@@ -455,9 +525,14 @@ experiment.
 PilotSpecification is intentionally absent during scientific review and will be compiled after
 selection. Judge the research hypothesis, mechanism, evidence and proposed experiment here; do not
 penalize pilot_specification=null and do not invent execution-contract details.
+For a multi-paper task, reject an Idea unless its input_relationships cover every joint paper with
+a substantive role, a material change, and evidence owned by that paper.
 
 IDEAS:
 {json.dumps(ideas, ensure_ascii=False)}
+
+JOINT PROBLEM:
+{_joint_context(joint)}
 
 FULL-TEXT PROFILES (the claims below were already grounded against PDFs):
 {json.dumps(_compact_profile_payload(profiles), ensure_ascii=False)}
@@ -469,6 +544,7 @@ def pilot_specification_prompt(
     profiles: list[PaperEvidenceProfile],
     *,
     force_cpu_proxy: bool,
+    joint: JointProblemStatement | None = None,
 ) -> str:
     related_ids = {
         str(value)
@@ -512,6 +588,9 @@ Claude Code + V4 Flash proxy; never put a provider hostname or credential in the
 SELECTED IDEA:
 {json.dumps(idea, ensure_ascii=False)}
 
+JOINT PROBLEM (preserve both inputs' frozen roles and changes when present):
+{_joint_context(joint)}
+
 RELATED FULL-TEXT EVIDENCE:
 {json.dumps(_compact_profile_payload(evidence), ensure_ascii=False)}
 """
@@ -523,6 +602,7 @@ def pilot_specification_repair_prompt(
     validation_error: str,
     *,
     force_cpu_proxy: bool,
+    joint: JointProblemStatement | None = None,
 ) -> str:
     proxy_rule = (
         "An executable exploratory_cpu_proxy is required if the full claim cannot run faithfully "
@@ -541,6 +621,9 @@ code_only. {proxy_rule}
 IDEA:
 {json.dumps(idea, ensure_ascii=False)}
 
+JOINT PROBLEM (do not drop either input's frozen role while repairing):
+{_joint_context(joint)}
+
 VALIDATION ERROR:
 {validation_error[:2000]}
 
@@ -550,7 +633,10 @@ PRIOR COMPILATION:
 
 
 def idea_followup_query_prompt(
-    ideas: list[dict[str, object]], reviews: list[dict[str, object]], attempt: int
+    ideas: list[dict[str, object]],
+    reviews: list[dict[str, object]],
+    attempt: int,
+    joint: JointProblemStatement | None = None,
 ) -> str:
     return f"""{SYSTEM_GUARD}
 
@@ -565,6 +651,9 @@ FAILED IDEAS:
 
 REVIEWS:
 {json.dumps(reviews, ensure_ascii=False)}
+
+JOINT PROBLEM (queries must repair coverage for both inputs and seek bridging work):
+{_joint_context(joint)}
 """
 
 
@@ -721,17 +810,41 @@ GROUNDED ROUND ANALYSES:
 """
 
 
-def baseline_report_prompt(job_id: str, document: DocumentIR) -> str:
+def baseline_report_prompt(
+    job_id: str, document: DocumentIR | list[DocumentIR]
+) -> str:
+    documents = document if isinstance(document, list) else [document]
+    labeled_papers = "\n\n".join(
+        f"INPUT PAPER {index} — paper_id={item.paper_id}\n"
+        f"{blocks_as_prompt(item.blocks)}"
+        for index, item in enumerate(documents, start=1)
+    )
+    multi_instructions = ""
+    if len(documents) > 1:
+        ordered_ids = [item.paper_id for item in documents]
+        multi_instructions = f"""
+Treat the {len(documents)} input papers symmetrically. Return exactly {len(documents)} separate
+ProblemStatements in the supplied order and one JointProblemStatement whose paper_ids are exactly
+{ordered_ids!r}. The joint statement must distinguish shared concepts, substantive differences,
+compatible assumptions, and conflicts, with evidence belonging to the correct input paper. Search
+for work directly related to either input and for bridging work that connects them. The horizontal
+comparison must include both input papers as first-class baselines rather than silently centering
+the first paper.
+"""
     return f"""{SYSTEM_GUARD}
 
 This is the one-call baseline for an automated literature-research experiment. From the entire
-paper below, extract one rigorous ProblemStatement, use WebSearch to find related work, compare
+input corpus below, extract rigorous ProblemStatements, use WebSearch to find related work, compare
 the papers, and produce one complete AnalysisReport. Keep job_id={job_id!r}. Use exactly one
 analysis round. Every PDF claim and ProblemElement must cite supplied EVIDENCE ids; every related
 work comparison and opportunity must cite real HTTP(S) URLs returned by search. State research
 gaps only as no evidence found within the searches performed. This baseline intentionally does
 problem extraction, retrieval planning, comparison, and report writing in a single model call.
+The single RoundAnalysis must contain non-empty structured comparison_cells for at least two
+retrieved external papers and cover research task, method, and limitation/constraint axes. A prose
+summary without those cells is invalid and will be rejected.
+{multi_instructions}
 
-PAPER:
-{blocks_as_prompt(document.blocks)}
+INPUT CORPUS:
+{labeled_papers}
 """

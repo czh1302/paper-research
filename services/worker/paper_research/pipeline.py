@@ -44,6 +44,7 @@ from .models import (
     IdeaReviewBatch,
     Job,
     JobStatus,
+    JointLandscapeCoverage,
     JointProblemStatement,
     LiteratureLandscape,
     LiteratureLandscapeDraft,
@@ -79,6 +80,7 @@ from .prompts import (
     idea_query_plan_prompt,
     idea_review_prompt,
     joint_problem_prompt,
+    joint_problem_repair_prompt,
     landscape_prompt,
     literature_followup_query_prompt,
     merge_problem_prompt,
@@ -107,6 +109,7 @@ PRO_LLM_STAGES = frozenset(
     {
         "baseline_problem_and_report",
         "joint_problem_statement",
+        "joint_problem_statement_repair",
         "problem_brief_draft",
         "problem_brief_review",
         "problem_statement_fragment",
@@ -915,6 +918,132 @@ def ground_problem(problem: ProblemStatement, blocks: list[DocumentBlock]) -> Pr
     return problem.model_copy(update=updates)
 
 
+def validate_joint_problem_statement(
+    joint: JointProblemStatement, problems: list[ProblemStatement]
+) -> JointProblemStatement:
+    """Reject cross-paper or incomplete grounding in a newly generated joint problem."""
+
+    expected_ids = [problem.paper_id for problem in problems]
+    if len(expected_ids) < 2 or len(set(expected_ids)) != len(expected_ids):
+        raise ValueError("Joint analysis requires distinct input paper IDs")
+    if joint.paper_ids != expected_ids:
+        raise ValueError(
+            "Joint problem paper_ids must exactly match the ordered inputs: "
+            f"expected={expected_ids!r}, got={joint.paper_ids!r}"
+        )
+
+    evidence_owner: dict[str, str] = {}
+    for problem in problems:
+        for evidence in problem.evidence:
+            previous_owner = evidence_owner.setdefault(evidence.id, problem.paper_id)
+            if previous_owner != problem.paper_id:
+                raise ValueError(
+                    f"Evidence ID {evidence.id!r} is ambiguous across input papers"
+                )
+
+    expected_set = set(expected_ids)
+
+    def validate_evidence(
+        evidence_ids: list[str], required_papers: set[str], context: str
+    ) -> None:
+        unique_ids = list(dict.fromkeys(evidence_ids))
+        if len(unique_ids) != len(evidence_ids):
+            raise ValueError(f"{context} contains duplicate evidence IDs")
+        unknown = [value for value in unique_ids if value not in evidence_owner]
+        if unknown:
+            raise ValueError(f"{context} cites unknown evidence IDs: {unknown[:10]!r}")
+        covered = {evidence_owner[value] for value in unique_ids}
+        if not required_papers <= covered:
+            missing = sorted(required_papers - covered)
+            raise ValueError(f"{context} lacks evidence from papers: {missing!r}")
+
+    validate_evidence(
+        joint.common_problem_evidence_ids,
+        expected_set,
+        "joint common problem",
+    )
+    for index, item in enumerate(joint.aligned_concepts):
+        if [value.paper_id for value in item.papers] != expected_ids:
+            raise ValueError(
+                f"aligned concept {index} must contain every input in order"
+            )
+        for claim in item.papers:
+            validate_evidence(
+                claim.evidence_ids,
+                {claim.paper_id},
+                f"aligned concept {index}/{claim.paper_id}",
+            )
+            if any(evidence_owner[value] != claim.paper_id for value in claim.evidence_ids):
+                raise ValueError(
+                    f"aligned concept {index} cites another paper's evidence"
+                )
+    for index, item in enumerate(joint.differences):
+        if [value.paper_id for value in item.papers] != expected_ids:
+            raise ValueError(f"difference {index} must contain every input in order")
+        for claim in item.papers:
+            validate_evidence(
+                claim.evidence_ids,
+                {claim.paper_id},
+                f"difference {index}/{claim.paper_id}",
+            )
+            if any(evidence_owner[value] != claim.paper_id for value in claim.evidence_ids):
+                raise ValueError(f"difference {index} cites another paper's evidence")
+    for group_name, assumptions in (
+        ("compatible assumption", joint.compatible_assumptions),
+        ("conflicting assumption", joint.conflicting_assumptions),
+    ):
+        for index, item in enumerate(assumptions):
+            if item.paper_ids != expected_ids:
+                raise ValueError(
+                    f"{group_name} {index} must contain every input in order"
+                )
+            validate_evidence(
+                item.evidence_ids,
+                expected_set,
+                f"{group_name} {index}",
+            )
+    if joint.formalization:
+        validate_evidence(
+            joint.formalization_evidence_ids,
+            expected_set,
+            "joint formalization",
+        )
+    return joint
+
+
+def idea_input_relationships_are_grounded(
+    idea: SubmissionIdea, input_profiles: list[PaperEvidenceProfile]
+) -> bool:
+    """Require one evidence-backed, same-paper relationship per multi input."""
+
+    if len(input_profiles) <= 1:
+        return True
+    expected_ids = [profile.paper_id for profile in input_profiles]
+    if [item.paper_id for item in idea.input_relationships] != expected_ids:
+        return False
+    evidence_by_paper = {
+        profile.paper_id: {
+            locator.id
+            for field_name in (
+                "task",
+                "input_or_data",
+                "method",
+                "output_or_evaluation",
+                "constraints",
+                "limitations",
+            )
+            for locator in getattr(profile, field_name).evidence
+        }
+        for profile in input_profiles
+    }
+    return all(
+        bool(relationship.evidence_ids)
+        and len(set(relationship.evidence_ids)) == len(relationship.evidence_ids)
+        and set(relationship.evidence_ids) <= evidence_by_paper[relationship.paper_id]
+        for relationship in idea.input_relationships
+    )
+
+
 def _problem_evidence_types(problem: ProblemStatement) -> dict[str, str]:
     result: dict[str, str] = {}
     for item in problem.inputs:
@@ -1177,7 +1306,9 @@ def finalize_v4_ideas(
     profile_map = {
         item.paper_id: item for item in profiles if item.role == "external"
     }
-    input_profile = next(item for item in profiles if item.role == "input")
+    input_profiles = [item for item in profiles if item.role == "input"]
+    if not input_profiles:
+        raise ValueError("V4 Idea finalization requires an input-paper profile")
     draft_map = {item.key: item for item in drafts}
     final_reviews: list[IdeaReview] = []
     eligible: list[SubmissionIdea] = []
@@ -1192,11 +1323,14 @@ def finalize_v4_ideas(
         relaxed = qualification_tier == "relaxed"
         exploratory = qualification_tier == "exploratory"
         grounded_structure = (
-            len(evidence_ids) >= 6
-            and len(closest) >= 2
-            and len(supporting) >= 2
+            len(evidence_ids) >= (2 if exploratory else 6)
+            and len(closest) >= (1 if exploratory else 2)
+            and len(supporting) >= (1 if exploratory else 2)
         )
-        passes = grounded_structure and (
+        joint_input_grounded = idea_input_relationships_are_grounded(
+            draft, input_profiles
+        )
+        passes = grounded_structure and joint_input_grounded and (
             exploratory
             or (
                 review.decision != "rejected"
@@ -1265,9 +1399,10 @@ def finalize_v4_ideas(
         boards.append(
             IdeaComparisonBoard(
                 idea_key=selected_item.key,
-                input_paper_id=input_profile.paper_id,
+                input_paper_id=input_profiles[0].paper_id,
+                input_paper_ids=[value.paper_id for value in input_profiles],
                 external_paper_ids=paper_ids,
-                profiles=[input_profile] + [profile_map[value] for value in paper_ids],
+                profiles=input_profiles + [profile_map[value] for value in paper_ids],
             )
         )
     selected_keys = {item.key for item in selected}
@@ -1494,6 +1629,27 @@ def idea_is_semantic_duplicate(
     )
 
 
+def joint_problem_evidence_ids(joint: JointProblemStatement | None) -> set[str]:
+    """Collect every input-PDF citation needed to render a joint problem."""
+
+    if joint is None:
+        return set()
+    evidence_ids = set(joint.common_problem_evidence_ids)
+    evidence_ids.update(joint.formalization_evidence_ids)
+    for alignment in joint.aligned_concepts:
+        for claim in alignment.papers:
+            evidence_ids.update(claim.evidence_ids)
+    for difference in joint.differences:
+        for claim in difference.papers:
+            evidence_ids.update(claim.evidence_ids)
+    for assumption in (
+        *joint.compatible_assumptions,
+        *joint.conflicting_assumptions,
+    ):
+        evidence_ids.update(assumption.evidence_ids)
+    return evidence_ids
+
+
 def report_summary(report: AnalysisReport) -> dict[str, Any]:
     selected_ids: set[str] = set()
     payload = report.model_dump(mode="json")
@@ -1571,6 +1727,12 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
                 + [value for item in brief.constraints for value in item.evidence_ids]
             )
         }
+        # The overview renders the joint problem before the full report section is
+        # fetched. Keep all of its cited input evidence in this compact manifest so
+        # those citations can still resolve to the correct PDF/page/bbox.
+        brief_evidence_ids.update(
+            joint_problem_evidence_ids(report.joint_problem_statement)
+        )
         compact_problems: list[dict[str, Any]] = []
         for problem in payload["problem_statements"]:
             evidence_rows = [
@@ -1882,6 +2044,7 @@ class AnalysisPipeline:
                 stage="problem_statement_fragment",
                 route="pro",
             )
+            fragment = fragment.model_copy(update={"paper_id": document.paper_id})
             fragments.append(ground_problem(fragment, blocks))
         if not fragments:
             raise ValueError(f"No readable blocks in {document.title}")
@@ -1893,6 +2056,7 @@ class AnalysisPipeline:
             stage="problem_statement_merge",
             route="pro",
         )
+        merged = merged.model_copy(update={"paper_id": document.paper_id})
         return ground_problem(merged, document.blocks)
 
     async def extract_problem_brief(self, problem: ProblemStatement) -> ProblemBrief:
@@ -2273,6 +2437,7 @@ class AnalysisPipeline:
         problems: list[ProblemStatement],
         deadline: float,
         *,
+        joint: JointProblemStatement | None = None,
         persist: bool,
     ) -> tuple[list[CandidatePaper], list[dict[str, object]], list[QueryBundle]]:
         all_candidates: list[CandidatePaper] = []
@@ -2293,14 +2458,14 @@ class AnalysisPipeline:
             )
             if batch_number == 1:
                 bundle = await self._call_llm(
-                    query_prompt(problems, 1, None),
+                    query_prompt(problems, 1, None, joint),
                     QueryBundle,
                     stage="v4_initial_retrieval_query",
                 )
             else:
                 bundle = await self._call_llm(
                     literature_followup_query_prompt(
-                        problems, all_candidates, batch_number
+                        problems, all_candidates, batch_number, joint
                     ),
                     QueryBundle,
                     stage="v4_landscape_followup_query",
@@ -2381,6 +2546,7 @@ class AnalysisPipeline:
         self,
         problems: list[ProblemStatement],
         candidates: list[CandidatePaper],
+        joint: JointProblemStatement | None = None,
     ) -> list[CandidatePaper]:
         eligible = [
             item
@@ -2398,24 +2564,92 @@ class AnalysisPipeline:
         if not eligible:
             return []
         batch = await self._call_llm(
-            paper_ranking_prompt(problems, eligible),
+            paper_ranking_prompt(problems, eligible, joint),
             PaperRankingBatch,
             stage="v4_full_text_ranking",
         )
-        scores = {
-            item.paper_id: item.relevance
+        eligible_ids = {paper.canonical_id for paper in eligible}
+        rankings = {
+            item.paper_id: item
             for item in batch.rankings
-            if item.paper_id in {paper.canonical_id for paper in eligible}
+            if item.paper_id in eligible_ids
         }
-        return sorted(
-            eligible,
+        expected_input_ids = [item.paper_id for item in problems]
+        annotated = [
+            paper.model_copy(
+                update={
+                    "related_input_paper_ids": [
+                        paper_id
+                        for paper_id in dict.fromkeys(
+                            rankings.get(paper.canonical_id).related_input_paper_ids
+                            if rankings.get(paper.canonical_id)
+                            else []
+                        )
+                        if paper_id in expected_input_ids
+                    ],
+                    "bridge_relevance": bool(
+                        rankings.get(paper.canonical_id)
+                        and rankings[paper.canonical_id].bridge_relevance
+                    ),
+                }
+            )
+            for paper in eligible
+        ]
+        ranked = sorted(
+            annotated,
             key=lambda item: (
-                scores.get(item.canonical_id, 0),
+                rankings.get(item.canonical_id).relevance
+                if rankings.get(item.canonical_id)
+                else 0,
                 item.relevance_score,
                 item.citation_count or 0,
             ),
             reverse=True,
         )
+        if joint is None or len(expected_input_ids) < 2:
+            return ranked
+
+        missing_inputs = [
+            paper_id
+            for paper_id in expected_input_ids
+            if not any(paper_id in item.related_input_paper_ids for item in ranked)
+        ]
+        if missing_inputs or not any(item.bridge_relevance for item in ranked):
+            raise ValueError(
+                "Joint full-text ranking must cover every input and at least one bridge: "
+                f"missing_inputs={missing_inputs!r}"
+            )
+
+        buckets = [
+            [item for item in ranked if item.bridge_relevance],
+            *[
+                [
+                    item
+                    for item in ranked
+                    if paper_id in item.related_input_paper_ids
+                ]
+                for paper_id in expected_input_ids
+            ],
+        ]
+        balanced: list[CandidatePaper] = []
+        selected_ids: set[str] = set()
+        while True:
+            added = False
+            for bucket in buckets:
+                while bucket and bucket[0].canonical_id in selected_ids:
+                    bucket.pop(0)
+                if not bucket:
+                    continue
+                paper = bucket.pop(0)
+                balanced.append(paper)
+                selected_ids.add(paper.canonical_id)
+                added = True
+            if not added:
+                break
+        balanced.extend(
+            item for item in ranked if item.canonical_id not in selected_ids
+        )
+        return balanced
 
     async def _v4_external_profiles(
         self,
@@ -2567,6 +2801,7 @@ class AnalysisPipeline:
         job: Job,
         problems: list[ProblemStatement],
         briefs: list[ProblemBrief],
+        joint: JointProblemStatement | None,
         workspace: Path,
         pipeline_checkpoint: dict[str, Any],
         stored_candidates: list[CandidatePaper],
@@ -2627,7 +2862,7 @@ class AnalysisPipeline:
             )
         else:
             candidates, audit, bundles = await self._v4_retrieve_landscape(
-                job, problems, deadline, persist=persist
+                job, problems, deadline, joint=joint, persist=persist
             )
             await save_v4_checkpoint(
                 retrieval_complete=True,
@@ -2648,7 +2883,12 @@ class AnalysisPipeline:
                 PaperEvidenceProfile.model_validate(item)
                 for item in await self.repository.load_external_profiles(job.id)
             ]
-        if v4_checkpoint.get("landscape") and len(cached_profiles) >= minimum_full_text:
+        landscape_checkpoint = v4_checkpoint.get("landscape")
+        reusable_joint_landscape = joint is None or bool(
+            isinstance(landscape_checkpoint, dict)
+            and landscape_checkpoint.get("joint_coverage")
+        )
+        if landscape_checkpoint and len(cached_profiles) >= minimum_full_text and reusable_joint_landscape:
             resume_target = v4_resume_full_text_target(
                 v4_checkpoint, self.settings.V4_FULL_TEXT_TARGET
             )
@@ -2665,17 +2905,68 @@ class AnalysisPipeline:
                 f"Reused research landscape and {len(external_profiles)} full-text profiles",
             )
         else:
+            ranking_checkpoint = v4_checkpoint.get("full_text_ranking")
+            candidate_by_id = {item.canonical_id: item for item in candidates}
+            ranked: list[CandidatePaper] = []
+            if isinstance(ranking_checkpoint, list) and ranking_checkpoint:
+                for row in ranking_checkpoint:
+                    if not isinstance(row, dict):
+                        continue
+                    paper = candidate_by_id.get(str(row.get("paper_id") or ""))
+                    if paper is None:
+                        continue
+                    ranked.append(
+                        paper.model_copy(
+                            update={
+                                "related_input_paper_ids": list(
+                                    row.get("related_input_paper_ids") or []
+                                ),
+                                "bridge_relevance": bool(
+                                    row.get("bridge_relevance", False)
+                                ),
+                            }
+                        )
+                    )
+                await self._event(
+                    job.id,
+                    "resumed",
+                    f"Reused {len(ranked)} checkpointed full-text rankings",
+                )
+            if not ranked:
+                ranked = await self._v4_rank_full_text(problems, candidates, joint)
+                await save_v4_checkpoint(
+                    full_text_ranking=[
+                        {
+                            "paper_id": item.canonical_id,
+                            "related_input_paper_ids": item.related_input_paper_ids,
+                            "bridge_relevance": item.bridge_relevance,
+                        }
+                        for item in ranked
+                    ]
+                )
+            screened_count = len(ranked)
             if len(cached_profiles) >= self.settings.V4_FULL_TEXT_TARGET:
-                external_profiles = cached_profiles[: self.settings.V4_FULL_TEXT_TARGET]
-                screened_count = len(cached_profiles)
+                cached_by_id = {item.paper_id: item for item in cached_profiles}
+                external_profiles = [
+                    cached_by_id[item.canonical_id]
+                    for item in ranked
+                    if item.canonical_id in cached_by_id
+                ]
+                selected_profile_ids = {item.paper_id for item in external_profiles}
+                external_profiles.extend(
+                    item
+                    for item in cached_profiles
+                    if item.paper_id not in selected_profile_ids
+                )
+                external_profiles = external_profiles[
+                    : self.settings.V4_FULL_TEXT_TARGET
+                ]
                 await self._event(
                     job.id,
                     "resumed",
                     f"Reused all {len(external_profiles)} checkpointed full-text profiles",
                 )
             else:
-                ranked = await self._v4_rank_full_text(problems, candidates)
-                screened_count = len(ranked)
                 external_profiles = await self._v4_external_profiles(
                     job, ranked, workspace, deadline, persist=persist
                 )
@@ -2686,6 +2977,42 @@ class AnalysisPipeline:
                     f"built {len(external_profiles)} complete profiles, "
                     f"requires {minimum_full_text}"
                 )
+            joint_coverage = None
+            if joint is not None:
+                ranked_by_id = {item.canonical_id: item for item in ranked}
+                input_ids = [item.paper_id for item in problems]
+                profile_ids_by_input = {
+                    paper_id: [
+                        profile.paper_id
+                        for profile in external_profiles
+                        if ranked_by_id.get(profile.paper_id) is not None
+                        and paper_id
+                        in ranked_by_id[profile.paper_id].related_input_paper_ids
+                    ]
+                    for paper_id in input_ids
+                }
+                bridge_paper_ids = [
+                    profile.paper_id
+                    for profile in external_profiles
+                    if ranked_by_id.get(profile.paper_id)
+                    and ranked_by_id[profile.paper_id].bridge_relevance
+                ]
+                missing_inputs = [
+                    paper_id
+                    for paper_id, profile_ids in profile_ids_by_input.items()
+                    if not profile_ids
+                ]
+                if missing_inputs or not bridge_paper_ids:
+                    raise ValueError(
+                        "Joint full-text profiles are not balanced across both inputs and "
+                        f"bridging work: missing_inputs={missing_inputs!r}, "
+                        f"bridge_count={len(bridge_paper_ids)}"
+                    )
+                joint_coverage = JointLandscapeCoverage(
+                    input_paper_ids=input_ids,
+                    profile_ids_by_input=profile_ids_by_input,
+                    bridge_paper_ids=bridge_paper_ids,
+                )
             await self._update(job.id, JobStatus.ANALYZING, "v4_landscape", 72)
             await self._event(
                 job.id,
@@ -2693,7 +3020,7 @@ class AnalysisPipeline:
                 f"Synthesizing research landscape from {len(external_profiles)} full-text papers",
             )
             landscape_draft = await self._call_llm(
-                landscape_prompt(profiles),
+                landscape_prompt(profiles, joint),
                 LiteratureLandscapeDraft,
                 stage="v4_landscape_synthesis",
             )
@@ -2722,6 +3049,7 @@ class AnalysisPipeline:
                 source_counts=source_coverage(candidates),
                 themes=themes,
                 profiles=profiles,
+                joint_coverage=joint_coverage,
             )
             await save_v4_checkpoint(
                 landscape=landscape.model_dump(mode="json", exclude={"profiles"})
@@ -2897,6 +3225,7 @@ class AnalysisPipeline:
                                 else None
                             ),
                             evolution_mode=evolution_mode,
+                            joint=joint,
                         ),
                         SubmissionIdeaSingleBatch,
                         stage="v4_idea_generation",
@@ -2956,6 +3285,11 @@ class AnalysisPipeline:
                             for value in dict.fromkeys(values[name])
                             if value in profile_ids
                         ]
+                    # Keep structurally grounded candidates available for
+                    # review and eventual exploratory delivery. Strict and
+                    # conditional publication still enforce the 6/2/2 gate
+                    # inside finalize_v4_ideas(); this earlier filter must not
+                    # erase an otherwise executable 2/1/1 proposal.
                     if (
                         len(
                             set(
@@ -2963,9 +3297,9 @@ class AnalysisPipeline:
                                 + values["supporting_work_ids"]
                             )
                         )
-                        >= 6
-                        and len(values["closest_work_ids"]) >= 2
-                        and len(values["supporting_work_ids"]) >= 2
+                        >= 2
+                        and len(values["closest_work_ids"]) >= 1
+                        and len(values["supporting_work_ids"]) >= 1
                     ):
                         grounded_drafts.append(SubmissionIdea.model_validate(values))
                 attempt_checkpoint.update(
@@ -2985,7 +3319,9 @@ class AnalysisPipeline:
                         rejection_reasons_en=["Candidates did not bind enough full-text evidence"],
                     )
                 )
-                rejected_context.append("All candidates lacked six grounded full-text papers.")
+                rejected_context.append(
+                    "All candidates lacked the minimum grounded closest and supporting work."
+                )
                 continue
 
             if idea_review_checkpoint_is_current(attempt_checkpoint):
@@ -3005,6 +3341,7 @@ class AnalysisPipeline:
                     idea_review_prompt(
                         [item.model_dump(mode="json") for item in grounded_drafts],
                         profiles,
+                        joint,
                     ),
                     IdeaReviewBatch,
                     stage="v4_idea_review",
@@ -3178,6 +3515,7 @@ class AnalysisPipeline:
                         followup_drafts,
                         followup_reviews,
                         attempt + 1,
+                        joint,
                     ),
                     QueryBundle,
                     stage="v4_idea_followup_query",
@@ -3213,7 +3551,7 @@ class AnalysisPipeline:
                 {"idea_attempt": attempt + 1, **item} for item in new_audit
             )
             old_profile_count = len(external_profiles)
-            ranked = await self._v4_rank_full_text(problems, candidates)
+            ranked = await self._v4_rank_full_text(problems, candidates, joint)
             external_profiles = await self._v4_external_profiles(
                 job,
                 ranked,
@@ -3234,7 +3572,7 @@ class AnalysisPipeline:
             )
             try:
                 landscape_draft = await self._call_llm(
-                    landscape_prompt(profiles),
+                    landscape_prompt(profiles, joint),
                     LiteratureLandscapeDraft,
                     stage="v4_landscape_refresh",
                 )
@@ -3363,12 +3701,14 @@ class AnalysisPipeline:
                             prior,
                             validation_error,
                             force_cpu_proxy=self.settings.EXPERIMENT_FORCE_CPU_PROXY,
+                            joint=joint,
                         )
                         if prior
                         else pilot_specification_prompt(
                             idea.model_dump(mode="json", exclude={"pilot_specification"}),
                             profiles,
                             force_cpu_proxy=self.settings.EXPERIMENT_FORCE_CPU_PROXY,
+                            joint=joint,
                         )
                     )
                     compilation = await self._call_llm(
@@ -3413,8 +3753,12 @@ class AnalysisPipeline:
                     idea.model_copy(update={"pilot_specification": specification})
                 )
             selected = compiled
-        headline_zh = briefs[0].research_question_zh
-        headline_en = briefs[0].research_question_en
+        headline_zh = (
+            joint.common_problem_zh if joint is not None else briefs[0].research_question_zh
+        )
+        headline_en = (
+            joint.common_problem_en if joint is not None else briefs[0].research_question_en
+        )
         frozen_profile_ids = set(delivery_profile_ids)
         delivery_landscape = LiteratureLandscape.model_validate(
             {
@@ -3473,16 +3817,22 @@ class AnalysisPipeline:
             LOGGER.warning("DeepSeek WebSearch unavailable: %s", error)
             return WebDiscovery(warnings=[f"DeepSeek WebSearch unavailable: {error}"])
 
-    async def analyze_baseline(self, job: Job, file_path: Path) -> AnalysisReport:
-        """Run the intentionally one-call whole-paper baseline used only by benchmark evaluation."""
-        if len(job.files) != 1:
-            raise ValueError("The one-call baseline accepts exactly one PDF")
+    async def analyze_baseline(
+        self, job: Job, file_path: Path | list[Path]
+    ) -> AnalysisReport:
+        """Run the one-call baseline over one or more fully parsed input papers."""
+        file_paths = [file_path] if isinstance(file_path, Path) else list(file_path)
+        if not file_paths or len(job.files) != len(file_paths):
+            raise ValueError("The one-call baseline requires one path per job input")
         self._active_job_id = job.id
         artifact_root = self.settings.ARTIFACT_ROOT.resolve()
         artifact_root.mkdir(parents=True, exist_ok=True)
         workspace_path = Path(tempfile.mkdtemp(prefix=f"baseline-{job.id[:8]}-", dir=artifact_root))
         try:
-            paper_id = job.files[0].sha256 or hashlib.sha256(file_path.read_bytes()).hexdigest()
+            paper_ids = [
+                job_file.sha256 or hashlib.sha256(path.read_bytes()).hexdigest()
+                for job_file, path in zip(job.files, file_paths, strict=True)
+            ]
             checkpoint: dict[str, Any] = {}
             if self.repository and hasattr(self.repository, "load_pipeline_checkpoint"):
                 checkpoint = await self.repository.load_pipeline_checkpoint(job.id)
@@ -3492,38 +3842,104 @@ class AnalysisPipeline:
             if isinstance(cached_report, dict):
                 return AnalysisReport.model_validate(cached_report)
 
-            cached_document = baseline_checkpoint.get("document")
-            if isinstance(cached_document, dict):
-                document = DocumentIR.model_validate(cached_document)
-            else:
-                document = await self.parse_document(
-                    file_path, paper_id, job.files[0].original_name, workspace_path
-                )
-                baseline_checkpoint["document"] = document.model_dump(mode="json")
+            cached_documents = dict(baseline_checkpoint.get("documents") or {})
+            # Read legacy single-paper checkpoints without invalidating paid work.
+            if len(job.files) == 1 and isinstance(baseline_checkpoint.get("document"), dict):
+                cached_documents.setdefault(paper_ids[0], baseline_checkpoint["document"])
+            documents: list[DocumentIR] = []
+            for job_file, path, paper_id in zip(
+                job.files, file_paths, paper_ids, strict=True
+            ):
+                cached_document = cached_documents.get(paper_id)
+                if isinstance(cached_document, dict):
+                    document = DocumentIR.model_validate(cached_document)
+                else:
+                    document = await self.parse_document(
+                        path, paper_id, job_file.original_name, workspace_path
+                    )
+                    cached_documents[paper_id] = document.model_dump(mode="json")
+                documents.append(document)
+                baseline_checkpoint["documents"] = cached_documents
+                if len(documents) == 1 and len(job.files) == 1:
+                    baseline_checkpoint["document"] = document.model_dump(mode="json")
                 checkpoint["baseline"] = baseline_checkpoint
                 if self.repository and hasattr(self.repository, "save_pipeline_checkpoint"):
                     await self.repository.save_pipeline_checkpoint(job.id, checkpoint)
 
             report = await self._call_llm(
-                baseline_report_prompt(job.id, document),
+                baseline_report_prompt(job.id, documents),
                 AnalysisReport,
                 stage="baseline_problem_and_report",
                 route="pro",
                 web=True,
             )
-            if len(report.problem_statements) != 1:
-                raise ValueError("Baseline did not return exactly one problem statement")
-            problem = report.problem_statements[0].model_copy(update={"paper_id": paper_id})
-            problem = ground_problem(problem, document.blocks)
+            if len(report.problem_statements) != len(documents):
+                raise ValueError(
+                    "Baseline did not return exactly one problem statement per input PDF"
+                )
+            problems = [
+                ground_problem(
+                    problem.model_copy(update={"paper_id": paper_id}), document.blocks
+                )
+                for problem, paper_id, document in zip(
+                    report.problem_statements, paper_ids, documents, strict=True
+                )
+            ]
+            joint = report.joint_problem_statement
+            if len(documents) > 1:
+                validation_error = ""
+                for attempt in range(3):
+                    if joint is not None:
+                        try:
+                            joint = validate_joint_problem_statement(joint, problems)
+                            break
+                        except ValueError as error:
+                            validation_error = str(error)
+                    else:
+                        validation_error = (
+                            "Multi-paper baseline omitted the joint problem statement"
+                        )
+                    if attempt >= 2:
+                        joint = None
+                        break
+                    joint = await self._call_llm(
+                        (
+                            joint_problem_repair_prompt(
+                                problems, joint, validation_error
+                            )
+                            if joint is not None
+                            else joint_problem_prompt(problems)
+                        ),
+                        JointProblemStatement,
+                        stage="joint_problem_statement_repair",
+                        route="pro",
+                    )
+                if joint is None:
+                    raise ValueError(
+                        "Multi-paper baseline joint problem failed grounded validation "
+                        f"after automatic repair: {validation_error}"
+                    )
+            else:
+                joint = None
             candidates = merge_candidates(report.related_papers)
             rounds = [ground_analysis(round_result, candidates) for round_result in report.rounds]
             if len(rounds) != 1:
                 raise ValueError("Baseline did not return exactly one analysis round")
+            comparison_cells = rounds[0].comparison_cells
+            compared_papers = {cell.paper_id for cell in comparison_cells}
+            compared_axes = {
+                cell.axis.strip().casefold() for cell in comparison_cells if cell.axis.strip()
+            }
+            if len(compared_papers) < 2 or len(compared_axes) < 3:
+                raise ValueError(
+                    "Baseline must return a structured horizontal comparison covering "
+                    "at least two external papers and three axes"
+                )
             grounded = report.model_copy(
                 update={
                     "job_id": job.id,
-                    "problem_statements": [problem],
-                    "joint_problem_statement": None,
+                    "problem_statements": problems,
+                    "joint_problem_statement": joint,
                     "related_papers": candidates,
                     "rounds": rounds,
                     "parser_audit": [
@@ -3533,6 +3949,9 @@ class AnalysisPipeline:
                             "degraded": document.degraded,
                             "page_count": document.page_count,
                         }
+                        for paper_id, document in zip(
+                            paper_ids, documents, strict=True
+                        )
                     ],
                     "source_coverage": {
                         "counts": source_coverage(candidates),
@@ -3564,6 +3983,18 @@ class AnalysisPipeline:
     ) -> AnalysisReport:
         if len(local_files) != len(job.files):
             raise ValueError("Local file count does not match job files")
+        file_pairs = list(zip(job.files, local_files, strict=True))
+        positions = [job_file.position for job_file, _ in file_pairs]
+        if all(position is not None for position in positions):
+            normalized_positions = [
+                int(position) for position in positions if position is not None
+            ]
+            if sorted(normalized_positions) != list(range(1, len(file_pairs) + 1)):
+                raise ValueError(
+                    "Job file positions must be unique and contiguous from one"
+                )
+            file_pairs.sort(key=lambda value: int(value[0].position or 1))
+        ordered_job_files = [job_file for job_file, _ in file_pairs]
         self._active_job_id = job.id
         artifact_root = self.settings.ARTIFACT_ROOT.resolve()
         artifact_root.mkdir(parents=True, exist_ok=True)
@@ -3579,83 +4010,102 @@ class AnalysisPipeline:
             )
             if not pipeline_checkpoint:
                 pipeline_checkpoint = dict(job.checkpoint)
-            stored_problem_rows = [
-                row for row in stored_state["problems"] if row["paper_id"] != "__joint__"
-            ]
-            problems: list[ProblemStatement]
+            stored_problem_rows = {
+                str(row["paper_id"]): row
+                for row in stored_state["problems"]
+                if row["paper_id"] != "__joint__"
+            }
+            expected_paper_ids: list[str] = []
+            for job_file, file_path in file_pairs:
+                paper_id = job_file.sha256 or hashlib.sha256(file_path.read_bytes()).hexdigest()
+                expected_paper_ids.append(paper_id)
+                if self.repository and persist and not job_file.sha256:
+                    await self.repository.update_upload_hash(job_file.id, paper_id)
+            if len(set(expected_paper_ids)) != len(expected_paper_ids):
+                raise ValueError("Joint analysis inputs must be distinct PDFs")
+
+            problems: list[ProblemStatement] = []
             parser_audit: list[dict[str, Any]] = []
-            if len(stored_problem_rows) == len(job.files):
-                problems = [
-                    ProblemStatement.model_validate(row["content"]) for row in stored_problem_rows
-                ]
-                parser_audit = [
-                    {
-                        "paper_id": problem.paper_id,
-                        "parser": "checkpoint",
-                        "degraded": None,
-                        "page_count": None,
-                    }
-                    for problem in problems
-                ]
-                await self._event(job.id, "resumed", "Reused checkpointed problem statements")
-            else:
+            missing_count = sum(
+                paper_id not in stored_problem_rows for paper_id in expected_paper_ids
+            )
+            if missing_count:
                 await self._update(job.id, JobStatus.PARSING, "parsing", 5)
                 await self._event(job.id, "stage", "Parsing PDFs with MinerU Precision Extract")
-                problems = []
-                for index, (job_file, file_path) in enumerate(
-                    zip(job.files, local_files, strict=True)
-                ):
-                    await self._cancel_guard(job.id)
-                    paper_id = job_file.sha256 or hashlib.sha256(file_path.read_bytes()).hexdigest()
-                    if self.repository and persist and not job_file.sha256:
-                        await self.repository.update_upload_hash(job_file.id, paper_id)
-                    document = await self.parse_document(
-                        file_path, paper_id, job_file.original_name, workspace_path
-                    )
-                    await self._event(
-                        job.id,
-                        "stage",
-                        f"Extracting grounded problem statement from {job_file.original_name}",
-                        {"page_count": document.page_count, "parser": document.parser},
-                    )
-                    problem = await self.extract_problem(document)
-                    if (
-                        not problem.is_computer_science
-                        and problem.computer_science_confidence >= 0.8
-                    ):
+            for index, ((job_file, file_path), paper_id) in enumerate(
+                zip(file_pairs, expected_paper_ids, strict=True)
+            ):
+                stored_row = stored_problem_rows.get(paper_id)
+                if stored_row is not None:
+                    problem = ProblemStatement.model_validate(stored_row["content"])
+                    if problem.paper_id != paper_id:
                         raise ValueError(
-                            f"{job_file.original_name} is not classified as a computer-science paper "
-                            f"(confidence={problem.computer_science_confidence:.2f})"
+                            "Checkpointed problem statement is bound to the wrong input paper"
                         )
                     problems.append(problem)
                     parser_audit.append(
                         {
                             "paper_id": paper_id,
-                            "parser": document.parser,
-                            "degraded": document.degraded,
-                            "page_count": document.page_count,
+                            "parser": "checkpoint",
+                            "degraded": None,
+                            "page_count": None,
                         }
                     )
-                    if self.repository and persist:
-                        await self.repository.save_problem_statement(
-                            job.id, paper_id, problem.model_dump(mode="json")
-                        )
                     await self._event(
                         job.id,
-                        "paper_parsed",
-                        f"Parsed {job_file.original_name}",
-                        {
-                            "paper": index + 1,
-                            "total": len(local_files),
-                            "page_count": document.page_count,
-                            "parser": document.parser,
-                            "degraded": document.degraded,
-                        },
+                        "resumed",
+                        f"Reused checkpointed problem statement for {job_file.original_name}",
+                        {"paper": index + 1, "total": len(file_pairs), "paper_id": paper_id},
                     )
+                    continue
+                await self._cancel_guard(job.id)
+                document = await self.parse_document(
+                    file_path, paper_id, job_file.original_name, workspace_path
+                )
+                await self._event(
+                    job.id,
+                    "stage",
+                    f"Extracting grounded problem statement from {job_file.original_name}",
+                    {"page_count": document.page_count, "parser": document.parser},
+                )
+                problem = await self.extract_problem(document)
+                if (
+                    not problem.is_computer_science
+                    and problem.computer_science_confidence >= 0.8
+                ):
+                    raise ValueError(
+                        f"{job_file.original_name} is not classified as a computer-science paper "
+                        f"(confidence={problem.computer_science_confidence:.2f})"
+                    )
+                problems.append(problem)
+                parser_audit.append(
+                    {
+                        "paper_id": paper_id,
+                        "parser": document.parser,
+                        "degraded": document.degraded,
+                        "page_count": document.page_count,
+                    }
+                )
+                if self.repository and persist:
+                    await self.repository.save_problem_statement(
+                        job.id, paper_id, problem.model_dump(mode="json")
+                    )
+                await self._event(
+                    job.id,
+                    "paper_parsed",
+                    f"Parsed {job_file.original_name}",
+                    {
+                        "paper": index + 1,
+                        "total": len(file_pairs),
+                        "page_count": document.page_count,
+                        "parser": document.parser,
+                        "degraded": document.degraded,
+                    },
+                )
 
             joint: JointProblemStatement | None = None
             grounded_with_assets: list[ProblemStatement] = []
-            for job_file, problem in zip(job.files, problems, strict=True):
+            for job_file, problem in zip(ordered_job_files, problems, strict=True):
                 if self.repository and persist and hasattr(self.repository, "register_input_asset"):
                     asset_id = await self.repository.register_input_asset(
                         job.id, job_file, problem.paper_id, {"evidence_locators": []}
@@ -3685,14 +4135,67 @@ class AnalysisPipeline:
                     None,
                 )
                 if stored_joint:
-                    joint = JointProblemStatement.model_validate(stored_joint["content"])
-                else:
-                    joint = await self._call_llm(
-                        joint_problem_prompt(problems),
-                        JointProblemStatement,
-                        stage="joint_problem_statement",
-                        route="pro",
-                    )
+                    try:
+                        joint = validate_joint_problem_statement(
+                            JointProblemStatement.model_validate(stored_joint["content"]),
+                            problems,
+                        )
+                        await self._event(
+                            job.id,
+                            "resumed",
+                            "Reused grounded joint problem statement",
+                        )
+                    except ValueError as error:
+                        joint = None
+                        await self._event(
+                            job.id,
+                            "checkpoint_ignored",
+                            "Discarded an ungrounded joint problem checkpoint",
+                            {"reason": str(error)[:500]},
+                        )
+                if joint is None:
+                    prior_joint: JointProblemStatement | None = None
+                    validation_error = ""
+                    for repair_attempt in range(3):
+                        prompt = (
+                            joint_problem_repair_prompt(
+                                problems, prior_joint, validation_error
+                            )
+                            if prior_joint is not None
+                            else joint_problem_prompt(problems)
+                        )
+                        candidate_joint = await self._call_llm(
+                            prompt,
+                            JointProblemStatement,
+                            stage=(
+                                "joint_problem_statement_repair"
+                                if repair_attempt
+                                else "joint_problem_statement"
+                            ),
+                            route="pro",
+                        )
+                        try:
+                            joint = validate_joint_problem_statement(
+                                candidate_joint, problems
+                            )
+                            break
+                        except ValueError as error:
+                            prior_joint = candidate_joint
+                            validation_error = str(error)
+                            await self._event(
+                                job.id,
+                                "joint_problem_repair",
+                                "Repairing joint problem evidence bindings",
+                                {
+                                    "attempt": repair_attempt + 1,
+                                    "reason": validation_error[:500],
+                                },
+                            )
+                    if joint is None:
+                        raise ValueError(
+                            "Joint problem needs automatic recovery after evidence validation: "
+                            f"{validation_error}"
+                        )
                     if self.repository and persist:
                         await self.repository.save_problem_statement(
                             job.id, "__joint__", joint.model_dump(mode="json")
@@ -3709,22 +4212,32 @@ class AnalysisPipeline:
                     "Reviewing the input, output, algorithm, and constraints against PDF evidence",
                 )
                 cached_briefs = pipeline_checkpoint.get("problem_briefs")
-                if cached_briefs:
+                cached_brief_map: dict[str, ProblemBrief] = {}
+                for item in cached_briefs or []:
+                    brief = ProblemBrief.model_validate(item)
+                    cached_brief_map[brief.paper_id] = brief
+                if set(cached_brief_map) == {item.paper_id for item in problems}:
                     problem_briefs = [
-                        ProblemBrief.model_validate(item) for item in cached_briefs
+                        cached_brief_map[problem.paper_id] for problem in problems
                     ]
                     await self._event(
-                        job.id, "resumed", "Reused checkpointed problem brief"
+                        job.id, "resumed", "Reused checkpointed problem briefs"
                     )
                 else:
-                    problem_briefs = list(
-                        await asyncio.gather(
-                            *(
-                                self.extract_problem_brief(problem)
-                                for problem in problems
-                            )
-                        )
+                    missing_problems = [
+                        problem
+                        for problem in problems
+                        if problem.paper_id not in cached_brief_map
+                    ]
+                    new_briefs = await asyncio.gather(
+                        *(self.extract_problem_brief(problem) for problem in missing_problems)
                     )
+                    cached_brief_map.update(
+                        {item.paper_id: item for item in new_briefs}
+                    )
+                    problem_briefs = [
+                        cached_brief_map[problem.paper_id] for problem in problems
+                    ]
                     pipeline_checkpoint["problem_briefs"] = [
                         item.model_dump(mode="json") for item in problem_briefs
                     ]
@@ -3741,6 +4254,7 @@ class AnalysisPipeline:
                         job,
                         problems,
                         problem_briefs,
+                        joint,
                         workspace_path,
                         pipeline_checkpoint,
                         [

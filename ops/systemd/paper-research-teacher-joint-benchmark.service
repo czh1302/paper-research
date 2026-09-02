@@ -1,0 +1,25 @@
+[Unit]
+Description=Research Atlas symmetric two-paper teacher benchmark supervisor
+Documentation=https://github.com/czh1302/paper-research
+Wants=network-online.target
+After=network-online.target paper-research-worker.service paper-research-worker-2.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=/home/czh/SJTU_Task_final
+EnvironmentFile=/home/czh/.config/paper-research/secrets.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/czh/SJTU_Task_final/.venv/bin/python -m paper_research.main benchmark-run --manifest benchmark/teacher_joint_v1.json --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 --cold --include-baseline --analysis-concurrency 2 --baseline-concurrency 1 --judge-concurrency 1 --resume --output .artifacts/benchmark/teacher-joint-v1 --wait-for-benchmark-output .artifacts/benchmark/teacher-v1 --reload-worker-service paper-research-worker.service --reload-worker-service paper-research-worker-2.service
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

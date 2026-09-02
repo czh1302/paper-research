@@ -1,0 +1,35 @@
+{
+  "name": "teacher_joint_v1",
+  "version": "1.0.0",
+  "selection_policy": "Symmetric two-paper benchmark for grounded joint problem definition, bridge retrieval, horizontal comparison, and the current complete Research Atlas pipeline.",
+  "cases": [
+    {
+      "id": "2509-opennetagent-joint",
+      "mode": "multi",
+      "semantics": "symmetric",
+      "area": "networking_paper_to_code",
+      "title": "RepLLM + OpenNetAgent symmetric joint analysis",
+      "development_exposed": true,
+      "inputs": [
+        {
+          "id": "2509.21074v4",
+          "area": "networking",
+          "title": "RepLLM: Toward Automatically Reproducing Network Research Results",
+          "local_path": "2509.21074v4.pdf",
+          "sha256": "3545fcaf6c0f0fe1253833991d44a2a0f3f7e4b1d6b3314d9a04079d82f46481",
+          "pages": 19,
+          "development_exposed": true
+        },
+        {
+          "id": "23702.OpenNetAgent",
+          "area": "networking",
+          "title": "OpenNetAgent: Multi-Agent Paper-to-Code Reproduction for Networking",
+          "local_path": "23702_OpenNetAgent_Multi_Agent.pdf",
+          "sha256": "b0ae754310f25e3e451ff156fdfca760f24de9519b24c26ecc7a402106dc6c9c",
+          "pages": 25,
+          "development_exposed": false
+        }
+      ]
+    }
+  ]
+}

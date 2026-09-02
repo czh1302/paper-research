@@ -23,6 +23,7 @@ from pypdf import PdfWriter
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "supabase/migrations/20260903000000_benchmark_jobs.sql"
+JOINT_MIGRATION = ROOT / "supabase/migrations/20260903010000_joint_benchmark_cases.sql"
 
 
 class Response:
@@ -46,6 +47,26 @@ class SubmissionRepository:
             return Response(
                 {
                     "id": f"job-{paper_id}",
+                    "status": "queued",
+                    "stage": "queued",
+                    "progress": 0,
+                }
+            )
+        if path == "/rest/v1/rpc/reserve_benchmark_case_job":
+            case_id = kwargs["json"]["p_case_id"]
+            return Response(
+                {
+                    "id": f"job-{case_id}",
+                    "status": "waiting_resources",
+                    "stage": "queued",
+                    "progress": 0,
+                }
+            )
+        if path == "/rest/v1/rpc/activate_benchmark_case_job":
+            case_id = kwargs["json"]["p_case_id"]
+            return Response(
+                {
+                    "id": f"job-{case_id}",
                     "status": "queued",
                     "stage": "queued",
                     "progress": 0,
@@ -87,6 +108,45 @@ def _manifest(tmp_path: Path) -> Path:
     return path
 
 
+def _joint_manifest(tmp_path: Path) -> Path:
+    inputs = []
+    for index in range(2):
+        pdf = tmp_path / f"joint-{index}.pdf"
+        digest, pages = _write_pdf(pdf, f"joint-{index}")
+        inputs.append(
+            {
+                "id": f"joint-paper-{index}",
+                "title": f"Joint Paper {index}",
+                "area": "systems",
+                "local_path": pdf.name,
+                "sha256": digest,
+                "pages": pages,
+                "development_exposed": index == 0,
+            }
+        )
+    path = tmp_path / "joint-manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "teacher-joint",
+                "version": "1",
+                "cases": [
+                    {
+                        "id": "joint-case",
+                        "title": "Symmetric joint case",
+                        "area": "systems",
+                        "mode": "multi",
+                        "semantics": "symmetric",
+                        "inputs": inputs,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_manifest_validates_all_six_pdfs_before_submission(tmp_path: Path) -> None:
     manifest = load_benchmark_manifest(_manifest(tmp_path), project_root=tmp_path)
     assert len(manifest.papers) == 6
@@ -101,6 +161,20 @@ def test_manifest_rejects_hash_drift(tmp_path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(BenchmarkManifestError, match="SHA-256 mismatch"):
         load_benchmark_manifest(path, project_root=tmp_path)
+
+
+def test_case_manifest_preserves_symmetric_input_order(tmp_path: Path) -> None:
+    manifest = load_benchmark_manifest(_joint_manifest(tmp_path), project_root=tmp_path)
+    assert manifest.uses_case_format is True
+    assert len(manifest.cases) == 1
+    case = manifest.cases[0]
+    assert case.mode == "multi"
+    assert case.semantics == "symmetric"
+    assert [paper.id for paper in case.inputs] == ["joint-paper-0", "joint-paper-1"]
+    assert [paper.id for paper in manifest.papers] == [
+        "joint-paper-0",
+        "joint-paper-1",
+    ]
 
 
 @pytest.mark.asyncio
@@ -151,11 +225,170 @@ async def test_cold_submission_is_persisted_and_resume_is_idempotent(tmp_path: P
     assert repository.calls == calls_before_resume
 
 
-def test_retry_schedule_has_stable_jitter_and_six_hour_cap() -> None:
+@pytest.mark.asyncio
+async def test_joint_submission_uses_one_idempotent_ordered_case_reservation(
+    tmp_path: Path,
+) -> None:
+    manifest = load_benchmark_manifest(_joint_manifest(tmp_path), project_root=tmp_path)
+    repository = SubmissionRepository()
+    output = tmp_path / "joint-output"
+    supervisor = BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        output,
+        "owner-job",
+        repository=repository,
+        project_root=tmp_path,
+    )
+    await supervisor.submit_cold_jobs()
+
+    reservations = [
+        call
+        for call in repository.calls
+        if call[1] == "/rest/v1/rpc/reserve_benchmark_case_job"
+    ]
+    assert len(reservations) == 1
+    payload = reservations[0][2]["json"]
+    assert payload["p_case_id"] == "joint-case"
+    assert payload["p_input_ids"] == ["joint-paper-0", "joint-paper-1"]
+    assert len(payload["p_upload_ids"]) == 2
+    assert payload["p_initially_waiting"] is True
+    assert supervisor.state["papers"]["joint-case"]["production"]["status"] == (
+        "waiting_resources"
+    )
+
+    calls_before_resume = list(repository.calls)
+    resumed = BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        output,
+        "owner-job",
+        repository=repository,
+        resume=True,
+        project_root=tmp_path,
+    )
+    await resumed.submit_cold_jobs()
+    assert repository.calls == calls_before_resume
+
+
+def test_joint_baseline_and_evaluator_commands_keep_both_inputs_ordered(
+    tmp_path: Path,
+) -> None:
+    manifest = load_benchmark_manifest(_joint_manifest(tmp_path), project_root=tmp_path)
+    supervisor = BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        tmp_path / "output",
+        "owner-job",
+        repository=SubmissionRepository(),
+        project_root=tmp_path,
+    )
+    case = manifest.cases[0]
+    assert supervisor._command_is_ready(case, "baseline") is False
+    supervisor.state["papers"][case.id]["production"]["activated_at"] = (
+        "2026-09-03T00:00:00+00:00"
+    )
+    assert supervisor._command_is_ready(case, "baseline") is True
+    baseline, _, _ = supervisor._command_for(case, "baseline")
+    first = baseline.index(str(case.inputs[0].path))
+    second = baseline.index(str(case.inputs[1].path))
+    assert first < second
+
+    metrics, _, _ = supervisor._command_for(case, "metrics")
+    assert [metrics[index + 1] for index, value in enumerate(metrics) if value == "--pdf"] == [
+        str(case.inputs[0].path),
+        str(case.inputs[1].path),
+    ]
+    assert [
+        metrics[index + 1]
+        for index, value in enumerate(metrics)
+        if value == "--source-paper-id"
+    ] == ["joint-paper-0", "joint-paper-1"]
+
+
+@pytest.mark.asyncio
+async def test_joint_activation_requires_dependency_idle_slots_and_worker_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ActivationRepository(SubmissionRepository):
+        async def _request(self, method: str, path: str, **kwargs):
+            if path.startswith("/rest/v1/jobs?status=in."):
+                self.calls.append((method, path, kwargs))
+                return Response([])
+            return await super()._request(method, path, **kwargs)
+
+    dependency = tmp_path / "teacher-v1"
+    dependency.mkdir()
+    (dependency / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {"job_status": "completed", "report_id": f"report-{index}"}
+                    for index in range(6)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = load_benchmark_manifest(_joint_manifest(tmp_path), project_root=tmp_path)
+    repository = ActivationRepository()
+    supervisor = BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        tmp_path / "joint-output",
+        "owner-job",
+        repository=repository,
+        project_root=tmp_path,
+        wait_for_benchmark_output=dependency,
+        worker_services=("paper-research-worker.service",),
+    )
+    await supervisor.submit_cold_jobs()
+
+    blocked_rows = [
+        {"job_status": "completed", "report_id": f"report-{index}"}
+        for index in range(5)
+    ] + [{"job_status": "needs_input", "report_id": None}]
+    (dependency / "jobs.json").write_text(
+        json.dumps({"jobs": blocked_rows}), encoding="utf-8"
+    )
+    assert supervisor._dependency_ready() is False
+    (dependency / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {"job_status": "completed", "report_id": f"report-{index}"}
+                    for index in range(6)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert supervisor._dependency_ready() is True
+
+    async def failed_reload() -> None:
+        raise RuntimeError("reload failed")
+
+    monkeypatch.setattr(supervisor, "_reload_analysis_workers", failed_reload)
+    with pytest.raises(RuntimeError, match="reload failed"):
+        await supervisor._activate_waiting_cases()
+    assert not any(
+        call[1] == "/rest/v1/rpc/activate_benchmark_case_job"
+        for call in repository.calls
+    )
+
+    async def successful_reload() -> None:
+        supervisor.state["worker_reload"] = {"completed": True}
+
+    monkeypatch.setattr(supervisor, "_reload_analysis_workers", successful_reload)
+    await supervisor._activate_waiting_cases()
+    production = supervisor.state["papers"]["joint-case"]["production"]
+    assert production["status"] == "queued"
+    assert production.get("activated_at")
+
+
+def test_retry_schedule_is_fixed_at_thirty_seconds() -> None:
     values = [retry_delay_seconds("paper", attempt) for attempt in range(1, 9)]
-    assert values == [retry_delay_seconds("paper", attempt) for attempt in range(1, 9)]
-    assert 24 <= values[0] <= 36
-    assert all(value <= round(21600 * 1.2) for value in values)
+    assert values == [30] * 8
 
 
 def test_json_output_validation_requires_a_valid_object(tmp_path: Path) -> None:
@@ -255,6 +488,11 @@ def test_cli_exposes_frozen_parallel_benchmark_options() -> None:
     assert args.cold and args.include_baseline and args.resume
     assert args.analysis_concurrency == 2
 
+    baseline_args = build_parser().parse_args(
+        ["baseline-local", "first.pdf", "second.pdf", "--output", "out"]
+    )
+    assert baseline_args.files == [Path("first.pdf"), Path("second.pdf")]
+
 
 def test_service_role_benchmark_reservation_is_atomic_and_idempotent() -> None:
     sql = MIGRATION.read_text(encoding="utf-8")
@@ -264,6 +502,15 @@ def test_service_role_benchmark_reservation_is_atomic_and_idempotent() -> None:
     assert "insert into public.job_files" in sql
     assert "to service_role" in sql
     assert "from public, anon, authenticated" in sql
+
+    joint_sql = JOINT_MIGRATION.read_text(encoding="utf-8")
+    assert "reserve_benchmark_case_job" in joint_sql
+    assert "activate_benchmark_case_job" in joint_sql
+    assert "with ordinality" in joint_sql
+    assert "p_initially_waiting" in joint_sql
+    assert "'infinity'::timestamptz" in joint_sql
+    assert "to service_role" in joint_sql
+    assert "from public, anon, authenticated" in joint_sql
 
 
 def test_status_files_do_not_overwrite_metric_summary(tmp_path: Path) -> None:

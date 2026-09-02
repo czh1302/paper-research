@@ -43,7 +43,7 @@ from .config import Settings
 from .models import ProviderUsage
 from .pipeline import estimate_usage_cny
 
-EVALUATOR_SCHEMA_VERSION = "teacher-evaluator-v1"
+EVALUATOR_SCHEMA_VERSION = "teacher-evaluator-v2"
 MAX_SOURCE_CHARS = 160_000
 MAX_ABSTRACT_CHARS = 1_200
 MAX_TEXT_CHARS = 2_400
@@ -59,6 +59,7 @@ class SourceProblemClaimProxy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     claim_id: str = Field(min_length=1, max_length=100)
+    source_paper_id: str | None = Field(default=None, max_length=120)
     problem_field: Literal["input", "output", "algorithm", "constraints"]
     statement: str = Field(min_length=4, max_length=800)
     evidence_quote: str = Field(min_length=4, max_length=500)
@@ -69,6 +70,7 @@ class SourceKnownReferenceProxy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reference_key: str = Field(min_length=1, max_length=180)
+    source_paper_id: str | None = Field(default=None, max_length=120)
     title: str = Field(min_length=2, max_length=400)
     identifiers: list[str] = Field(default_factory=list, max_length=8)
     explicitly_discussed: bool = True
@@ -80,11 +82,13 @@ class SourceSilverRubricProxy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     paper_title: str = Field(min_length=2, max_length=400)
+    source_paper_ids: list[str] = Field(default_factory=list, max_length=5)
     problem_claims_auto: list[SourceProblemClaimProxy] = Field(min_length=4, max_length=48)
     known_references_auto: list[SourceKnownReferenceProxy] = Field(
         default_factory=list, max_length=80
     )
     comparison_requirements_auto: list[str] = Field(min_length=3, max_length=12)
+    joint_requirements_auto: list[str] = Field(default_factory=list, max_length=12)
 
     @model_validator(mode="after")
     def has_all_problem_fields(self) -> SourceSilverRubricProxy:
@@ -92,6 +96,19 @@ class SourceSilverRubricProxy(BaseModel):
         required = {"input", "output", "algorithm", "constraints"}
         if represented != required:
             raise ValueError("silver rubric must cover input, output, algorithm, constraints")
+        if len(self.source_paper_ids) > 1:
+            for paper_id in self.source_paper_ids:
+                paper_fields = {
+                    item.problem_field
+                    for item in self.problem_claims_auto
+                    if item.source_paper_id == paper_id
+                }
+                if paper_fields != required:
+                    raise ValueError(
+                        f"silver rubric must cover all four fields for input {paper_id}"
+                    )
+            if len(self.joint_requirements_auto) < 3:
+                raise ValueError("joint rubric requires common, difference, and conflict axes")
         return self
 
 
@@ -100,6 +117,16 @@ class PoolQrelProxy(BaseModel):
 
     canonical_id: str = Field(min_length=1, max_length=300)
     relevance_grade_auto: Literal[0, 1, 2]
+    bridge_relevance_auto: bool = False
+
+
+class PerSourceProblemAssessmentProxy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_paper_id: str = Field(min_length=1, max_length=120)
+    correctness_auto: float = Field(ge=0, le=1)
+    completeness_auto: float = Field(ge=0, le=1)
+    conciseness_auto: float = Field(ge=0, le=1)
 
 
 class CandidateAssessmentProxy(BaseModel):
@@ -108,6 +135,19 @@ class CandidateAssessmentProxy(BaseModel):
     problem_correctness_auto: float = Field(ge=0, le=1)
     problem_completeness_auto: float = Field(ge=0, le=1)
     problem_conciseness_auto: float = Field(ge=0, le=1)
+    joint_dual_input_coverage_auto: float | None = Field(default=None, ge=0, le=1)
+    joint_common_problem_consistency_auto: float | None = Field(
+        default=None, ge=0, le=1
+    )
+    joint_difference_consistency_auto: float | None = Field(
+        default=None, ge=0, le=1
+    )
+    joint_conflict_consistency_auto: float | None = Field(
+        default=None, ge=0, le=1
+    )
+    per_source_problem_auto: list[PerSourceProblemAssessmentProxy] = Field(
+        default_factory=list, max_length=5
+    )
     problem_claim_support_auto: list[ClaimSupportAssessmentProxy] = Field(
         default_factory=list, max_length=80
     )
@@ -279,7 +319,13 @@ def _problem_payload(report: Mapping[str, Any]) -> tuple[dict[str, Any], list[di
                 )
             fields[field].append(text)
             claims.append(
-                {"claim_id": claim_id, "field": field, "text": text, "citations": citations}
+                {
+                    "claim_id": claim_id,
+                    "source_paper_id": str(_problem.get("paper_id") or "input"),
+                    "field": field,
+                    "text": text,
+                    "citations": citations,
+                }
             )
 
         for field, key in (("input", "inputs"), ("output", "outputs"), ("constraints", "constraints")):
@@ -319,9 +365,88 @@ def _map_axis(axis: str) -> str | None:
     return mapping.get(normalized)
 
 
-def _comparison_payload(report: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    rows_by_paper: dict[str, dict[str, Any]] = {}
+def _input_comparison_payload(
+    report: Mapping[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Represent every input paper as an evidence-backed horizontal-comparison row."""
+
+    rows: dict[str, dict[str, Any]] = {}
     cells: list[dict[str, Any]] = []
+    for problem_index, problem in enumerate(report.get("problem_statements") or []):
+        if not isinstance(problem, Mapping):
+            continue
+        paper_id = str(problem.get("paper_id") or f"input-{problem_index}")
+        row = {"paper_id": paper_id, "title": problem.get("title") or paper_id}
+        evidence_map = {
+            str(item.get("id")): item
+            for item in problem.get("evidence") or []
+            if isinstance(item, Mapping) and item.get("id")
+        }
+
+        def element_text(
+            key: str, *, _problem: Mapping[str, Any] = problem
+        ) -> tuple[str, list[Any]]:
+            parts: list[str] = []
+            evidence_ids: list[Any] = []
+            for item in _problem.get(key) or []:
+                if not isinstance(item, Mapping):
+                    continue
+                parts.append(
+                    _bounded_text(item.get("description_zh"), item.get("description_en"))
+                )
+                evidence_ids.extend(item.get("evidence_ids") or [])
+            return _bounded_text(*parts), evidence_ids
+
+        inputs, input_evidence = element_text("inputs")
+        outputs, output_evidence = element_text("outputs")
+        constraints, constraint_evidence = element_text("constraints")
+        fields = {
+            "research_task": (
+                _bounded_text(problem.get("task_zh"), problem.get("task_en")),
+                problem.get("task_evidence_ids") or [],
+            ),
+            "input_or_data": (inputs, input_evidence),
+            "method": (
+                _bounded_text(problem.get("algorithm_zh"), problem.get("algorithm_en")),
+                problem.get("algorithm_evidence_ids") or [],
+            ),
+            "output_or_evaluation": (outputs, output_evidence),
+            "constraints": (constraints, constraint_evidence),
+        }
+        for field, (text, evidence_ids) in fields.items():
+            row[field] = text
+            if not text:
+                continue
+            cell_id = f"input-comparison:{paper_id}:{field}"
+            citations = []
+            for citation_index, evidence_id in enumerate(dict.fromkeys(evidence_ids)):
+                evidence = evidence_map.get(str(evidence_id))
+                if not evidence:
+                    continue
+                citations.append(
+                    {
+                        "claim_id": cell_id,
+                        "citation_id": f"{cell_id}:citation:{citation_index}",
+                        "source_id": paper_id,
+                        "page": evidence.get("page"),
+                        "quote": _bounded_text(evidence.get("text"), limit=900),
+                    }
+                )
+            cells.append(
+                {
+                    "cell_id": cell_id,
+                    "row_id": paper_id,
+                    "field": field,
+                    "text": text,
+                    "citations": citations,
+                }
+            )
+        rows[paper_id] = row
+    return rows, cells
+
+
+def _comparison_payload(report: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    rows_by_paper, cells = _input_comparison_payload(report)
     relational_claims: list[dict[str, Any]] = []
     presentation = report.get("presentation")
     landscape = presentation.get("literature_landscape") if isinstance(presentation, Mapping) else None
@@ -339,6 +464,12 @@ def _comparison_payload(report: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
             if not isinstance(profile, Mapping):
                 continue
             paper_id = str(profile.get("paper_id") or f"profile-{row_index}")
+            # Input papers already have evidence-backed rows derived from their
+            # Problem Statements above.  Some V4 reports also include those
+            # inputs in the landscape profiles; accepting them here would
+            # duplicate both the row and every scored cell.
+            if paper_id in rows_by_paper:
+                continue
             row = {"paper_id": paper_id, "title": profile.get("title") or paper_id}
             for field, profile_key in field_keys.items():
                 claim = profile.get(profile_key)
@@ -435,6 +566,47 @@ def _comparison_payload(report: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
     return list(rows_by_paper.values()), cells, relational_claims
 
 
+def _joint_resolved_citations(
+    report: Mapping[str, Any], joint: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    evidence_by_id: dict[str, Mapping[str, Any]] = {}
+    for problem in report.get("problem_statements") or []:
+        if not isinstance(problem, Mapping):
+            continue
+        for evidence in problem.get("evidence") or []:
+            if isinstance(evidence, Mapping) and evidence.get("id"):
+                evidence_by_id[str(evidence["id"])] = evidence
+
+    referenced: set[str] = set()
+
+    def collect(value: Any, key: str | None = None) -> None:
+        if isinstance(value, Mapping):
+            for child_key, child in value.items():
+                collect(child, str(child_key))
+        elif isinstance(value, list):
+            if key and key.endswith("evidence_ids"):
+                referenced.update(str(item) for item in value if item)
+            else:
+                for child in value:
+                    collect(child, key)
+
+    collect(joint)
+    output = []
+    for evidence_id in sorted(referenced):
+        evidence = evidence_by_id.get(evidence_id)
+        if evidence is None:
+            continue
+        output.append(
+            {
+                "evidence_id": evidence_id,
+                "source_id": str(evidence.get("paper_id") or "input"),
+                "page": evidence.get("page"),
+                "quote": _bounded_text(evidence.get("text"), limit=900),
+            }
+        )
+    return output
+
+
 def compact_report_payload(report: Mapping[str, Any]) -> dict[str, Any]:
     problem_fields, problem_claims = _problem_payload(report)
     related = []
@@ -476,6 +648,20 @@ def compact_report_payload(report: Mapping[str, Any]) -> dict[str, Any]:
                 if isinstance(item, Mapping)
             ],
         }
+    joint = report.get("joint_problem_statement")
+    joint_analysis: dict[str, Any] | None = None
+    if isinstance(joint, Mapping):
+        joint_analysis = {
+            "paper_ids": [str(value) for value in joint.get("paper_ids") or []],
+            "common_problem": _bounded_text(
+                joint.get("common_problem_zh"), joint.get("common_problem_en")
+            ),
+            "aligned_concepts": joint.get("aligned_concepts") or [],
+            "differences": joint.get("differences") or [],
+            "compatible_assumptions": joint.get("compatible_assumptions") or [],
+            "conflicting_assumptions": joint.get("conflicting_assumptions") or [],
+            "resolved_citations": _joint_resolved_citations(report, joint),
+        }
     return {
         "problem_fields": problem_fields,
         "problem_claims": problem_claims,
@@ -483,6 +669,7 @@ def compact_report_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         "comparison_rows": rows,
         "comparison_cells": cells,
         "relational_claims": relational_claims,
+        "joint_analysis": joint_analysis,
         "synopsis": synopsis,
     }
 
@@ -524,6 +711,8 @@ def _word_count(candidate: Mapping[str, Any]) -> int:
         texts.append(str(cell.get("text") or ""))
     for relation in candidate.get("relational_claims", []):
         texts.append(str(relation.get("text") or ""))
+    if candidate.get("joint_analysis"):
+        texts.append(json.dumps(candidate["joint_analysis"], ensure_ascii=False))
     synopsis = candidate.get("synopsis") or {}
     texts.append(str(synopsis.get("headline") or ""))
     for idea in synopsis.get("ideas") or []:
@@ -531,16 +720,31 @@ def _word_count(candidate: Mapping[str, Any]) -> int:
     return len(_WORD_PATTERN.findall("\n".join(texts)))
 
 
-def _source_rubric_prompt(paper_id: str, source_text: str) -> str:
-    return f"""You are building a frozen silver evaluation rubric for one computer-science paper.
+def _source_rubric_prompt(
+    paper_id: str,
+    source_text: str,
+    source_paper_ids: Sequence[str] | None = None,
+) -> str:
+    source_ids = list(source_paper_ids or [paper_id])
+    joint_instruction = ""
+    if len(source_ids) > 1:
+        joint_instruction = """
+This is a symmetric multi-paper case. Populate source_paper_ids in the supplied order and tag each
+atomic claim and known reference with its source_paper_id. Cover all four problem fields separately
+for every input. Add joint_requirements_auto for at least the common problem, material differences,
+and compatible/conflicting assumptions; every requirement must genuinely need both inputs.
+"""
+    return f"""You are building a frozen silver evaluation rubric for a computer-science case.
 This is an automatic proxy, not an expert ground truth. Read only SOURCE_PDF_TEXT below. Do not
 use tools and do not infer facts absent from the paper. Extract atomic claims for exactly four
 problem fields: input, output, algorithm, constraints. Every claim needs a short verbatim evidence
 quote and 1-based PDF page. Also list papers explicitly discussed as related work; include DOI,
 arXiv, OpenReview, or normalized title identifiers when printed. Comparison requirements should
 name the scientific axes needed for a useful horizontal table. Keep IDs stable and descriptive.
+{joint_instruction}
 
-PAPER_ID: {paper_id}
+CASE_ID: {paper_id}
+ORDERED_SOURCE_PAPER_IDS: {source_ids!r}
 SOURCE_PDF_TEXT:
 {source_text}
 """
@@ -560,12 +764,16 @@ source rubric without changing it.
 
 Requirements:
 1. For each candidate, score Problem correctness, completeness, and conciseness in [0,1]. Return
-   one support decision for every supplied problem claim ID.
+   one support decision for every supplied problem claim ID. For a multi-paper rubric, also return
+   one per_source_problem_auto row for every source_paper_id; leave that list empty for one paper.
 2. Return one fidelity decision for every comparison cell, one consistency decision for every
    relational claim, and one support decision for every supplied citation occurrence. Copy all IDs
    exactly. Evidence excerpts may support a claim; a URL alone does not establish support.
 3. Pairwise-score comprehensiveness, insight/depth, relevance, readability in [0,1]. Select A, B,
    or tie. Do not create an overall score and do not judge novelty as proven.
+4. For a multi-paper rubric, score each candidate's dual-input coverage and the evidence
+   consistency of its common problem, differences, and conflicts. Leave these four fields null for
+   a single-paper rubric.
 
 JUDGE_INPUT_JSON:
 """ + json.dumps(judge_input, ensure_ascii=False, separators=(",", ":"))
@@ -582,7 +790,9 @@ def _qrel_prompt(
 The input contains a frozen source-paper rubric and one deduplicated pool formed from multiple
 retrieval systems. It contains no system assignment and its order is not a ranking. Label every
 pool entry exactly once: 0=irrelevant, 1=adjacent/background, 2=directly related to the source
-paper's task or mechanism. Do not assess report writing and do not create an overall score.
+paper's task or mechanism. For a multi-paper rubric, set bridge_relevance_auto only when a result
+substantively connects both inputs rather than merely matching one. Do not assess report writing
+and do not create an overall score.
 
 QREL_INPUT_JSON:
 """ + json.dumps(qrel_input, ensure_ascii=False, separators=(",", ":"))
@@ -653,7 +863,13 @@ CALIBRATION_INPUT_JSON:
 
 
 def _fingerprint(
-    *, paper_id: str, source_digest: str, production_raw: bytes, baseline_raw: bytes, repetitions: int
+    *,
+    paper_id: str,
+    source_digest: str,
+    production_raw: bytes,
+    baseline_raw: bytes,
+    repetitions: int,
+    source_paper_ids: Sequence[str],
 ) -> str:
     digest = hashlib.sha256()
     for value in (
@@ -663,6 +879,7 @@ def _fingerprint(
         production_raw,
         baseline_raw,
         str(repetitions).encode(),
+        json.dumps(list(source_paper_ids), ensure_ascii=False).encode(),
     ):
         digest.update(len(value).to_bytes(8, "big"))
         digest.update(value)
@@ -802,6 +1019,104 @@ def _aggregate_arm_bundle(
     return problem, comparison
 
 
+def _source_problem_bundles(
+    candidate: Mapping[str, Any],
+    assessments: Sequence[CandidateAssessmentProxy],
+    source_paper_ids: Sequence[str],
+) -> list[MetricBundleProxy]:
+    bundles: list[MetricBundleProxy] = []
+    for source_id in source_paper_ids:
+        claims = [
+            item
+            for item in candidate.get("problem_claims", [])
+            if str(item.get("source_paper_id") or "") == source_id
+        ]
+        if not claims:
+            continue
+        fields: dict[str, list[str]] = {
+            name: [] for name in ("input", "output", "algorithm", "constraints")
+        }
+        for claim in claims:
+            field = str(claim.get("field") or "")
+            if field in fields:
+                fields[field].append(str(claim.get("text") or ""))
+        score_rows = [
+            row
+            for assessment in assessments
+            for row in assessment.per_source_problem_auto
+            if row.source_paper_id == source_id
+        ]
+        if not score_rows:
+            continue
+        support_by_claim: dict[str, list[bool]] = {
+            str(claim["claim_id"]): [] for claim in claims
+        }
+        for assessment in assessments:
+            decisions = {
+                item.claim_id: item.supported
+                for item in assessment.problem_claim_support_auto
+            }
+            for claim_id in support_by_claim:
+                support_by_claim[claim_id].append(bool(decisions.get(claim_id, False)))
+        metric = problem_statement_metrics_auto(
+            fields,
+            correctness_scores=[row.correctness_auto for row in score_rows],
+            completeness_scores=[row.completeness_auto for row in score_rows],
+            conciseness_scores=[row.conciseness_auto for row in score_rows],
+            atomic_claims=[
+                ClaimSupportAssessmentProxy(
+                    claim_id=claim_id,
+                    supported=sum(votes) >= len(votes) // 2 + 1,
+                )
+                for claim_id, votes in support_by_claim.items()
+                if votes
+            ],
+        )
+        safe_id = re.sub(r"[^a-z0-9]+", "_", source_id.casefold()).strip("_")
+        bundles.append(_prefix_bundle(metric, f"source_{safe_id}"))
+    return bundles
+
+
+def _joint_assessment_bundle(
+    candidate: Mapping[str, Any],
+    assessments: Sequence[CandidateAssessmentProxy],
+    source_paper_ids: Sequence[str],
+) -> MetricBundleProxy:
+    if len(source_paper_ids) < 2:
+        return MetricBundleProxy()
+    metrics = (
+        "joint_dual_input_coverage_auto",
+        "joint_common_problem_consistency_auto",
+        "joint_difference_consistency_auto",
+        "joint_conflict_consistency_auto",
+    )
+    scores: dict[str, float] = {}
+    counts: dict[str, MetricCountProxy] = {}
+    joint = candidate.get("joint_analysis")
+    for metric in metrics:
+        values = [
+            float(value)
+            for assessment in assessments
+            if (value := getattr(assessment, metric)) is not None
+        ]
+        if values:
+            count = MetricCountProxy(numerator=sum(values), denominator=len(values))
+            scores[metric] = float(count.value or 0)
+            counts[metric] = count
+            continue
+        if metric == "joint_dual_input_coverage_auto":
+            supplied = {
+                str(value)
+                for value in ((joint or {}).get("paper_ids") or [])
+            } if isinstance(joint, Mapping) else set()
+            score = len(supplied & set(source_paper_ids)) / len(source_paper_ids)
+        else:
+            score = 0.0
+        scores[metric] = score
+        counts[metric] = MetricCountProxy(numerator=score, denominator=1)
+    return MetricBundleProxy(scores_auto_proxy=scores, counts_auto_proxy=counts)
+
+
 def _retrieval_results(candidate: Mapping[str, Any]) -> list[RetrievalResultProxy]:
     return [
         RetrievalResultProxy(
@@ -826,6 +1141,78 @@ def _aggregate_qrels(
             grades.append(by_id.get(paper_id, 0))
         output[paper_id] = sorted(grades)[len(grades) // 2]
     return output
+
+
+def _aggregate_bridge_qrels(
+    pool: Sequence[Mapping[str, Any]], responses: Sequence[QrelJudgeResponseProxy]
+) -> dict[str, bool]:
+    threshold = len(responses) // 2 + 1
+    output: dict[str, bool] = {}
+    for paper in pool:
+        paper_id = str(paper["canonical_id"])
+        votes = 0
+        for response in responses:
+            by_id = {
+                item.canonical_id: item.bridge_relevance_auto
+                for item in response.pool_qrels_auto
+            }
+            votes += bool(by_id.get(paper_id, False))
+        output[paper_id] = votes >= threshold
+    return output
+
+
+def _bridge_retrieval_bundle(
+    candidate: Mapping[str, Any], bridge_qrels: Mapping[str, bool]
+) -> MetricBundleProxy:
+    top = [
+        str(item.get("canonical_id") or "")
+        for item in candidate.get("retrieval_results", [])[:10]
+        if item.get("canonical_id")
+    ]
+    hits = sum(bool(bridge_qrels.get(item, False)) for item in top)
+    denominator = len(top)
+    precision = hits / denominator if denominator else 0.0
+    hit = float(hits > 0)
+    return MetricBundleProxy(
+        scores_auto_proxy={
+            "retrieval_bridge_precision_at_10_auto": precision,
+            "retrieval_bridge_hit_at_10_auto": hit,
+        },
+        counts_auto_proxy={
+            "retrieval_bridge_precision_at_10_auto": MetricCountProxy(
+                numerator=hits, denominator=denominator
+            ),
+            "retrieval_bridge_hit_at_10_auto": MetricCountProxy(
+                numerator=hit, denominator=1
+            ),
+        },
+    )
+
+
+def _structured_comparison_presence_bundle(
+    candidate: Mapping[str, Any], source_paper_ids: Sequence[str]
+) -> MetricBundleProxy:
+    source_ids = set(source_paper_ids)
+    external_rows = [
+        row
+        for row in candidate.get("comparison_rows", [])
+        if str(row.get("paper_id") or "") not in source_ids
+    ]
+    external_cells = [
+        cell
+        for cell in candidate.get("comparison_cells", [])
+        if str(cell.get("row_id") or "") not in source_ids
+        and str(cell.get("text") or "").strip()
+    ]
+    present = float(bool(external_rows and external_cells))
+    return MetricBundleProxy(
+        scores_auto_proxy={"comparison_structured_external_present_auto": present},
+        counts_auto_proxy={
+            "comparison_structured_external_present_auto": MetricCountProxy(
+                numerator=present, denominator=1
+            )
+        },
+    )
 
 
 def _report_dimension_bundle(
@@ -927,17 +1314,20 @@ async def evaluate_teacher_reports(
     repetitions: int = 3,
     resume: bool = False,
     before_call: Callable[[str], Any] | None = None,
+    source_paper_ids: Sequence[str] | None = None,
 ) -> PaperMetricRecordProxy:
     if repetitions < 1 or repetitions > 5:
         raise TeacherEvaluatorInputError("repetitions must be between 1 and 5")
     output = Path(output)
     checkpoint_path = output.with_name(f".{output.name}.checkpoint.json")
+    expected_source_ids = list(source_paper_ids or [paper_id])
     fingerprint = _fingerprint(
         paper_id=paper_id,
         source_digest=source_digest,
         production_raw=production_raw,
         baseline_raw=baseline_raw,
         repetitions=repetitions,
+        source_paper_ids=expected_source_ids,
     )
     if resume and output.is_file():
         checkpoint = load_json_checkpoint(checkpoint_path)
@@ -953,6 +1343,7 @@ async def evaluate_teacher_reports(
         "schema_version": EVALUATOR_SCHEMA_VERSION,
         "fingerprint": fingerprint,
         "paper_id": paper_id,
+        "source_paper_ids": expected_source_ids,
         "calls": {},
         "call_order": [],
         "completed": False,
@@ -999,9 +1390,14 @@ async def evaluate_teacher_reports(
 
     rubric = await checkpointed_call(
         "silver_rubric",
-        _source_rubric_prompt(paper_id, source_text),
+        _source_rubric_prompt(paper_id, source_text, expected_source_ids),
         SourceSilverRubricProxy,
     )
+    if len(expected_source_ids) > 1 and rubric.source_paper_ids != expected_source_ids:
+        raise ValueError(
+            "joint silver rubric returned wrong ordered source paper IDs: "
+            f"expected={expected_source_ids!r}, got={rubric.source_paper_ids!r}"
+        )
     # Candidate reports are compacted only after the source-only rubric has
     # been durably frozen above.
     production = compact_report_payload(production_report)
@@ -1010,16 +1406,33 @@ async def evaluate_teacher_reports(
 
     qrel_responses: list[QrelJudgeResponseProxy] = []
     for repetition in range(1, repetitions + 1):
+        key = f"qrel_{repetition:02d}"
         response = await checkpointed_call(
-            f"qrel_{repetition:02d}",
+            key,
             _qrel_prompt(rubric, pool),
             QrelJudgeResponseProxy,
         )
+        expected_qrel_ids = [str(item["canonical_id"]) for item in pool]
+        actual_qrel_ids = [item.canonical_id for item in response.pool_qrels_auto]
+        if len(actual_qrel_ids) != len(set(actual_qrel_ids)) or set(actual_qrel_ids) != set(
+            expected_qrel_ids
+        ):
+            # The callback may already have durably cached this malformed model
+            # output. Remove it before raising so supervisor resume requests a
+            # fresh, complete judgment rather than replaying the bad qrels.
+            state["calls"].pop(key, None)
+            state["call_order"] = [item for item in state["call_order"] if item != key]
+            atomic_write_json(checkpoint_path, state)
+            raise ValueError(
+                "qrel response must cover every pooled canonical ID exactly once"
+            )
         qrel_responses.append(response)
     # Qrels are now frozen in independent checkpoints before either candidate
     # is exposed under A/B labels.
     qrels = _aggregate_qrels(pool, qrel_responses)
     state["frozen_qrels_auto"] = qrels
+    bridge_qrels = _aggregate_bridge_qrels(pool, qrel_responses)
+    state["frozen_bridge_qrels_auto"] = bridge_qrels
     atomic_write_json(checkpoint_path, state)
 
     judge_responses: list[TeacherJudgeResponseProxy] = []
@@ -1069,13 +1482,48 @@ async def evaluate_teacher_reports(
             silver_qrels=qrels,
             known_reference_aliases=known_aliases,
         )
-        bundles.extend(
-            (
-                _prefix_bundle(problem, arm_id),
-                _prefix_bundle(retrieval, arm_id),
-                _prefix_bundle(comparison, arm_id),
-            )
+        arm_bundles = [
+            problem,
+            retrieval,
+            comparison,
+            _structured_comparison_presence_bundle(candidate, expected_source_ids),
+        ]
+        arm_bundles.extend(
+            _source_problem_bundles(candidate, assessments, expected_source_ids)
         )
+        for source_id in expected_source_ids:
+            aliases = {
+                item.reference_key: [item.reference_key, item.title, *item.identifiers]
+                for item in rubric.known_references_auto
+                if item.explicitly_discussed and item.source_paper_id == source_id
+            }
+            if not aliases:
+                continue
+            source_retrieval = retrieval_metrics_auto(
+                _retrieval_results(candidate),
+                silver_qrels=qrels,
+                known_reference_aliases=aliases,
+            )
+            source_retrieval = MetricBundleProxy(
+                scores_auto_proxy={
+                    key: value
+                    for key, value in source_retrieval.scores_auto_proxy.items()
+                    if "known_ref" in key
+                },
+                counts_auto_proxy={
+                    key: value
+                    for key, value in source_retrieval.counts_auto_proxy.items()
+                    if "known_ref" in key
+                },
+            )
+            safe_id = re.sub(r"[^a-z0-9]+", "_", source_id.casefold()).strip("_")
+            arm_bundles.append(_prefix_bundle(source_retrieval, f"source_{safe_id}"))
+        if len(expected_source_ids) > 1:
+            arm_bundles.append(_bridge_retrieval_bundle(candidate, bridge_qrels))
+            arm_bundles.append(
+                _joint_assessment_bundle(candidate, assessments, expected_source_ids)
+            )
+        bundles.extend(_prefix_bundle(bundle, arm_id) for bundle in arm_bundles)
     bundles.append(_report_dimension_bundle(judge_responses, blind_bundles))
     calibration_bundle, warnings = _calibration_bundle(calibration)
     bundles.append(calibration_bundle)
@@ -1103,9 +1551,32 @@ async def evaluate_teacher_reports(
 async def run_cli(args: argparse.Namespace, client: StructuredClient | None = None) -> int:
     production_raw, production_report = _json_bytes(args.production_report)
     baseline_raw, baseline_report = _json_bytes(args.baseline_report)
-    source_bytes = args.pdf.read_bytes()
-    source_digest = hashlib.sha256(source_bytes).hexdigest()
-    source_text = extract_pdf_text(args.pdf)
+    pdf_paths = args.pdf if isinstance(args.pdf, list) else [args.pdf]
+    if not 1 <= len(pdf_paths) <= 5:
+        raise TeacherEvaluatorInputError("one to five source PDFs are required")
+    configured_ids = list(getattr(args, "source_paper_id", None) or [])
+    if configured_ids and len(configured_ids) != len(pdf_paths):
+        raise TeacherEvaluatorInputError(
+            "--source-paper-id must be supplied once for every --pdf"
+        )
+    source_paper_ids = configured_ids or [path.stem for path in pdf_paths]
+    if len(set(source_paper_ids)) != len(source_paper_ids):
+        raise TeacherEvaluatorInputError("source paper IDs must be unique")
+    digest = hashlib.sha256()
+    source_sections = []
+    per_pdf_limit = max(10_000, MAX_SOURCE_CHARS // len(pdf_paths))
+    for index, (source_id, pdf_path) in enumerate(
+        zip(source_paper_ids, pdf_paths, strict=True), start=1
+    ):
+        source_bytes = pdf_path.read_bytes()
+        digest.update(len(source_bytes).to_bytes(8, "big"))
+        digest.update(source_bytes)
+        source_sections.append(
+            f"\n=== SOURCE PAPER {index}: {source_id} ===\n"
+            f"{extract_pdf_text(pdf_path, max_chars=per_pdf_limit)}"
+        )
+    source_digest = digest.hexdigest()
+    source_text = "".join(source_sections).strip()
     settings = Settings()
     ledger = settings.ARTIFACT_ROOT / "provider-usage.jsonl"
 
@@ -1157,6 +1628,7 @@ async def run_cli(args: argparse.Namespace, client: StructuredClient | None = No
         repetitions=args.repetitions,
         resume=args.resume,
         before_call=check_budget,
+        source_paper_ids=source_paper_ids,
     )
     return 0
 
@@ -1168,7 +1640,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--production-report", type=Path, required=True)
     parser.add_argument("--baseline-report", type=Path, required=True)
     parser.add_argument("--paper-id", required=True)
-    parser.add_argument("--pdf", type=Path, required=True)
+    parser.add_argument("--pdf", type=Path, action="append", required=True)
+    parser.add_argument(
+        "--source-paper-id",
+        action="append",
+        help="Ordered input identity paired one-for-one with --pdf",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--repetitions", type=int, default=3)

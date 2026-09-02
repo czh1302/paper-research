@@ -1324,7 +1324,7 @@ class ExperimentWorker:
                             worker_id=self.settings.EXPERIMENT_WORKER_ID,
                             action_id=self._active_action_id,
                             sandbox_id=sandbox_id,
-                            retry_seconds=300,
+                            retry_seconds=30,
                             safe_error=redact(str(error)),
                         )
                 if paused:
@@ -1464,7 +1464,7 @@ class ExperimentWorker:
                 action_id,
                 claim_token=claim_token,
                 destroyed=destroyed,
-                retry_seconds=300,
+                retry_seconds=30,
                 safe_error=safe_error,
             )
 
@@ -1694,7 +1694,7 @@ class ExperimentWorker:
                             worker_id=self.settings.EXPERIMENT_WORKER_ID,
                             action_id=self._active_action_id,
                             sandbox_id=created_id,
-                            retry_seconds=300,
+                            retry_seconds=30,
                             safe_error=redact(str(error)),
                         )
                 if destroyed:
@@ -3010,8 +3010,8 @@ class ExperimentWorker:
 
     @staticmethod
     def _retry_delay(retry_count: int) -> int:
-        schedule = (30, 120, 600, 1800, 7200)
-        return schedule[retry_count] if retry_count < len(schedule) else 21600
+        del retry_count
+        return 30
 
     async def _process_action(self, action: dict[str, Any]) -> None:
         action_id = str(action["id"])
@@ -3809,7 +3809,7 @@ FROZEN SPECIFICATION:
                         worker_id=self.settings.EXPERIMENT_WORKER_ID,
                         sandbox_id=created_id or None,
                         destroyed=destroyed,
-                        retry_seconds=300,
+                        retry_seconds=30,
                         safe_error=redact(str(error)),
                     )
                 raise
@@ -3894,7 +3894,7 @@ FROZEN SPECIFICATION:
                 worker_id=self.settings.EXPERIMENT_WORKER_ID,
                 sandbox_id=sandbox_id or None,
                 destroyed=False,
-                retry_seconds=300,
+                retry_seconds=30,
                 safe_error=redact(str(error)),
             )
             progress["validationPhase"] = "cleanup_pending"
@@ -4067,7 +4067,7 @@ FROZEN SPECIFICATION:
                 worker_id=self.settings.EXPERIMENT_WORKER_ID,
                 action_id=self._active_action_id,
                 sandbox_id=sandbox_id,
-                retry_seconds=300,
+                retry_seconds=30,
                 safe_error=redact(str(error)),
             )
             raise

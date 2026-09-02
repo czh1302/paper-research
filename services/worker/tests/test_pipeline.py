@@ -1,13 +1,16 @@
+import asyncio
 import json
 
 import pytest
 from paper_research.config import Settings
 from paper_research.models import (
     AlgorithmStep,
+    AnalysisMode,
     AnalysisReport,
     CandidatePaper,
     ComparisonCell,
     DocumentBlock,
+    DocumentIR,
     Evidence,
     EvidenceLocator,
     ExperimentPlan,
@@ -15,12 +18,19 @@ from paper_research.models import (
     IdeaAssessment,
     IdeaAssessmentBatch,
     IdeaDraft,
+    IdeaInputRelationship,
     IdeaQueryPlan,
     IdeaQueryPlanBatch,
     IdeaReview,
+    Job,
+    JobFile,
+    JobStatus,
+    JointProblemStatement,
     LiteratureLandscape,
     LiteratureThemeV4,
     PaperEvidenceProfile,
+    PaperRanking,
+    PaperRankingBatch,
     PilotSpecification,
     PresentationFinding,
     PresentationIdea,
@@ -51,6 +61,7 @@ from paper_research.pipeline import (
     ground_idea_assessments,
     ground_presentation,
     ground_problem,
+    idea_input_relationships_are_grounded,
     idea_passes_deterministic_filter,
     idea_review_checkpoint_is_current,
     query_bundle_from_plan,
@@ -62,6 +73,7 @@ from paper_research.pipeline import (
     should_stop,
     v4_remaining_seconds,
     v4_resume_full_text_target,
+    validate_joint_problem_statement,
 )
 from paper_research.reporting import comparison_csv
 
@@ -378,6 +390,252 @@ def test_ground_problem_replaces_invented_excerpt_with_pdf_block() -> None:
     grounded = ground_problem(problem, [block])
     assert grounded.evidence[0].page == 3
     assert grounded.evidence[0].text == block.text
+
+
+def joint_problem_input(paper_id: str) -> ProblemStatement:
+    return ProblemStatement.model_construct(
+        paper_id=paper_id,
+        evidence=[
+            Evidence(
+                id=f"{paper_id}:b1",
+                paper_id=paper_id,
+                page=1,
+                text=f"Grounded source evidence for {paper_id}.",
+            )
+        ],
+    )
+
+
+def resumable_problem(paper_id: str) -> ProblemStatement:
+    evidence_id = f"{paper_id}:b1"
+    element = ProblemElement(
+        name="research artifact",
+        description_zh="用于联合研究的输入材料",
+        description_en="Input artifact for the joint research task",
+        evidence_ids=[evidence_id],
+    )
+    return ProblemStatement(
+        paper_id=paper_id,
+        title=f"Input paper {paper_id}",
+        is_computer_science=True,
+        computer_science_confidence=0.99,
+        background_zh="计算机系统研究背景",
+        background_en="Computer-systems research background",
+        background_evidence_ids=[evidence_id],
+        task_zh="构建并验证可执行研究系统",
+        task_en="Build and validate an executable research system",
+        task_evidence_ids=[evidence_id],
+        inputs=[element],
+        outputs=[element.model_copy(update={"name": "validated system"})],
+        objectives=[],
+        constraints=[],
+        assumptions=[],
+        algorithm_zh="解析输入并执行确定性验证",
+        algorithm_en="Parse the input and run deterministic validation",
+        algorithm_evidence_ids=[evidence_id],
+        metrics=[],
+        confidence=0.9,
+        evidence=[
+            Evidence(
+                id=evidence_id,
+                paper_id=paper_id,
+                page=1,
+                text=f"Grounded source evidence for {paper_id}.",
+            )
+        ],
+    )
+
+
+def grounded_joint_problem() -> JointProblemStatement:
+    per_paper = [
+        {
+            "paper_id": paper_id,
+            "claim_zh": f"{paper_id} 对联合任务的定义。",
+            "claim_en": f"{paper_id} defines its side of the joint task.",
+            "evidence_ids": [f"{paper_id}:b1"],
+        }
+        for paper_id in ("input-a", "input-b")
+    ]
+    assumption = {
+        "claim_zh": "两篇论文都假设可获得结构化实验输入。",
+        "claim_en": "Both papers assume structured experimental inputs are available.",
+        "paper_ids": ["input-a", "input-b"],
+        "evidence_ids": ["input-a:b1", "input-b:b1"],
+    }
+    return JointProblemStatement.model_validate(
+        {
+            "paper_ids": ["input-a", "input-b"],
+            "common_problem_zh": "两篇论文共同研究如何自动构建并验证可执行系统。",
+            "common_problem_en": "Both papers study how to build and validate executable systems.",
+            "common_problem_evidence_ids": ["input-a:b1", "input-b:b1"],
+            "aligned_concepts": [
+                {
+                    "concept_zh": "可执行工作流",
+                    "concept_en": "Executable workflow",
+                    "papers": per_paper,
+                }
+            ],
+            "differences": [
+                {
+                    "dimension_zh": "验证范围",
+                    "dimension_en": "Validation scope",
+                    "papers": per_paper,
+                }
+            ],
+            "compatible_assumptions": [assumption],
+            "conflicting_assumptions": [],
+        }
+    )
+
+
+def test_joint_problem_requires_exact_order_and_same_paper_evidence() -> None:
+    problems = [joint_problem_input("input-a"), joint_problem_input("input-b")]
+    joint = grounded_joint_problem()
+
+    assert validate_joint_problem_statement(joint, problems) is joint
+
+    with pytest.raises(ValueError, match="exactly match the ordered inputs"):
+        validate_joint_problem_statement(
+            joint.model_copy(update={"paper_ids": ["input-b", "input-a"]}),
+            problems,
+        )
+
+    invalid_claim = joint.aligned_concepts[0].papers[1].model_copy(
+        update={"evidence_ids": ["input-a:b1"]}
+    )
+    invalid_alignment = joint.aligned_concepts[0].model_copy(
+        update={"papers": [joint.aligned_concepts[0].papers[0], invalid_claim]}
+    )
+    with pytest.raises(ValueError, match="lacks evidence"):
+        validate_joint_problem_statement(
+            joint.model_copy(update={"aligned_concepts": [invalid_alignment]}),
+            problems,
+        )
+
+
+@pytest.mark.asyncio
+async def test_multi_analysis_resumes_each_problem_by_paper_id(tmp_path) -> None:
+    first = resumable_problem("input-a")
+    second = resumable_problem("input-b")
+
+    class Repository:
+        def __init__(self) -> None:
+            self.saved: list[str] = []
+
+        async def load_analysis_state(self, _job_id: str) -> dict[str, object]:
+            # Deliberately include only the first paper. The second must be parsed,
+            # while the completed first paper must not incur another model call.
+            return {
+                "problems": [
+                    {"paper_id": first.paper_id, "content": first.model_dump(mode="json")}
+                ],
+                "candidates": [],
+                "rounds": [],
+            }
+
+        async def load_pipeline_checkpoint(self, _job_id: str) -> dict[str, object]:
+            return {}
+
+        async def update_job(self, _job_id: str, **_values: object) -> None:
+            return None
+
+        async def add_event(
+            self,
+            _job_id: str,
+            _kind: str,
+            _message: str,
+            _data: dict[str, object] | None = None,
+        ) -> None:
+            return None
+
+        async def is_cancelled(self, _job_id: str) -> bool:
+            return False
+
+        async def save_problem_statement(
+            self, _job_id: str, paper_id: str, _payload: dict[str, object]
+        ) -> None:
+            self.saved.append(paper_id)
+
+    class ReachedJoint(RuntimeError):
+        pass
+
+    repository = Repository()
+    settings = Settings(
+        _env_file=None,
+        ARTIFACT_ROOT=tmp_path,
+        SEARCH_PROFILE="academic_only",
+        DEEPSEEK_API_KEY=None,
+        MINERU_API_TOKEN=None,
+        OPENALEX_API_KEY=None,
+        SERPER_API_KEY=None,
+        TAVILY_API_KEY=None,
+        SUPABASE_URL=None,
+        SUPABASE_SERVICE_ROLE_KEY=None,
+    )
+    pipeline = AnalysisPipeline(settings, repository)  # type: ignore[arg-type]
+    parsed: list[str] = []
+
+    async def parse_document(
+        _path, paper_id: str, title: str, _workspace
+    ) -> DocumentIR:
+        parsed.append(paper_id)
+        return DocumentIR(
+            paper_id=paper_id,
+            title=title,
+            markdown="source",
+            blocks=[],
+            page_count=1,
+        )
+
+    async def extract_problem(_document: DocumentIR) -> ProblemStatement:
+        return second
+
+    async def stop_at_joint(*_args, **_kwargs):
+        raise ReachedJoint
+
+    pipeline.parse_document = parse_document  # type: ignore[method-assign]
+    pipeline.extract_problem = extract_problem  # type: ignore[method-assign]
+    pipeline._call_llm = stop_at_joint  # type: ignore[method-assign]
+    job = Job(
+        id="joint-job",
+        user_id="user",
+        mode=AnalysisMode.MULTI,
+        max_rounds=1,
+        status=JobStatus.QUEUED,
+        files=[
+            JobFile(
+                id="upload-b",
+                storage_path="b.pdf",
+                original_name="b.pdf",
+                size_bytes=100,
+                sha256="input-b",
+                position=2,
+            ),
+            JobFile(
+                id="upload-a",
+                storage_path="a.pdf",
+                original_name="a.pdf",
+                size_bytes=100,
+                sha256="input-a",
+                position=1,
+            ),
+        ],
+    )
+
+    try:
+        with pytest.raises(ReachedJoint):
+            await asyncio.wait_for(
+                pipeline.analyze_files(
+                    job,
+                    [tmp_path / "a.pdf", tmp_path / "b.pdf"],
+                ),
+                timeout=3,
+            )
+    finally:
+        await asyncio.wait_for(pipeline.close(), timeout=3)
+
+    assert parsed == ["input-b"]
+    assert repository.saved == ["input-b"]
 
 
 def test_input_profile_caps_high_level_claim_evidence() -> None:
@@ -954,6 +1212,164 @@ def test_v4_idea_gate_requires_six_complete_full_text_profiles() -> None:
     assert reviews[0].decision == "needs_evidence"
 
 
+def test_exploratory_idea_uses_structural_two_paper_gate_only() -> None:
+    profiles = [
+        v4_profile("input", "input"),
+        v4_profile("paper-0"),
+        v4_profile("paper-1"),
+    ]
+    idea = v4_idea().model_copy(
+        update={
+            "closest_work_ids": ["paper-0"],
+            "supporting_work_ids": ["paper-1"],
+            "counterevidence_work_ids": [],
+        }
+    )
+    review = v4_review(
+        decision="needs_evidence",
+        closest_work_ids=["paper-0"],
+        supporting_work_ids=["paper-1"],
+        counterevidence_work_ids=[],
+        evidence_confidence=0.4,
+    )
+
+    strict, _, _ = finalize_v4_ideas([idea], [review], profiles)
+    exploratory, exploratory_reviews, _ = finalize_v4_ideas(
+        [idea], [review], profiles, qualification_tier="exploratory"
+    )
+
+    assert strict == []
+    assert [item.key for item in exploratory] == [idea.key]
+    assert exploratory[0].qualification_tier == "exploratory"
+    assert exploratory_reviews[0].decision == "needs_evidence"
+
+
+@pytest.mark.asyncio
+async def test_joint_full_text_ranking_balances_each_input_and_bridge() -> None:
+    problems = [resumable_problem("input-a"), resumable_problem("input-b")]
+    candidates = [
+        CandidatePaper(
+            canonical_id=f"paper-{index}",
+            title=f"Computer systems paper {index}",
+            abstract="A computer systems method with evaluation and implementation evidence.",
+            url=f"https://papers.example/{index}",
+            pdf_url=f"https://papers.example/{index}.pdf",
+            open_access=True,
+            sources=["arxiv"],
+            evidence_grade="abstract",
+        )
+        for index in range(5)
+    ]
+    ranking = PaperRankingBatch(
+        rankings=[
+            PaperRanking(
+                paper_id="paper-0",
+                relevance=0.99,
+                reason="first input",
+                related_input_paper_ids=["input-a"],
+            ),
+            PaperRanking(
+                paper_id="paper-1",
+                relevance=0.98,
+                reason="first input",
+                related_input_paper_ids=["input-a"],
+            ),
+            PaperRanking(
+                paper_id="paper-2",
+                relevance=0.8,
+                reason="second input",
+                related_input_paper_ids=["input-b"],
+            ),
+            PaperRanking(
+                paper_id="paper-3",
+                relevance=0.7,
+                reason="second input",
+                related_input_paper_ids=["input-b"],
+            ),
+            PaperRanking(
+                paper_id="paper-4",
+                relevance=0.6,
+                reason="bridge",
+                related_input_paper_ids=["input-a", "input-b"],
+                bridge_relevance=True,
+            ),
+        ]
+    )
+    pipeline = AnalysisPipeline.__new__(AnalysisPipeline)
+
+    async def call_llm(*_args, **_kwargs):
+        return ranking
+
+    pipeline._call_llm = call_llm  # type: ignore[method-assign]
+    ranked = await pipeline._v4_rank_full_text(
+        problems, candidates, grounded_joint_problem()
+    )
+
+    assert {item.canonical_id for item in ranked[:3]} == {
+        "paper-0",
+        "paper-2",
+        "paper-4",
+    }
+    assert ranked[0].bridge_relevance is True
+
+
+def test_multi_v4_idea_requires_one_grounded_relationship_per_input() -> None:
+    input_profiles = [
+        v4_profile("input-a", "input"),
+        v4_profile("input-b", "input"),
+    ]
+    profiles = input_profiles + [
+        v4_profile(f"paper-{index}") for index in range(6)
+    ]
+    unbound = v4_idea()
+
+    assert not idea_input_relationships_are_grounded(unbound, input_profiles)
+    selected, reviews, boards = finalize_v4_ideas(
+        [unbound], [v4_review()], profiles
+    )
+    assert selected == []
+    assert boards == []
+    assert reviews[0].decision == "needs_evidence"
+
+    relationships = [
+        IdeaInputRelationship(
+            paper_id=paper_id,
+            role_zh=f"{paper_id} 提供联合机制中的独立研究角色。",
+            role_en=f"{paper_id} provides a distinct role in the joint mechanism.",
+            change_zh=f"在 {paper_id} 的原方法上增加联合验证机制。",
+            change_en=f"Add joint validation to the original {paper_id} method.",
+            evidence_ids=[f"{paper_id}:b1"],
+        )
+        for paper_id in ("input-a", "input-b")
+    ]
+    grounded = unbound.model_copy(update={"input_relationships": relationships})
+    assert idea_input_relationships_are_grounded(grounded, input_profiles)
+
+    selected, reviews, boards = finalize_v4_ideas(
+        [grounded], [v4_review()], profiles
+    )
+    assert [item.key for item in selected] == [grounded.key]
+    assert reviews[0].decision == "recommended"
+    assert boards[0].input_paper_id == "input-a"
+    assert boards[0].input_paper_ids == ["input-a", "input-b"]
+    assert [item.paper_id for item in boards[0].profiles[:2]] == [
+        "input-a",
+        "input-b",
+    ]
+
+    wrong_owner = grounded.model_copy(
+        update={
+            "input_relationships": [
+                relationships[0],
+                relationships[1].model_copy(
+                    update={"evidence_ids": ["input-a:b1"]}
+                ),
+            ]
+        }
+    )
+    assert not idea_input_relationships_are_grounded(wrong_owner, input_profiles)
+
+
 def test_completed_idea_checkpoint_survives_expired_active_timer() -> None:
     profiles = [v4_profile("input", "input")] + [
         v4_profile(f"paper-{index}") for index in range(6)
@@ -1026,7 +1442,11 @@ def test_v4_high_collision_is_rejected_and_summary_stays_compact() -> None:
     )
     report = AnalysisReport(
         job_id="job",
-        problem_statements=[],
+        problem_statements=[
+            resumable_problem("input-a"),
+            resumable_problem("input-b"),
+        ],
+        joint_problem_statement=grounded_joint_problem(),
         related_papers=[CandidatePaper(canonical_id=f"paper-{index}", title=f"Paper {index}", url=f"https://papers.example/paper-{index}") for index in range(6)],
         rounds=[],
         search_audit=[{"raw": "x" * 100_000}],
@@ -1037,6 +1457,11 @@ def test_v4_high_collision_is_rejected_and_summary_stays_compact() -> None:
     )
     summary = report_summary(report)
     assert summary["search_audit"] == []
+    assert {
+        evidence["id"]
+        for problem in summary["problem_statements"]
+        for evidence in problem["evidence"]
+    } == {"input-a:b1", "input-b:b1"}
     assert len(json.dumps(summary, ensure_ascii=False).encode()) < 300_000
     csv_text = comparison_csv(report)
     assert "Evidence paper paper-0" in csv_text

@@ -140,6 +140,63 @@ function v4Fixture(): ReportRecord {
   return record;
 }
 
+function jointV4Fixture(): ReportRecord {
+  const record = v4Fixture();
+  const presentation = record.content.presentation as ReportPresentationV4;
+  const secondPaperId = "paper-second";
+  record.content.problem_statements.push({
+    ...record.content.problem_statements[0],
+    paper_id: secondPaperId,
+    title: "OpenNetAgent",
+    background_evidence_ids: [`${secondPaperId}:b1`],
+    task_evidence_ids: [`${secondPaperId}:b1`],
+    algorithm_evidence_ids: [`${secondPaperId}:b1`],
+    inputs: record.content.problem_statements[0].inputs.map((item) => ({ ...item, evidence_ids: [`${secondPaperId}:b1`] })),
+    outputs: record.content.problem_statements[0].outputs.map((item) => ({ ...item, evidence_ids: [`${secondPaperId}:b1`] })),
+    evidence: [{ id: `${secondPaperId}:b1`, paper_id: secondPaperId, asset_id: `asset-${secondPaperId}`, page: 3, section: "Architecture", text: "OpenNetAgent multi-agent architecture evidence", bboxes: [[90, 180, 880, 260]], evidence_type: "algorithm" }],
+  });
+  presentation.problem_briefs[0].title = "RepLLM";
+  const firstInput = presentation.literature_landscape.profiles.find((profile) => profile.paper_id === "paperhash");
+  if (firstInput) firstInput.title = "RepLLM";
+  presentation.problem_briefs.push({
+    paper_id: secondPaperId,
+    title: "OpenNetAgent",
+    research_question_zh: "多智能体如何协同完成网络自动化任务？",
+    research_question_en: "How can multiple agents coordinate network automation tasks?",
+    research_question_evidence_ids: [`${secondPaperId}:b1`],
+    inputs: [{ label_zh: "网络目标", label_en: "Network goal", explanation_zh: "用户给出的网络自动化目标", explanation_en: "A user-provided network automation goal", evidence_ids: [`${secondPaperId}:b1`] }],
+    outputs: [{ label_zh: "执行计划", label_en: "Execution plan", explanation_zh: "多智能体协作生成的计划", explanation_en: "A plan produced by cooperating agents", evidence_ids: [`${secondPaperId}:b1`] }],
+    algorithm_steps: [{ order: 1, title_zh: "智能体协作", title_en: "Agent collaboration", explanation_zh: "分解并执行网络任务", explanation_en: "Decompose and execute network tasks", evidence_ids: [`${secondPaperId}:b1`] }],
+    constraints: [{ label_zh: "网络安全", label_en: "Network safety", explanation_zh: "执行不得破坏网络状态", explanation_en: "Execution must preserve network safety", evidence_ids: [`${secondPaperId}:b1`] }],
+  });
+  const secondInput = v4Profile(secondPaperId, "input");
+  secondInput.title = "OpenNetAgent";
+  presentation.literature_landscape.profiles.splice(1, 0, secondInput);
+  presentation.ideas[0].input_relationships = [
+    { paper_id: "paperhash", role_zh: "提供论文到代码复现基线", role_en: "Provides the paper-to-code reproduction baseline", change_zh: "增加多智能体网络执行与验证", change_en: "Adds multi-agent network execution and validation", evidence_ids: ["paperhash:b1"] },
+    { paper_id: secondPaperId, role_zh: "提供网络多智能体协同机制", role_en: "Provides multi-agent coordination for networks", change_zh: "增加论文证据契约与忠实度评价", change_en: "Adds paper evidence contracts and fidelity evaluation", evidence_ids: [`${secondPaperId}:b1`] },
+  ];
+  presentation.comparison_boards[0].input_paper_ids = ["paperhash", secondPaperId];
+  presentation.comparison_boards[0].profiles.splice(1, 0, secondInput);
+  record.content.joint_problem_statement = {
+    paper_ids: ["paperhash", secondPaperId],
+    common_problem_zh: "如何用多智能体可靠地把网络论文转化为可验证的执行结果？",
+    common_problem_en: "How can multiple agents reliably turn network papers into verifiable execution results?",
+    common_problem_evidence_ids: ["paperhash:b1", `${secondPaperId}:b1`],
+    aligned_concepts: [{ concept_zh: "自动化执行", concept_en: "Automated execution", papers: [
+      { paper_id: "paperhash", claim_zh: "从论文生成可执行代码", claim_en: "Generates executable code from papers", evidence_ids: ["paperhash:b1"] },
+      { paper_id: secondPaperId, claim_zh: "由多个智能体执行网络任务", claim_en: "Uses multiple agents to execute network tasks", evidence_ids: [`${secondPaperId}:b1`] },
+    ] }],
+    differences: [{ dimension_zh: "任务起点", dimension_en: "Task origin", papers: [
+      { paper_id: "paperhash", claim_zh: "以学术论文为输入", claim_en: "Starts from an academic paper", evidence_ids: ["paperhash:b1"] },
+      { paper_id: secondPaperId, claim_zh: "以网络目标为输入", claim_en: "Starts from a network goal", evidence_ids: [`${secondPaperId}:b1`] },
+    ] }],
+    compatible_assumptions: [{ claim_zh: "两者都要求可执行且可检查的输出", claim_en: "Both require executable, inspectable outputs", paper_ids: ["paperhash", secondPaperId], evidence_ids: ["paperhash:b1", `${secondPaperId}:b1`] }],
+    conflicting_assumptions: [{ claim_zh: "论文忠实度与运行时自主性之间需要明确边界", claim_en: "Paper fidelity and runtime autonomy require an explicit boundary", paper_ids: ["paperhash", secondPaperId], evidence_ids: ["paperhash:b1", `${secondPaperId}:b1`] }],
+  };
+  return record;
+}
+
 describe("ReportPage", () => {
   afterEach(() => {
     cleanup();
@@ -310,6 +367,50 @@ describe("ReportPage", () => {
     await user.click(screen.getByRole("button", { name: "下一组" }));
     expect(await screen.findByText("Evidence Paper paper-3")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("Not covered");
+  });
+
+  it("renders a grounded joint overview, two input profiles, and per-input Idea relationships", async () => {
+    const user = userEvent.setup();
+    const record = jointV4Fixture();
+    api.getReport.mockResolvedValue(record);
+    renderReport();
+
+    expect(await screen.findByText("联合调研结论")).toBeInTheDocument();
+    expect(screen.getByText("两篇输入论文如何共同形成研究方向")).toBeInTheDocument();
+    expect(screen.getAllByText("如何用多智能体可靠地把网络论文转化为可验证的执行结果？").length).toBeGreaterThan(0);
+    expect(screen.getByText("两篇论文的角色")).toBeInTheDocument();
+    expect(screen.getByText("关键一致点")).toBeInTheDocument();
+    expect(screen.getByText("关键差异")).toBeInTheDocument();
+    expect(screen.getByText("冲突与边界")).toBeInTheDocument();
+    expect(screen.getByText("提供论文到代码复现基线")).toBeInTheDocument();
+    expect(screen.getByText("提供网络多智能体协同机制")).toBeInTheDocument();
+    expect(document.querySelector(".v4-overview-brief")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "分别查看输入论文" }));
+    expect(screen.getByRole("tab", { name: "RepLLM" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: "OpenNetAgent" }));
+    expect(screen.getByText("多智能体如何协同完成网络自动化任务？")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "研究现状" }));
+    await user.click(screen.getByRole("tab", { name: "Idea 差异" }));
+    const jointBoard = document.querySelector(".v4-comparison-joint");
+    expect(jointBoard).not.toBeNull();
+    expect(jointBoard?.textContent).toContain("RepLLM");
+    expect(jointBoard?.textContent).toContain("OpenNetAgent");
+    expect(jointBoard?.textContent).toContain("Evidence Paper paper-0");
+    expect(jointBoard?.textContent).not.toContain("Evidence Paper paper-1");
+    const nextExternal = jointBoard?.querySelector<HTMLButtonElement>(".comparison-pagination button:last-child");
+    expect(nextExternal).not.toBeNull();
+    await user.click(nextExternal!);
+    expect(jointBoard?.textContent).toContain("Evidence Paper paper-1");
+    expect(jointBoard?.querySelector(".v4-comparison-mobile-stack")).not.toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: "论文级 Idea" }));
+    expect(screen.getByText("与输入论文的关系")).toBeInTheDocument();
+    expect(screen.getByText("增加多智能体网络执行与验证")).toBeInTheDocument();
+    expect(screen.getByText("增加论文证据契约与忠实度评价")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /OpenNetAgent.*第 3 页/ }));
+    expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
   });
 
   it("labels an exploratory delivered Idea honestly in the overview and proposal", async () => {

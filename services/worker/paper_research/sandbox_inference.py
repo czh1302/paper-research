@@ -490,7 +490,7 @@ class SandboxInferenceWorker:
                                 await self.repository.schedule_sandbox_inference_retry(
                                     request_id,
                                     self.worker_id,
-                                    min(600, 30 * (2 ** min(int(raw.get("retry_count") or 0), 4))),
+                                    30,
                                 )
                     finally:
                         heartbeat.cancel()

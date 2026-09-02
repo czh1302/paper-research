@@ -166,33 +166,49 @@ async def run_worker(settings: Settings) -> None:
             loop.remove_signal_handler(signum)
 
 
-async def analyze_baseline_local(settings: Settings, file: Path, output: Path) -> int:
-    size, _ = validate_pdf(file)
-    digest = hashlib.sha256(file.read_bytes()).hexdigest()
-    job = Job(
-        id=f"local-baseline-{digest[:32]}",
-        user_id="local-baseline",
-        mode=AnalysisMode.SINGLE,
-        max_rounds=1,
-        status=JobStatus.QUEUED,
-        files=[
+async def analyze_baseline_local(
+    settings: Settings, files: list[Path] | Path, output: Path
+) -> int:
+    file_paths = [files] if isinstance(files, Path) else list(files)
+    if not 1 <= len(file_paths) <= 5:
+        raise ValueError("The baseline accepts one to five PDFs")
+    job_files: list[JobFile] = []
+    digests: list[str] = []
+    for position, file in enumerate(file_paths, start=1):
+        size, _ = validate_pdf(file)
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        digests.append(digest)
+        job_files.append(
             JobFile(
                 id=str(uuid.uuid4()),
                 storage_path="local",
                 original_name=file.name,
                 size_bytes=size,
                 sha256=digest,
+                position=position,
             )
-        ],
+        )
+    fingerprint = hashlib.sha256("\n".join(digests).encode("ascii")).hexdigest()
+    job = Job(
+        id=f"local-baseline-{fingerprint[:32]}",
+        user_id="local-baseline",
+        mode=AnalysisMode.SINGLE if len(file_paths) == 1 else AnalysisMode.MULTI,
+        max_rounds=1,
+        status=JobStatus.QUEUED,
+        files=job_files,
     )
     repository = LocalCheckpointRepository(
         output / ".checkpoint.json",
-        f"baseline-v2:{digest}",
+        (
+            f"baseline-v2:{digests[0]}"
+            if len(digests) == 1
+            else f"baseline-v3:{fingerprint}"
+        ),
         settings.ARTIFACT_ROOT / "provider-usage.jsonl",
     )
     pipeline = AnalysisPipeline(settings, repository)
     try:
-        report = await pipeline.analyze_baseline(job, file)
+        report = await pipeline.analyze_baseline(job, file_paths)
     finally:
         await pipeline.close()
     write_report(report, output)
@@ -313,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     baseline = subparsers.add_parser(
         "baseline-local", help="Run the one-call whole-paper benchmark baseline"
     )
-    baseline.add_argument("file", type=Path)
+    baseline.add_argument("files", nargs="+", type=Path)
     baseline.add_argument("--output", type=Path, default=Path(".artifacts/baseline-report"))
     replay = subparsers.add_parser(
         "idea-replay", help="Re-run only gap, Idea, and review stages from a V4 checkpoint"
@@ -348,6 +364,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
     )
     benchmark.add_argument("--poll-seconds", type=float, default=15.0)
+    benchmark.add_argument(
+        "--wait-for-benchmark-output",
+        type=Path,
+        help="Keep multi-paper cases waiting until another benchmark's production jobs finish",
+    )
+    benchmark.add_argument(
+        "--reload-worker-service",
+        action="append",
+        default=[],
+        help="User systemd analysis worker to restart after the dependency releases",
+    )
     benchmark.add_argument(
         "--dry-run",
         action="store_true",
@@ -386,7 +413,7 @@ def main() -> None:
         elif args.command == "baseline-local":
             if not settings.DEEPSEEK_API_KEY or not settings.MINERU_API_TOKEN:
                 raise RuntimeError("Rotated DEEPSEEK_API_KEY and MINERU_API_TOKEN are required")
-            code = asyncio.run(analyze_baseline_local(settings, args.file, args.output))
+            code = asyncio.run(analyze_baseline_local(settings, args.files, args.output))
         elif args.command == "resume-job":
             known_recovery_hashes = {
                 "08f0ca6d-abcf-42a4-9b58-6ed07996d135": (
@@ -428,6 +455,15 @@ def main() -> None:
                                 }
                                 for paper in manifest.papers
                             ],
+                            "cases": [
+                                {
+                                    "id": case.id,
+                                    "mode": case.mode,
+                                    "semantics": case.semantics,
+                                    "input_ids": [paper.id for paper in case.inputs],
+                                }
+                                for case in manifest.cases
+                            ],
                             "network_calls": 0,
                             "paid_calls": 0,
                         },
@@ -449,6 +485,8 @@ def main() -> None:
                         baseline_concurrency=args.baseline_concurrency,
                         judge_concurrency=args.judge_concurrency,
                         poll_seconds=args.poll_seconds,
+                        wait_for_benchmark_output=args.wait_for_benchmark_output,
+                        worker_services=tuple(args.reload_worker_service),
                     )
                 )
         elif args.command == "benchmark-status":

@@ -51,3 +51,40 @@ paper-research benchmark-status --output .artifacts/benchmark/teacher-v1
 The supervisor writes atomic `run-state.json`, `jobs.json`, `status.md`, and
 `status.csv`. Once all six metric records exist it writes `summary.json`,
 `summary.csv`, and `summary.md`, followed by `SUCCESS`, `DEGRADED`, or `INCOMPLETE`.
+
+## Symmetric joint benchmark
+
+`teacher_joint_v1.json` is an independent two-paper case.  A `cases` manifest
+preserves the declared input order and sets `mode: "multi"` plus
+`semantics: "symmetric"`; legacy manifests that use `papers` continue to run as
+one-paper cases without conversion.
+
+The joint supervisor reserves one production job in `waiting_resources`, but it
+does not activate that job or launch its one-call baseline while the six
+teacher-v1 production reports are incomplete.  Only after all six jobs are
+`completed` and each has a report does it verify that the analysis queue has no active slots, reload both
+analysis workers successfully, and only then activates the joint production job
+and baseline.  A failed worker reload leaves the joint case waiting and is
+retried by systemd; mixed worker versions are never activated deliberately.
+
+Run or resume it with:
+
+```bash
+paper-research benchmark-run \
+  --manifest benchmark/teacher_joint_v1.json \
+  --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 \
+  --cold --include-baseline \
+  --analysis-concurrency 2 --baseline-concurrency 1 --judge-concurrency 1 \
+  --wait-for-benchmark-output .artifacts/benchmark/teacher-v1 \
+  --reload-worker-service paper-research-worker.service \
+  --reload-worker-service paper-research-worker-2.service \
+  --resume --output .artifacts/benchmark/teacher-joint-v1
+```
+
+The baseline parses both PDFs separately and makes one Pro synthesis call.  Its
+structured horizontal comparison must contain both inputs and external-paper
+cells; a narrative-only comparison is invalid.  Joint metrics report each
+input's problem quality separately, dual-input and agreement/difference/conflict
+grounding, bridge-paper retrieval, and an explicit zero/one structured external
+comparison presence score.  Every source claim carries its input paper ID so
+that identical page numbers in the two PDFs remain attributable.
