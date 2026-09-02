@@ -36,7 +36,7 @@ printf '%s\n' \
   'POLL_INTERVAL_SECONDS=10' \
   'JOB_LEASE_SECONDS=300' \
   'MAX_MONTHLY_CNY=100' \
-  'BUDGET_GUARD_CNY=95' \
+  'BUDGET_GUARD_CNY=0' \
   'MAX_PROVIDER_CONCURRENCY=4' \
   'SEARCH_PROFILE=academic_web' \
   'CLAUDE_BIN=/home/czh/.local/bin/claude' \

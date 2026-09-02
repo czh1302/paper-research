@@ -1704,6 +1704,8 @@ class AnalysisPipeline:
         return await asyncio.to_thread(read_spend)
 
     async def _check_budget(self) -> None:
+        if self.settings.BUDGET_GUARD_CNY <= 0:
+            return
         if self.repository:
             spend = await self.repository.monthly_spend_cny()
             spend += await self._local_monthly_spend_cny("provider-usage-pending.jsonl")

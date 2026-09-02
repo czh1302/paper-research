@@ -110,6 +110,22 @@ def test_conservative_cost_estimate() -> None:
     assert estimate_usage_cny(pro) == pytest.approx(3 * estimate_usage_cny(usage))
 
 
+async def test_zero_budget_guard_disables_analysis_spending_limit(tmp_path) -> None:
+    class UnexpectedRepository:
+        async def monthly_spend_cny(self) -> float:
+            raise AssertionError("disabled budget guard must not query spending")
+
+    settings = Settings(
+        _env_file=None,
+        ARTIFACT_ROOT=tmp_path,
+        BUDGET_GUARD_CNY=0,
+    )
+    pipeline = AnalysisPipeline(settings, UnexpectedRepository())
+
+    await pipeline._check_budget()
+    await pipeline.close()
+
+
 async def test_pipeline_routes_problem_and_idea_to_pro_and_retrieval_to_flash(
     tmp_path,
 ) -> None:

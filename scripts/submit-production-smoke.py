@@ -43,7 +43,10 @@ async def main() -> None:
         if active_response.json():
             raise RuntimeError("A production job is already active")
         spend = await repository.monthly_spend_cny()
-        if spend >= settings.BUDGET_GUARD_CNY:
+        if (
+            settings.BUDGET_GUARD_CNY > 0
+            and spend >= settings.BUDGET_GUARD_CNY
+        ):
             raise RuntimeError("The production budget guard is active")
 
         admins = (

@@ -39,7 +39,12 @@ async def main() -> None:
                     "active_experiments": len(experiments),
                     "experiment_statuses": [row["status"] for row in experiments],
                     "monthly_spend_cny": round(await repository.monthly_spend_cny(), 2),
-                    "budget_guard_cny": settings.BUDGET_GUARD_CNY,
+                    "budget_guard_cny": (
+                        settings.BUDGET_GUARD_CNY
+                        if settings.BUDGET_GUARD_CNY > 0
+                        else None
+                    ),
+                    "budget_unlimited": settings.BUDGET_GUARD_CNY <= 0,
                 },
                 ensure_ascii=False,
             )

@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     POLL_INTERVAL_SECONDS: float = Field(default=10, ge=1)
     JOB_LEASE_SECONDS: int = Field(default=300, ge=60)
     MAX_MONTHLY_CNY: float = Field(default=100, gt=0)
-    BUDGET_GUARD_CNY: float = Field(default=95, gt=0)
+    # Zero disables the analysis/model spending guard. Experiment and E2B
+    # budgets are independent safety limits and remain enforced separately.
+    BUDGET_GUARD_CNY: float = Field(default=95, ge=0)
     MAX_PROVIDER_CONCURRENCY: int = Field(default=4, ge=1, le=16)
     SEARCH_PROFILE: Literal["academic_only", "academic_web"] = "academic_web"
     IDEA_PIPELINE_V3: bool = False
@@ -134,7 +136,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_budget(self) -> Settings:
-        if self.BUDGET_GUARD_CNY >= self.MAX_MONTHLY_CNY:
+        if (
+            self.BUDGET_GUARD_CNY > 0
+            and self.BUDGET_GUARD_CNY >= self.MAX_MONTHLY_CNY
+        ):
             raise ValueError("BUDGET_GUARD_CNY must be lower than MAX_MONTHLY_CNY")
         if self.IDEA_PIPELINE_V3 and self.IDEA_PIPELINE_V4:
             raise ValueError("IDEA_PIPELINE_V3 and IDEA_PIPELINE_V4 cannot both be enabled")
