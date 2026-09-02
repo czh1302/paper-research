@@ -25,6 +25,14 @@ class ClaudeCodeAccountingError(ClaudeCodeError):
     """The provider call completed but its usage could not be accounted."""
 
 
+class ClaudeCodeStructuredOutputError(ClaudeCodeError):
+    """The CLI returned JSON that failed the application's stricter validation."""
+
+    def __init__(self, message: str, structured_output: Any) -> None:
+        super().__init__(message)
+        self.structured_output = structured_output
+
+
 class ClaudeCodeClient:
     def __init__(
         self,
@@ -286,6 +294,7 @@ class ClaudeCodeClient:
                     pass
                 raise
         parsed: SchemaModel | None = None
+        structured: Any = None
         parse_error: ClaudeCodeError | None = None
         if process.returncode == 0:
             try:
@@ -295,8 +304,9 @@ class ClaudeCodeClient:
                     structured = json.loads(result) if isinstance(result, str) else result
                 parsed = response_model.model_validate(structured)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
-                parse_error = ClaudeCodeError(
-                    f"Claude Code returned invalid structured output: {error}"
+                parse_error = ClaudeCodeStructuredOutputError(
+                    f"Claude Code returned invalid structured output: {error}",
+                    structured,
                 )
         await self._emit_usage(
             payload,

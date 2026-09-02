@@ -474,7 +474,12 @@ class SupabaseRepository:
     ) -> str:
         content = pdf_path.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
-        storage_path = f"evidence/{job_id}/{digest}.pdf"
+        # Different discovery sources can assign different canonical paper IDs to
+        # the same PDF. Include the paper identity in the object key so the
+        # table's per-paper upsert cannot collide with the global storage_path
+        # uniqueness constraint.
+        paper_digest = hashlib.sha256(paper_id.encode("utf-8")).hexdigest()[:16]
+        storage_path = f"evidence/{job_id}/{paper_digest}-{digest}.pdf"
         encoded_path = "/".join(quote(part, safe="") for part in storage_path.split("/"))
         await self._request(
             "POST",

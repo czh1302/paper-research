@@ -71,6 +71,7 @@ from paper_research.pipeline import (
     report_section_payloads,
     report_summary,
     should_stop,
+    v4_full_text_pool_limit,
     v4_remaining_seconds,
     v4_resume_full_text_target,
     validate_cached_evidence_profiles,
@@ -1137,14 +1138,25 @@ def v4_profile(paper_id: str, role: str = "external") -> PaperEvidenceProfile:
     )
 
 
-def test_cached_evidence_profiles_skip_only_incompatible_historical_rows() -> None:
+def test_cached_evidence_profiles_drop_bad_locators_without_dropping_profile() -> None:
     valid = v4_profile("valid").model_dump(mode="json")
-    invalid = v4_profile("invalid").model_dump(mode="json")
-    invalid["limitations"]["evidence"][0]["quote"] = "32"
+    recoverable = v4_profile("recoverable").model_dump(mode="json")
+    recoverable_locator = dict(recoverable["limitations"]["evidence"][0])
+    recoverable["limitations"]["evidence"].append(recoverable_locator)
+    recoverable["limitations"]["evidence"][0]["quote"] = "32"
+    unrecoverable = v4_profile("unrecoverable").model_dump(mode="json")
+    unrecoverable["limitations"]["evidence"][0]["quote"] = "32"
 
-    profiles = validate_cached_evidence_profiles([invalid, valid])
+    profiles = validate_cached_evidence_profiles([recoverable, unrecoverable, valid])
 
-    assert [profile.paper_id for profile in profiles] == ["valid"]
+    assert [profile.paper_id for profile in profiles] == ["recoverable", "valid"]
+    assert len(profiles[0].limitations.evidence) == 1
+
+
+def test_v4_full_text_pool_searches_well_beyond_minimum_target() -> None:
+    assert v4_full_text_pool_limit(315, 20) == 200
+    assert v4_full_text_pool_limit(80, 20) == 80
+    assert v4_full_text_pool_limit(12, 20) == 12
 
 
 def v4_idea() -> SubmissionIdea:

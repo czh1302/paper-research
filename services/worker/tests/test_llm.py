@@ -6,6 +6,7 @@ from paper_research.clients.llm import (
     ClaudeCodeAccountingError,
     ClaudeCodeClient,
     ClaudeCodeError,
+    ClaudeCodeStructuredOutputError,
 )
 from paper_research.models import ProviderUsage
 from pydantic import BaseModel
@@ -140,6 +141,29 @@ async def test_failed_cli_result_still_records_token_usage(monkeypatch) -> None:
     assert records[0].metadata["transport"] == "claude_code"
     assert records[0].metadata["stage"] == "v4_idea_review"
     assert records[0].metadata["claude_cli_model"] == "claude-opus-4-5"
+
+
+async def test_invalid_structured_output_preserves_raw_payload_for_repair(
+    monkeypatch,
+) -> None:
+    raw = {"unexpected": "repair me"}
+
+    class InvalidStructuredProcess:
+        returncode = 0
+
+        async def communicate(self, _prompt: bytes) -> tuple[bytes, bytes]:
+            return json.dumps({"structured_output": raw}).encode(), b""
+
+    async def create_process(*_args, **_kwargs):
+        return InvalidStructuredProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    client = ClaudeCodeClient("test")
+
+    with pytest.raises(ClaudeCodeStructuredOutputError) as caught:
+        await client.structured("prompt", ExampleOutput)
+
+    assert caught.value.structured_output == raw
 
 
 async def test_experiment_usage_accounting_fails_closed() -> None:

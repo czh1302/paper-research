@@ -106,6 +106,36 @@ async def test_load_external_profiles_ignores_assets_without_profile() -> None:
 
 
 @pytest.mark.asyncio
+async def test_external_asset_path_is_unique_per_canonical_paper(tmp_path) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/storage/v1/object/papers/evidence/"):
+            paths.append(request.url.path)
+            return httpx.Response(200)
+        assert request.url.path == "/rest/v1/report_evidence_assets"
+        assert request.url.params["on_conflict"] == "job_id,paper_id,source_kind"
+        return httpx.Response(201, json=[{"id": f"asset-{len(paths)}"}])
+
+    pdf = tmp_path / "shared.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nshared bytes")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    repository = SupabaseRepository("https://example.test", "service-key", client=client)
+    try:
+        await repository.upload_external_asset(
+            "job-1", "paper-a", "Paper A", "https://example.test/a", pdf, {}
+        )
+        await repository.upload_external_asset(
+            "job-1", "paper-b", "Paper B", "https://example.test/b", pdf, {}
+        )
+    finally:
+        await client.aclose()
+
+    assert len(paths) == 2
+    assert paths[0] != paths[1]
+
+
+@pytest.mark.asyncio
 async def test_prune_external_assets_deletes_only_unselected_rows() -> None:
     requests: list[httpx.Request] = []
 

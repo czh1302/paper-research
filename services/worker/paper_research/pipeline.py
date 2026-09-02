@@ -15,7 +15,11 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .clients.llm import ClaudeCodeClient, ClaudeCodeError
+from .clients.llm import (
+    ClaudeCodeClient,
+    ClaudeCodeError,
+    ClaudeCodeStructuredOutputError,
+)
 from .clients.mineru import MinerUClient
 from .config import Settings
 from .document import blocks_as_prompt, chunk_blocks, normalize_mineru_zip, validate_pdf
@@ -127,17 +131,55 @@ PRO_LLM_STAGES = frozenset(
 def validate_cached_evidence_profiles(
     payloads: list[dict[str, Any]],
 ) -> list[PaperEvidenceProfile]:
-    """Reuse valid historical profiles without letting one stale locator block a job."""
+    """Reuse historical profiles while dropping only malformed evidence locators."""
     profiles: list[PaperEvidenceProfile] = []
     for payload in payloads:
+        cleaned = dict(payload)
+        removed_locators = 0
+        for field in (
+            "task",
+            "input_or_data",
+            "method",
+            "output_or_evaluation",
+            "constraints",
+            "limitations",
+        ):
+            claim = cleaned.get(field)
+            if not isinstance(claim, dict):
+                continue
+            evidence = claim.get("evidence")
+            if not isinstance(evidence, list):
+                continue
+            valid_evidence: list[dict[str, Any]] = []
+            for locator in evidence:
+                try:
+                    validated = EvidenceLocator.model_validate(locator)
+                except ValueError:
+                    removed_locators += 1
+                    continue
+                valid_evidence.append(validated.model_dump(mode="json"))
+            cleaned[field] = {**claim, "evidence": valid_evidence}
         try:
-            profiles.append(PaperEvidenceProfile.model_validate(payload))
+            profile = PaperEvidenceProfile.model_validate(cleaned)
         except ValueError:
             LOGGER.warning(
                 "Ignored incompatible cached evidence profile paper_id=%s",
                 str(payload.get("paper_id") or "unknown"),
             )
+            continue
+        if removed_locators:
+            LOGGER.warning(
+                "Removed %d incompatible cached evidence locator(s) paper_id=%s",
+                removed_locators,
+                profile.paper_id,
+            )
+        profiles.append(profile)
     return profiles
+
+
+def v4_full_text_pool_limit(candidate_count: int, target: int) -> int:
+    """Search beyond a brittle top-2x window when open PDF links are unavailable."""
+    return min(max(0, candidate_count), max(200, max(1, target) * 10))
 
 
 class JobCancelled(RuntimeError):
@@ -2678,7 +2720,7 @@ class AnalysisPipeline:
         target_override: int | None = None,
     ) -> list[PaperEvidenceProfile]:
         target = min(30, target_override or self.settings.V4_FULL_TEXT_TARGET)
-        pool = candidates[: min(len(candidates), target * 2)]
+        pool = candidates[: v4_full_text_pool_limit(len(candidates), target)]
         profiles: list[PaperEvidenceProfile] = []
         if (
             self.repository
@@ -3723,16 +3765,38 @@ class AnalysisPipeline:
                             joint=joint,
                         )
                     )
-                    compilation = await self._call_llm(
-                        prompt,
-                        PilotCompilation,
-                        stage=(
-                            "v4_pilot_specification_repair"
-                            if prior
-                            else "v4_pilot_specification"
-                        ),
-                        route="pro",
-                    )
+                    try:
+                        compilation = await self._call_llm(
+                            prompt,
+                            PilotCompilation,
+                            stage=(
+                                "v4_pilot_specification_repair"
+                                if prior
+                                else "v4_pilot_specification"
+                            ),
+                            route="pro",
+                        )
+                    except ClaudeCodeStructuredOutputError as error:
+                        raw_compilation = error.structured_output
+                        if not isinstance(raw_compilation, dict):
+                            raise
+                        # Preserve the rejected payload and its exact validation
+                        # defect so the next in-process call can repair it. This
+                        # avoids restarting the whole job and asking for the same
+                        # invalid contract again.
+                        prior = raw_compilation
+                        validation_error = str(error)
+                        entry = {
+                            "last_compilation": prior,
+                            "validation_error": validation_error,
+                            "attempts": int(entry.get("attempts", 0)) + 1,
+                            "specification": None,
+                        }
+                        pilot_checkpoints[idea.key] = entry
+                        await save_v4_checkpoint(
+                            pilot_specifications=pilot_checkpoints
+                        )
+                        continue
                     prior = compilation.model_dump(mode="json")
                     try:
                         if not compilation.accepted or compilation.specification is None:
