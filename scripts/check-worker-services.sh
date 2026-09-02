@@ -11,6 +11,8 @@ analysis_units=(
   "${secondary_unit}"
   "paper-research-worker-3.service"
   "paper-research-worker-4.service"
+  "paper-research-worker-5.service"
+  "paper-research-worker-6.service"
 )
 experiment_units=("paper-research-experiment-worker.service")
 for worker_number in {2..8}; do
@@ -85,7 +87,14 @@ read_worker_id() {
   done < "/proc/${pid}/environ"
 }
 
-expected_analysis_ids=("${primary_worker_id}" "${secondary_worker_id}" "paper-worker-3" "paper-worker-4")
+expected_analysis_ids=(
+  "${primary_worker_id}"
+  "${secondary_worker_id}"
+  "paper-worker-3"
+  "paper-worker-4"
+  "paper-worker-5"
+  "paper-worker-6"
+)
 declare -A seen_analysis_ids=()
 for index in "${!analysis_units[@]}"; do
   unit="${analysis_units[${index}]}"
@@ -100,7 +109,7 @@ for index in "${!analysis_units[@]}"; do
   seen_analysis_ids["${effective_id}"]=1
 done
 
-printf 'analysis worker IDs: unique (%s, %s, paper-worker-3, paper-worker-4)\n' \
+printf 'analysis worker IDs: unique (%s, %s, paper-worker-3 through paper-worker-6)\n' \
   "${primary_worker_id}" "${secondary_worker_id}"
 
 declare -A seen_experiment_ids=()

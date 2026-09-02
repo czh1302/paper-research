@@ -247,20 +247,22 @@ def test_resume_can_scale_analysis_and_append_worker_services(tmp_path: Path) ->
         repository=SubmissionRepository(),
         project_root=tmp_path,
         resume=True,
-        analysis_concurrency=4,
+        analysis_concurrency=6,
         judge_concurrency=4,
         worker_services=(
             "paper-research-worker.service",
             "paper-research-worker-2.service",
             "paper-research-worker-3.service",
             "paper-research-worker-4.service",
+            "paper-research-worker-5.service",
+            "paper-research-worker-6.service",
         ),
     )
 
     configuration = resumed.state["configuration"]
-    assert configuration["analysis_concurrency"] == 4
+    assert configuration["analysis_concurrency"] == 6
     assert configuration["judge_concurrency"] == 4
-    assert configuration["worker_services"][-1] == "paper-research-worker-4.service"
+    assert configuration["worker_services"][-1] == "paper-research-worker-6.service"
 
     with pytest.raises(ValueError, match="removes or reorders"):
         BenchmarkSupervisor(
@@ -271,8 +273,22 @@ def test_resume_can_scale_analysis_and_append_worker_services(tmp_path: Path) ->
             repository=SubmissionRepository(),
             project_root=tmp_path,
             resume=True,
-            analysis_concurrency=4,
+            analysis_concurrency=6,
             worker_services=("paper-research-worker.service",),
+        )
+
+
+def test_analysis_concurrency_rejects_more_than_six(tmp_path: Path) -> None:
+    manifest = load_benchmark_manifest(_manifest(tmp_path), project_root=tmp_path)
+    with pytest.raises(ValueError, match="between 1 and 6"):
+        BenchmarkSupervisor(
+            SimpleNamespace(),
+            manifest,
+            tmp_path / "output",
+            "owner-job",
+            repository=SubmissionRepository(),
+            project_root=tmp_path,
+            analysis_concurrency=7,
         )
 
 
@@ -527,7 +543,7 @@ def test_cli_exposes_parallel_benchmark_options() -> None:
             "--cold",
             "--include-baseline",
             "--analysis-concurrency",
-            "4",
+            "6",
             "--baseline-concurrency",
             "2",
             "--judge-concurrency",
@@ -537,7 +553,7 @@ def test_cli_exposes_parallel_benchmark_options() -> None:
     )
     assert args.command == "benchmark-run"
     assert args.cold and args.include_baseline and args.resume
-    assert args.analysis_concurrency == 4
+    assert args.analysis_concurrency == 6
     assert args.baseline_concurrency == 2
     assert args.judge_concurrency == 4
 

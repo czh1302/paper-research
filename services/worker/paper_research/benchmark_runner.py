@@ -448,8 +448,8 @@ class BenchmarkSupervisor:
         wait_for_benchmark_output: Path | None = None,
         worker_services: tuple[str, ...] = (),
     ) -> None:
-        if not 1 <= analysis_concurrency <= 4:
-            raise ValueError("Analysis concurrency must be between 1 and 4")
+        if not 1 <= analysis_concurrency <= 6:
+            raise ValueError("Analysis concurrency must be between 1 and 6")
         if not 1 <= baseline_concurrency <= 4 or not 1 <= judge_concurrency <= 4:
             raise ValueError("Baseline and judge concurrency must be between 1 and 4")
         if poll_seconds <= 0:

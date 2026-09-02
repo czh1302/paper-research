@@ -38,7 +38,7 @@ paper-research benchmark-run \
   --manifest benchmark/teacher_benchmark_v1.json \
   --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 \
   --cold --include-baseline \
-  --analysis-concurrency 4 --baseline-concurrency 2 --judge-concurrency 4 \
+  --analysis-concurrency 6 --baseline-concurrency 2 --judge-concurrency 4 \
   --resume --output .artifacts/benchmark/teacher-v1
 ```
 
@@ -62,7 +62,7 @@ one-paper cases without conversion.
 The joint supervisor reserves one production job in `waiting_resources`, but it
 does not activate that job or launch its one-call baseline while the six
 teacher-v1 production reports are incomplete.  Only after all six jobs are
-`completed` and each has a report does it verify that the analysis queue has no active slots, reload both
+`completed` and each has a report does it verify that the analysis queue has no active slots, reload all six
 analysis workers successfully, and only then activates the joint production job
 and baseline.  A failed worker reload leaves the joint case waiting and is
 retried by systemd; mixed worker versions are never activated deliberately.
@@ -74,10 +74,14 @@ paper-research benchmark-run \
   --manifest benchmark/teacher_joint_v1.json \
   --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 \
   --cold --include-baseline \
-  --analysis-concurrency 4 --baseline-concurrency 1 --judge-concurrency 1 \
+  --analysis-concurrency 6 --baseline-concurrency 1 --judge-concurrency 1 \
   --wait-for-benchmark-output .artifacts/benchmark/teacher-v1 \
   --reload-worker-service paper-research-worker.service \
   --reload-worker-service paper-research-worker-2.service \
+  --reload-worker-service paper-research-worker-3.service \
+  --reload-worker-service paper-research-worker-4.service \
+  --reload-worker-service paper-research-worker-5.service \
+  --reload-worker-service paper-research-worker-6.service \
   --resume --output .artifacts/benchmark/teacher-joint-v1
 ```
 
