@@ -17,7 +17,7 @@ Deno.serve(async (request) => {
     const job = Array.isArray(report.job) ? report.job[0] : report.job;
     if (job?.user_id !== user.id && !adminRow) throw new HttpError(404, "Report not found");
     const { data, error: experimentsError } = await admin.from("idea_experiments")
-      .select("*,experiment_runs(count)").eq("report_id", reportId).is("deletion_requested_at", null)
+      .select("*,experiment_runs!experiment_runs_experiment_id_fkey(count)").eq("report_id", reportId).is("deletion_requested_at", null)
       .order("idea_rank", { ascending: true });
     if (experimentsError) throw experimentsError;
     const adminMode = Boolean(adminRow) && job?.user_id !== user.id;
