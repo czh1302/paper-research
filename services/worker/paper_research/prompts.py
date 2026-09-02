@@ -402,33 +402,9 @@ claim of a strong conference submission if validated. Reject cosmetic combinatio
 swaps, vague evaluation suggestions, and 'add an LLM' proposals. Do not claim novelty. Use 6-10
 distinct supplied external paper_ids across closest/supporting/counterevidence lists whenever the
 evidence exists. Initial verdict must be 'needs_evidence'; rank must be 0. Scores are provisional.
-Compile a complete PilotSpecification for the exact proposed hypothesis. This is a frozen,
-machine-executable contract, not prose planning:
-- use only real public dataset/code/model URLs, with versions, licenses and hashes when known;
-- name an explicit environment, test, baseline, intervention and evaluation command sequence;
-- define a JSON-object metrics schema, JSON pointers, one primary metric, its direction and a
-  numeric success threshold, plus at least one passing and one failing evaluator fixture;
-- provide the complete deterministic evaluator source under evaluator_files and commands that run
-  only `.research-atlas/evaluator/...`; this Pro-authored evaluator must compute metrics from raw
-  baseline/intervention artifacts, never trust a final score produced by editable repository code;
-- for delta/ratio metrics provide both baseline_json_pointer and intervention_json_pointer; use
-  json_pointer alone for absolute metrics;
-- list the hypothesis-preserving invariants and every allowed network hostname;
-- classify execution as native_cpu, valid_cpu_proxy or code_only. A CPU proxy is valid only when
-  the same manipulated variable, metric and falsifiability are preserved, and requires a precise
-  bilingual rationale. Use code_only when CPU execution cannot scientifically test the claim;
-- never require the private input PDF, local user files, secrets, unpublished data or an
-  unauthenticated service. Do not place API keys or shell substitutions in commands.
-- if faithful subject execution requires runtime language-model inference, set
-  requires_live_inference=true and freeze 1-4 narrow inference_contracts. Each contract must define
-  a fixed instruction, bounded object request/response schemas and the smallest defensible call
-  count (maximum 8). Subject code may use only the managed Claude Code + V4 Flash proxy; never add
-  provider hosts or credentials, silently substitute a mock, or let the evaluator call inference.
-  If the live protocol cannot be expressed through those frozen schemas and limits, use code_only.
-- if runtime inference is unnecessary, set requires_live_inference=false and
-  inference_contracts=[].
-The PilotSpecification must freeze the same hypothesis and success criterion stated by the Idea;
-later code generation is not allowed to change either.
+Do not design the executable PilotSpecification in this creative call: set pilot_specification to
+null. Research Atlas compiles and validates that frozen contract separately after the final report
+Ideas have been selected, so execution detail cannot dilute Idea quality.
 The Idea must differ materially from these already generated titles:
 {json.dumps(avoid_titles or [], ensure_ascii=False)}
 
@@ -476,21 +452,100 @@ A publishable hypothesis should be unproven. Do not list the proposed experiment
 as missing literature evidence. Missing evidence should instead identify unavailable prior work,
 code/data prerequisites, or unresolved collision/feasibility facts needed before running the stated
 experiment.
-Treat PilotSpecification as a hard gate. Reject or mark needs_evidence when it has placeholder or
-private resources, unverifiable URLs, unspecified versions/licenses, missing command stages, a
-non-deterministic or non-frozen evaluator, evaluation commands outside
-`.research-atlas/evaluator/`, a primary metric not present in the JSON schema, no passing/failing
-evaluator cases, a subjective success rule, a CPU proxy that changes the research variable or
-metric, or estimated resources above 4 vCPU / 8192 MiB / 10240 MiB / 60 minutes. The specification
-may classify the proposal as code_only, but it must say why the stated hypothesis cannot be tested
-faithfully on CPU. Review the proposal and its executable contract together; never repair or
-silently reinterpret the contract in the review response.
+PilotSpecification is intentionally absent during scientific review and will be compiled after
+selection. Judge the research hypothesis, mechanism, evidence and proposed experiment here; do not
+penalize pilot_specification=null and do not invent execution-contract details.
 
 IDEAS:
 {json.dumps(ideas, ensure_ascii=False)}
 
 FULL-TEXT PROFILES (the claims below were already grounded against PDFs):
 {json.dumps(_compact_profile_payload(profiles), ensure_ascii=False)}
+"""
+
+
+def pilot_specification_prompt(
+    idea: dict[str, object],
+    profiles: list[PaperEvidenceProfile],
+    *,
+    force_cpu_proxy: bool,
+) -> str:
+    related_ids = {
+        str(value)
+        for name in (
+            "closest_work_ids",
+            "supporting_work_ids",
+            "counterevidence_work_ids",
+        )
+        for value in (idea.get(name) or [])
+    }
+    evidence = [item for item in profiles if item.paper_id in related_ids]
+    proxy_rule = (
+        "If a faithful native CPU test is impossible, you MUST still provide an executable "
+        "exploratory_cpu_proxy that tests a clearly narrower operational claim."
+        if force_cpu_proxy
+        else "Use exploratory_cpu_proxy only when a faithful native or valid proxy is impossible."
+    )
+    return f"""{SYSTEM_GUARD}
+
+Compile the selected research Idea into one complete frozen PilotSpecification. This is a separate
+execution-editor task: preserve the Idea's hypothesis, mechanism, baseline, metric direction and
+success condition. Never improve the Idea by silently changing its scientific claim. {proxy_rule}
+
+The result must be accepted=true and executable on at most 4 vCPU, 8192 MiB memory, 10240 MiB disk
+and 60 minutes. New reports may use only native_cpu, valid_cpu_proxy or
+exploratory_cpu_proxy—never code_only. For exploratory_cpu_proxy, state a precise bilingual
+rationale explaining the narrower proxy claim and why its result cannot validate the full original
+hypothesis. Use only real public resources with exact URLs, versions, licenses and hashes when
+known; never require the input PDF, a private file, a user secret, or an unauthenticated paid API.
+
+Freeze environment, tests, baseline, intervention and evaluation commands; a JSON-object metric
+schema; numeric metric pointers; one deterministic primary metric, direction and threshold; both a
+passing and failing evaluator case; public-safe artifacts; network hosts; and bilingual invariants.
+Provide complete evaluator source files under `.research-atlas/evaluator/`. Evaluation commands
+must execute exactly one declared evaluator file and compute metrics from declared raw JSON
+baseline/intervention artifacts under `artifacts/`, not from an editable repository score. For
+delta/ratio metrics freeze both raw JSON pointers. If bounded live inference is genuinely required,
+declare narrow inference_contracts using only the managed Claude Code + V4 Flash proxy; never put a
+provider hostname or credential in the sandbox allow-list.
+
+SELECTED IDEA:
+{json.dumps(idea, ensure_ascii=False)}
+
+RELATED FULL-TEXT EVIDENCE:
+{json.dumps(_compact_profile_payload(evidence), ensure_ascii=False)}
+"""
+
+
+def pilot_specification_repair_prompt(
+    idea: dict[str, object],
+    prior_compilation: dict[str, object],
+    validation_error: str,
+    *,
+    force_cpu_proxy: bool,
+) -> str:
+    proxy_rule = (
+        "An executable exploratory_cpu_proxy is required if the full claim cannot run faithfully "
+        "on CPU."
+        if force_cpu_proxy
+        else ""
+    )
+    return f"""{SYSTEM_GUARD}
+
+Repair the frozen PilotSpecification for the same Idea after deterministic validation rejected it.
+Return a complete replacement compilation, not a patch. Preserve the hypothesis, baseline, metric
+meaning, direction and threshold. Fix every validation defect and keep all resources public and
+CPU-bounded. New reports may use only native_cpu, valid_cpu_proxy or exploratory_cpu_proxy—never
+code_only. {proxy_rule}
+
+IDEA:
+{json.dumps(idea, ensure_ascii=False)}
+
+VALIDATION ERROR:
+{validation_error[:2000]}
+
+PRIOR COMPILATION:
+{json.dumps(prior_compilation, ensure_ascii=False)}
 """
 
 

@@ -22,7 +22,7 @@ function terminalTheme(theme: "light" | "dark") {
     : { background: "#f6f8fb", foreground: "#142235", cursor: "#0f8f80", selectionBackground: "#c8eae5" };
 }
 
-export function ExperimentTerminal({ experimentId, canRead, canWrite, active }: { experimentId: string; canRead: boolean; canWrite: boolean; active: boolean }) {
+export function ExperimentTerminal({ experimentId, canRead, canWrite, active, ready }: { experimentId: string; canRead: boolean; canWrite: boolean; active: boolean; ready: boolean }) {
   const { text } = useLanguage();
   const { theme } = useTheme();
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -36,7 +36,7 @@ export function ExperimentTerminal({ experimentId, canRead, canWrite, active }: 
   }, [theme]);
 
   useEffect(() => {
-    if (!active || !canRead || !hostRef.current) return;
+    if (!active || !canRead || !ready || !hostRef.current) return;
     const host = hostRef.current;
     const terminal = new Terminal({
       allowProposedApi: false,
@@ -112,9 +112,10 @@ export function ExperimentTerminal({ experimentId, canRead, canWrite, active }: 
       terminal.dispose();
       if (terminalRef.current === terminal) terminalRef.current = null;
     };
-  }, [active, canRead, canWrite, experimentId, text]);
+  }, [active, canRead, canWrite, experimentId, ready, text]);
 
   if (!canRead) return <div className="experiment-empty">{text("当前账户没有终端查看权限。", "This account cannot view the terminal.")}</div>;
+  if (!ready) return <div className="experiment-empty"><strong>{text("沙箱尚未就绪", "Sandbox is not ready")}</strong><span>{text("代码会先生成并显示；终端将在 E2B 沙箱创建或恢复后自动开放。", "Code is generated and shown first. The terminal opens after the E2B sandbox is created or restored.")}</span></div>;
   return <div className="experiment-terminal-shell">
     <div className="experiment-terminal-state" data-state={connectionState} aria-live="polite">
       {connectionState === "connected" ? text("终端已连接", "Terminal connected") : connectionState === "unavailable" ? text("终端正在自动恢复", "Terminal is recovering") : text("正在连接终端…", "Connecting terminal…")}

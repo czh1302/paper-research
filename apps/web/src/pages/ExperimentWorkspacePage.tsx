@@ -480,7 +480,7 @@ function EditorPane({ path, openPaths, document, canEdit, saving, diffMode, setD
   </section>;
 }
 
-export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boolean }) {
+export function ExperimentWorkspacePage({ adminMode: _adminMode = false }: { adminMode?: boolean }) {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const { language, text } = useLanguage();
@@ -526,7 +526,7 @@ export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boo
       const current = documentsRef.current[path];
       if (!current || current.content === current.savedContent) return true;
       const currentWorkspace = workspaceRef.current;
-      if (adminMode || !currentWorkspace?.permissions.editCode) return false;
+      if (currentWorkspace?.accessMode === "admin" || !currentWorkspace?.permissions.editCode || !currentWorkspace.readiness.repositoryEditable) return false;
       const sentContent = current.content;
       setSavingPaths((paths) => new Set(paths).add(path));
       try {
@@ -574,7 +574,7 @@ export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boo
     });
     saveQueueRef.current = operation.catch(() => false);
     return operation;
-  }, [adminMode, id, text]);
+  }, [id, text]);
 
   const flushDocuments = useCallback(async () => {
     for (const path of Object.keys(documentsRef.current)) {
@@ -585,19 +585,19 @@ export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boo
 
   useEffect(() => {
     const current = documents[selectedPath];
-    if (!current || current.content === current.savedContent || adminMode || !workspace?.permissions.editCode) return;
+    if (!current || current.content === current.savedContent || workspace?.accessMode === "admin" || !workspace?.permissions.editCode || !workspace.readiness.repositoryEditable) return;
     const timer = window.setTimeout(() => storeWorkspaceDraft(id, current), LOCAL_DRAFT_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [adminMode, documents, id, selectedPath, workspace?.permissions.editCode]);
+  }, [documents, id, selectedPath, workspace?.accessMode, workspace?.permissions.editCode, workspace?.readiness.repositoryEditable]);
 
   useEffect(() => {
     const current = documents[selectedPath];
-    if (!current || current.content === current.savedContent || adminMode || !workspace?.permissions.editCode) return;
+    if (!current || current.content === current.savedContent || workspace?.accessMode === "admin" || !workspace?.permissions.editCode || !workspace.readiness.repositoryEditable) return;
     // One server save creates one immutable Git revision. Waiting for five
     // idle seconds consolidates a typing burst instead of archiving every key.
     const timer = window.setTimeout(() => void persistDocument(selectedPath).catch(() => undefined), REVISION_IDLE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [adminMode, documents, persistDocument, selectedPath, workspace?.permissions.editCode]);
+  }, [documents, persistDocument, selectedPath, workspace?.accessMode, workspace?.permissions.editCode, workspace?.readiness.repositoryEditable]);
 
   const openFile = useCallback(async (path: string) => {
     if (!path) return;
@@ -643,13 +643,14 @@ export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boo
   if (error || !workspace) return <div className="experiment-loading"><strong>{text("工作区正在自动恢复", "Workspace is recovering")}</strong><span>{error || text("请稍后重试。", "Try again shortly.")}</span><button className="button button-secondary" onClick={() => { setLoading(true); void refresh().finally(() => setLoading(false)); }}>{text("立即重试", "Retry now")}</button></div>;
 
   const experiment = workspace.experiment;
-  const permissions = adminMode ? { ...workspace.permissions, editCode: false, chat: false, terminalWrite: false, runValidation: false, rollback: false } : workspace.permissions;
-  const visibleWorkspace = permissions === workspace.permissions ? workspace : { ...workspace, permissions };
-  const reportRoute = adminMode ? `/admin/reports/${experiment.reportId}` : `/reports/${experiment.reportId}`;
+  const isAdminAudit = workspace.accessMode === "admin";
+  const permissions = workspace.permissions;
+  const visibleWorkspace = workspace;
+  const reportRoute = isAdminAudit ? `/admin/reports/${experiment.reportId}` : `/reports/${experiment.reportId}`;
   const currentDocument = documents[selectedPath];
   const currentSummary = language === "zh" ? experiment.summaryZh : experiment.summaryEn;
   const canCancel = permissions.cancel && activeStatuses.includes(experiment.status);
-  const canValidate = permissions.runValidation && experiment.status === "ready" && (experiment.userValidationCount ?? Math.max(0, experiment.runCount - 1)) < experiment.maxUserValidations;
+  const canValidate = permissions.runValidation && workspace.readiness.validationReady && (experiment.userValidationCount ?? Math.max(0, experiment.runCount - 1)) < experiment.maxUserValidations;
   const hasRepositoryArchive = workspace.artifacts.some((artifact) => artifact.kind === "archive" && /\.zip$/i.test(artifact.name));
   const activeAction = workspace.actions.some((item) => item.state === "queued" || item.state === "running");
   async function perform(label: string, action: () => Promise<unknown>, refreshAfter = true) {
@@ -701,8 +702,8 @@ export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boo
     setWorkspace((value) => value ? { ...value, files, experiment: { ...value.experiment, currentRevisionId: revisionId ?? value.experiment.currentRevisionId } } : value);
   }
   const repository = <RepositoryPane workspace={visibleWorkspace} selectedPath={selectedPath} onOpen={(path) => void openFile(path)} onRefresh={refresh} onBeforeMutation={flushDocuments} onMove={applyMovedFile} onDelete={applyDeletedFile}/>;
-  const editor = <EditorPane path={selectedPath} openPaths={openPaths} document={currentDocument} canEdit={permissions.editCode && experiment.status === "ready"} saving={savingPaths.has(selectedPath)} diffMode={diffMode} setDiffMode={setDiffMode} onChange={(content) => setDocuments((items) => ({ ...items, [selectedPath]: { ...items[selectedPath], content, error: undefined } }))} onSelect={(path) => { void persistDocument(selectedPath); setSelectedPath(path); setDiffMode(false); }} onClose={(path) => { void persistDocument(path); const next = openPaths.filter((item) => item !== path); setOpenPaths(next); if (path === selectedPath) setSelectedPath(next.at(-1) ?? ""); setDiffMode(false); }}/>
-  const terminal = <ExperimentTerminal experimentId={id} canRead={permissions.terminalRead} canWrite={permissions.terminalWrite && experiment.status === "ready"} active={compact ? mobilePane === "terminal" : true}/>;
+  const editor = <EditorPane path={selectedPath} openPaths={openPaths} document={currentDocument} canEdit={permissions.editCode && workspace.readiness.repositoryEditable} saving={savingPaths.has(selectedPath)} diffMode={diffMode} setDiffMode={setDiffMode} onChange={(content) => setDocuments((items) => ({ ...items, [selectedPath]: { ...items[selectedPath], content, error: undefined } }))} onSelect={(path) => { void persistDocument(selectedPath); setSelectedPath(path); setDiffMode(false); }} onClose={(path) => { void persistDocument(path); const next = openPaths.filter((item) => item !== path); setOpenPaths(next); if (path === selectedPath) setSelectedPath(next.at(-1) ?? ""); setDiffMode(false); }}/>
+  const terminal = <ExperimentTerminal experimentId={id} canRead={permissions.terminalRead} canWrite={permissions.terminalWrite && workspace.readiness.terminalReady} ready={workspace.readiness.terminalReady} active={compact ? mobilePane === "terminal" : true}/>;
   const assistant = <AssistantPane workspace={visibleWorkspace} onSubmit={async (message, attachmentIds, contextAttachmentIds) => {
     if (!await flushDocuments()) throw new Error("unsaved workspace");
     return submitExperimentAction(id, { kind: "assistant", prompt: message, attachmentIds, contextAttachmentIds });
@@ -721,7 +722,7 @@ export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boo
         {permissions.delete && <button aria-label={text("删除实验", "Delete experiment")} className="button button-danger experiment-toolbar-icon-action" disabled={Boolean(working)} onClick={() => window.confirm(text("永久删除该实验、代码与全部产物？", "Permanently delete this experiment, its code, and all artifacts?")) && void perform("delete", async () => { await deleteExperiment(id); navigate(reportRoute); }, false)} title={text("删除实验", "Delete experiment")}><Trash2/></button>}
       </div>
     </header>
-    {(currentSummary || pageMessage || adminMode) && <div className="experiment-notice" data-admin={adminMode || undefined}>{adminMode ? text("管理员审计模式：可以查看代码、终端输出、结果和费用，但不能编辑或向助手发送指令。", "Administrator audit mode: code, terminal output, results, and costs are visible, but editing and assistant instructions are disabled.") : pageMessage || currentSummary}</div>}
+    {(currentSummary || pageMessage || isAdminAudit) && <div className="experiment-notice" data-admin={isAdminAudit || undefined}>{isAdminAudit ? text("管理员审计模式：可以查看代码、终端输出、结果和费用，但不能编辑或向助手发送指令。", "Administrator audit mode: code, terminal output, results, and costs are visible, but editing and assistant instructions are disabled.") : pageMessage || currentSummary}</div>}
     {compact ? <div className="experiment-mobile-layout">
       <nav className="experiment-mobile-tabs" aria-label={text("工作区面板", "Workspace panels")}>{(["files", "editor", "terminal", "assistant"] as MobilePane[]).map((pane) => <button className={mobilePane === pane ? "active" : ""} key={pane} onClick={() => setMobilePane(pane)}>{pane === "files" ? <Folder/> : pane === "editor" ? <Code2/> : pane === "terminal" ? <SquareTerminal/> : <Bot/>}<span>{pane === "files" ? text("文件", "Files") : pane === "editor" ? text("编辑", "Editor") : pane === "terminal" ? text("终端", "Terminal") : text("助手", "Assistant")}</span></button>)}</nav>
       <div className="experiment-mobile-content">{mobilePane === "files" ? repository : mobilePane === "editor" ? editor : mobilePane === "terminal" ? <OutputPane workspace={visibleWorkspace} activePane={bottomPane} onPaneChange={setBottomPane} terminal={terminal}/> : assistant}</div>

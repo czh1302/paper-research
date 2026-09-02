@@ -48,6 +48,7 @@ class ExperimentRecord(BaseModel):
 
     id: str
     report_id: str
+    report_generation_id: str | None = None
     job_id: str
     user_id: str
     idea_key: str
@@ -236,6 +237,15 @@ class AssistantWorkspaceChange(BaseModel):
         if set(replacement_paths).intersection(self.delete_paths):
             raise ValueError("Assistant cannot replace and delete the same path")
         return self
+
+
+class AssistantAnswer(BaseModel):
+    """A conversational response that never requires a sandbox or mutation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    explanation_zh: str = Field(min_length=2, max_length=1600)
+    explanation_en: str = Field(min_length=3, max_length=2600)
 
 
 def _safe_workspace_command(value: str) -> str:

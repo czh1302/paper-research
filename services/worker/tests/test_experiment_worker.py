@@ -232,6 +232,21 @@ def test_worker_level_pilot_validation_checks_metric_schema() -> None:
         validate_pilot_specification(invalid)
 
 
+def test_new_reports_require_an_executable_cpu_or_exploratory_proxy() -> None:
+    code_only = pilot_spec().model_copy(update={"execution_mode": "code_only"})
+    with pytest.raises(Exception, match="executable CPU"):
+        validate_pilot_specification(code_only)
+
+    exploratory = pilot_spec().model_copy(
+        update={
+            "execution_mode": "exploratory_cpu_proxy",
+            "cpu_proxy_rationale_zh": "资源不足时验证一个更窄、可计算的机制命题。",
+            "cpu_proxy_rationale_en": "Tests a narrower computable mechanism claim under constrained resources.",
+        }
+    )
+    validate_pilot_specification(exploratory)
+
+
 def test_live_inference_requires_a_complete_frozen_contract() -> None:
     missing = pilot_payload()
     missing["requires_live_inference"] = True

@@ -32,7 +32,10 @@ cleanup() { rm -f -- "${temporary}"; }
 trap cleanup EXIT
 
 awk -v enabled="${enabled}" -v manual_enabled="${manual_enabled}" -v auto_enabled="${auto_enabled}" -v template_id="${template_id}" '
-  BEGIN { wrote_enabled = 0; wrote_manual = 0; wrote_auto = 0; wrote_template = 0; wrote_vision = 0 }
+  BEGIN {
+    wrote_enabled = 0; wrote_manual = 0; wrote_auto = 0; wrote_template = 0; wrote_vision = 0
+    wrote_require_pilot = 0; wrote_exploratory = 0; wrote_force_proxy = 0
+  }
   /^E2B_PILOT_ENABLED=/ {
     if (!wrote_enabled) print "E2B_PILOT_ENABLED=" enabled
     wrote_enabled = 1
@@ -58,6 +61,21 @@ awk -v enabled="${enabled}" -v manual_enabled="${manual_enabled}" -v auto_enable
     wrote_vision = 1
     next
   }
+  /^V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS=/ {
+    if (!wrote_require_pilot) print "V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS=true"
+    wrote_require_pilot = 1
+    next
+  }
+  /^V4_DELIVER_EXPLORATORY_IDEA=/ {
+    if (!wrote_exploratory) print "V4_DELIVER_EXPLORATORY_IDEA=true"
+    wrote_exploratory = 1
+    next
+  }
+  /^EXPERIMENT_FORCE_CPU_PROXY=/ {
+    if (!wrote_force_proxy) print "EXPERIMENT_FORCE_CPU_PROXY=true"
+    wrote_force_proxy = 1
+    next
+  }
   { print }
   END {
     if (!wrote_enabled) print "E2B_PILOT_ENABLED=" enabled
@@ -65,6 +83,9 @@ awk -v enabled="${enabled}" -v manual_enabled="${manual_enabled}" -v auto_enable
     if (!wrote_auto) print "E2B_AUTO_EXPERIMENT_ENABLED=" auto_enabled
     if (!wrote_template) print "E2B_TEMPLATE_ID=" template_id
     if (!wrote_vision) print "CLAUDE_VISION_MODEL=deepseek-v4-flash-vision-exp"
+    if (!wrote_require_pilot) print "V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS=true"
+    if (!wrote_exploratory) print "V4_DELIVER_EXPLORATORY_IDEA=true"
+    if (!wrote_force_proxy) print "EXPERIMENT_FORCE_CPU_PROXY=true"
   }
 ' "${secrets_path}" > "${temporary}"
 

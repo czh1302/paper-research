@@ -51,6 +51,9 @@ class Settings(BaseSettings):
 
     E2B_API_KEY: SecretStr | None = None
     V4_PILOT_SPEC_REQUIRED: bool = True
+    V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS: bool = True
+    V4_DELIVER_EXPLORATORY_IDEA: bool = True
+    EXPERIMENT_FORCE_CPU_PROXY: bool = True
     E2B_PILOT_ENABLED: bool = False
     # Creation is staged independently from the master runtime kill switch.
     # Existing experiments remain inspectable when either creation path is off.

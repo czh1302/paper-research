@@ -16,7 +16,7 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("../lib/api", () => api);
 vi.mock("../components/ExperimentEditor", () => ({ ExperimentEditor: ({ value, readOnly, onChange }: { value: string; readOnly: boolean; onChange: (value: string) => void }) => <textarea aria-label="mock editor" readOnly={readOnly} value={value} onChange={(event) => onChange(event.target.value)}/> }));
-vi.mock("../components/ExperimentTerminal", () => ({ ExperimentTerminal: ({ canWrite }: { canWrite: boolean }) => <div>mock terminal {canWrite ? "write" : "read"}</div> }));
+vi.mock("../components/ExperimentTerminal", () => ({ ExperimentTerminal: ({ canWrite, ready }: { canWrite: boolean; ready: boolean }) => <div>{ready ? `mock terminal ${canWrite ? "write" : "read"}` : "mock terminal waiting"}</div> }));
 
 function fixture(admin = false): ExperimentWorkspace {
   return {
@@ -31,6 +31,12 @@ function fixture(admin = false): ExperimentWorkspace {
     permissions: admin
       ? { readCode: true, editCode: false, chat: false, terminalRead: true, terminalWrite: false, runValidation: false, rollback: false, download: true, cancel: true, delete: true }
       : { readCode: true, editCode: true, chat: true, terminalRead: true, terminalWrite: true, runValidation: true, rollback: true, download: true, cancel: false, delete: true },
+    readiness: {
+      specificationReady: true, repositoryReadable: true,
+      repositoryEditable: true, runtimeReady: true, assistantReady: true,
+      terminalReady: true, validationReady: true,
+    },
+    runtime: { state: "running" },
     files: [{ path: "src", type: "directory" }, { path: "src/main.py", type: "file", size: 14 }, { path: "README.md", type: "file", size: 8 }],
     revisions: [{ id: "revision-2", label: "user/v2", actor: "user", createdAt: "2026-09-02T00:08:00Z" }],
     runs: [{ id: "run-1", kind: "automatic", status: "ready", outcome: "initial_support", metrics: { accuracy: .82 }, summaryZh: "达到阈值", summaryEn: "Threshold met", createdAt: "2026-09-02T00:05:00Z" }],
@@ -75,6 +81,37 @@ describe("ExperimentWorkspacePage", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(api.submitExperimentAction).toHaveBeenCalledWith(expect.any(String), { kind: "assistant", prompt: "improve tests", attachmentIds: [], contextAttachmentIds: [] }));
+  });
+
+  it("shows checkpointed code and keeps Flash available before an E2B runtime exists", async () => {
+    const workspace = fixture();
+    workspace.experiment = {
+      ...workspace.experiment,
+      status: "running",
+      stage: "repo_generation",
+      progress: 31,
+      currentRevisionId: null,
+    };
+    workspace.readiness = {
+      specificationReady: true,
+      repositoryReadable: true,
+      repositoryEditable: false,
+      runtimeReady: false,
+      assistantReady: true,
+      terminalReady: false,
+      validationReady: false,
+    };
+    workspace.runtime = { state: "absent" };
+    workspace.revisions = [];
+    workspace.runs = [];
+    api.getExperimentWorkspace.mockResolvedValue(workspace);
+
+    renderPage();
+
+    expect(await screen.findByDisplayValue("# pilot")).toHaveAttribute("readonly");
+    expect(screen.getByRole("textbox", { name: "发送给 Flash" })).toBeEnabled();
+    expect(screen.getByText("mock terminal waiting")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重新验证" })).not.toBeInTheDocument();
   });
 
   it("keeps multiple source files in Monaco-style editor tabs", async () => {

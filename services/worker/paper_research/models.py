@@ -491,7 +491,14 @@ class PilotSpecification(BaseModel):
     version: Literal[1] = 1
     hypothesis_zh: str = Field(min_length=20, max_length=420)
     hypothesis_en: str = Field(min_length=30, max_length=800)
-    execution_mode: Literal["native_cpu", "valid_cpu_proxy", "code_only"]
+    # ``code_only`` remains readable for historical reports, but the current
+    # pipeline only emits one of the three executable modes below.
+    execution_mode: Literal[
+        "native_cpu",
+        "valid_cpu_proxy",
+        "exploratory_cpu_proxy",
+        "code_only",
+    ]
     cpu_proxy_rationale_zh: str | None = Field(default=None, max_length=400)
     cpu_proxy_rationale_en: str | None = Field(default=None, max_length=800)
     invariants_zh: list[str] = Field(min_length=1, max_length=8)
@@ -577,10 +584,10 @@ class PilotSpecification(BaseModel):
         metric_keys = {item.key for item in self.metrics}
         if self.primary_metric_key not in metric_keys:
             raise ValueError("primary_metric_key must reference a declared metric")
-        if self.execution_mode == "valid_cpu_proxy" and not (
+        if self.execution_mode in {"valid_cpu_proxy", "exploratory_cpu_proxy"} and not (
             self.cpu_proxy_rationale_zh and self.cpu_proxy_rationale_en
         ):
-            raise ValueError("A valid CPU proxy requires a bilingual scientific rationale")
+            raise ValueError("A CPU proxy requires a bilingual scientific rationale")
         schema_type = self.metrics_json_schema.get("type")
         if schema_type != "object" or not isinstance(
             self.metrics_json_schema.get("properties"), dict
@@ -1046,7 +1053,7 @@ class SubmissionIdea(BaseModel):
     verdict: Literal[
         "recommended", "alternative", "needs_evidence", "rejected"
     ] = "needs_evidence"
-    qualification_tier: Literal["strict", "relaxed"] = "strict"
+    qualification_tier: Literal["strict", "relaxed", "exploratory"] = "strict"
     review_attempt: int = Field(default=1, ge=1, le=8)
     missing_evidence_zh: list[str] = Field(default_factory=list, max_length=5)
     missing_evidence_en: list[str] = Field(default_factory=list, max_length=5)
@@ -1111,6 +1118,7 @@ class ReportPresentationV4(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[4] = 4
+    generation_id: str | None = Field(default=None, max_length=64)
     headline_zh: str = Field(min_length=12, max_length=220)
     headline_en: str = Field(min_length=20, max_length=420)
     problem_briefs: list[ProblemBrief] = Field(min_length=1, max_length=5)
@@ -1135,6 +1143,7 @@ class RoundAnalysis(BaseModel):
 
 class AnalysisReport(BaseModel):
     job_id: str
+    generation_id: str | None = Field(default=None, max_length=64)
     generated_at: datetime = Field(default_factory=datetime.utcnow)
     problem_statements: list[ProblemStatement]
     joint_problem_statement: JointProblemStatement | None = None

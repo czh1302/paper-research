@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .clients.llm import ClaudeCodeClient
 from .clients.local import LocalCheckpointRepository
+from .clients.supabase import SupabaseRepository
 from .config import DEFAULT_SECRETS_FILE, Settings
 from .document import validate_pdf
 from .experiment_worker import run_experiment_worker
@@ -225,6 +226,65 @@ async def replay_ideas_local(
     return 0
 
 
+async def resume_job_from_v4_ideas(
+    settings: Settings,
+    job_id: str,
+    expected_sha256: str,
+) -> int:
+    """Atomically reopen a completed job at its cached V4 Idea boundary."""
+
+    settings.require_worker_secrets()
+    repository = SupabaseRepository(
+        settings.SUPABASE_URL or "",
+        Settings.reveal(settings.SUPABASE_SERVICE_ROLE_KEY) or "",
+    )
+    generation_id = str(uuid.uuid4())
+    try:
+        result = await repository.resume_job_from_v4_ideas(
+            job_id,
+            expected_sha256,
+            generation_id,
+        )
+        # The Worker deliberately prefers a newer local checkpoint during
+        # transient database outages. Replace that local copy after the
+        # database transaction, otherwise a completed pre-replay checkpoint
+        # could resurrect the retired Idea generation on the next claim.
+        remote_checkpoint = await repository.load_pipeline_checkpoint(job_id)
+        checkpoint_path = (
+            settings.ARTIFACT_ROOT
+            / "pipeline-checkpoints"
+            / f"{job_id}.json"
+        )
+        if checkpoint_path.is_file():
+            backup_directory = checkpoint_path.parent / "backups"
+            backup_directory.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(
+                checkpoint_path,
+                backup_directory / f"{job_id}-{generation_id}.json",
+            )
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = checkpoint_path.with_suffix(".resume.tmp")
+        temporary_path.write_text(
+            json.dumps(remote_checkpoint, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary_path.replace(checkpoint_path)
+    finally:
+        await repository.close()
+    print(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "generation_id": generation_id,
+                "status": result.get("status", "queued"),
+                "stage": result.get("stage", "v4_ideas"),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Paper research worker")
     parser.add_argument("--verbose", action="store_true")
@@ -255,6 +315,16 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument(
         "--output", type=Path, default=Path(".artifacts/idea-quality-replay")
     )
+    resume = subparsers.add_parser(
+        "resume-job", help="Resume a completed production job from a guarded checkpoint"
+    )
+    resume.add_argument("--job-id", required=True)
+    resume.add_argument("--from", dest="resume_from", choices=("v4_ideas",), required=True)
+    resume.add_argument("--new-report-generation", action="store_true", required=True)
+    resume.add_argument(
+        "--expected-sha256",
+        help="Expected single input PDF SHA-256 (required except for the documented recovery job)",
+    )
     return parser
 
 
@@ -283,6 +353,27 @@ def main() -> None:
             if not settings.DEEPSEEK_API_KEY or not settings.MINERU_API_TOKEN:
                 raise RuntimeError("Rotated DEEPSEEK_API_KEY and MINERU_API_TOKEN are required")
             code = asyncio.run(analyze_baseline_local(settings, args.file, args.output))
+        elif args.command == "resume-job":
+            known_recovery_hashes = {
+                "08f0ca6d-abcf-42a4-9b58-6ed07996d135": (
+                    "3545fcaf6c0f0fe1253833991d44a2a0f3f7e4b1d6b3314d9a04079d82f46481"
+                ),
+            }
+            expected_sha256 = args.expected_sha256 or known_recovery_hashes.get(args.job_id)
+            if not expected_sha256:
+                raise ValueError("--expected-sha256 is required for this job")
+            if len(expected_sha256) != 64 or any(
+                character not in "0123456789abcdefABCDEF"
+                for character in expected_sha256
+            ):
+                raise ValueError("--expected-sha256 must be a SHA-256 hex digest")
+            code = asyncio.run(
+                resume_job_from_v4_ideas(
+                    settings,
+                    args.job_id,
+                    expected_sha256.lower(),
+                )
+            )
         else:
             if not settings.DEEPSEEK_API_KEY:
                 raise RuntimeError("A rotated DEEPSEEK_API_KEY is required")

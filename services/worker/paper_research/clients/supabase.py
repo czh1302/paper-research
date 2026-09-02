@@ -705,7 +705,13 @@ class SupabaseRepository:
             "POST",
             "/rest/v1/reports?on_conflict=job_id",
             headers={"Prefer": "resolution=merge-duplicates,return=representation"},
-            json={"job_id": job_id, "content": payload, "markdown": markdown, "summary": summary},
+            json={
+                "job_id": job_id,
+                "generation_id": payload.get("generation_id"),
+                "content": payload,
+                "markdown": markdown,
+                "summary": summary,
+            },
         )
         report_id = str(response.json()[0]["id"])
         await self._request(
@@ -729,6 +735,53 @@ class SupabaseRepository:
                 ],
             )
         return report_id
+
+    async def save_v4_report_generation(
+        self,
+        job_id: str,
+        generation_id: str,
+        payload: dict[str, Any],
+        markdown: str,
+        summary: dict[str, Any],
+        checkpoint: dict[str, Any],
+        sections: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
+        """Atomically switch the report generation and its experiment marker."""
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/save_v4_report_generation",
+            json={
+                "p_job_id": job_id,
+                "p_generation_id": generation_id,
+                "p_content": payload,
+                "p_markdown": markdown,
+                "p_summary": summary,
+                "p_checkpoint": checkpoint,
+                "p_sections": _postgres_json(sections or {}),
+            },
+        )
+        report_id = str(response.json())
+        await self._request(
+            "PATCH",
+            f"/rest/v1/report_evidence_assets?job_id=eq.{quote(job_id)}",
+            headers={"Prefer": "return=minimal"},
+            json={"report_id": report_id},
+        )
+        return report_id
+
+    async def resume_job_from_v4_ideas(
+        self, job_id: str, expected_sha256: str, generation_id: str
+    ) -> dict[str, Any]:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/resume_job_from_v4_ideas",
+            json={
+                "p_job_id": job_id,
+                "p_expected_sha256": expected_sha256,
+                "p_new_generation_id": generation_id,
+            },
+        )
+        return dict(response.json())
 
     async def record_usage(self, job_id: str, usage: ProviderUsage) -> None:
         await self._request(
@@ -853,6 +906,23 @@ class SupabaseRepository:
                     estimated_cost_per_second_usd, 0.000000001
                 ),
                 "p_reserve_seconds": max(60, min(reserve_seconds, 3600)),
+            },
+        )
+        rows = response.json()
+        if not rows:
+            return None
+        row = rows[0] if isinstance(rows, list) else rows
+        return ExperimentRecord.model_validate(row)
+
+    async def claim_next_experiment_repository_generation(
+        self, worker_id: str, lease_seconds: int
+    ) -> ExperimentRecord | None:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/claim_next_experiment_repository_generation",
+            json={
+                "p_worker_id": worker_id,
+                "p_lease_seconds": max(60, lease_seconds),
             },
         )
         rows = response.json()
@@ -1770,6 +1840,56 @@ class SupabaseRepository:
         if not rows:
             return None
         return dict(rows[0] if isinstance(rows, list) else rows)
+
+    async def claim_next_experiment_answer_action(
+        self, worker_id: str, lease_seconds: int
+    ) -> dict[str, Any] | None:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/claim_next_experiment_answer_action",
+            json={
+                "p_worker_id": worker_id,
+                "p_lease_seconds": max(60, lease_seconds),
+            },
+        )
+        rows = response.json()
+        if not rows:
+            return None
+        return dict(rows[0] if isinstance(rows, list) else rows)
+
+    async def prepare_queued_experiment_mutations(self) -> int:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/prepare_queued_experiment_mutations",
+            json={},
+        )
+        return int(response.json() or 0)
+
+    async def enqueue_assistant_followup_validation(
+        self,
+        experiment_id: str,
+        user_id: str,
+        revision_id: str,
+        source_action_id: str,
+        *,
+        llm_reservation_cny: float,
+        experiment_llm_max_cny: float,
+        global_llm_max_cny: float,
+    ) -> dict[str, Any]:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/enqueue_assistant_followup_validation",
+            json={
+                "p_experiment_id": experiment_id,
+                "p_user_id": user_id,
+                "p_base_revision_id": revision_id,
+                "p_source_action_id": source_action_id,
+                "p_llm_reservation_cny": llm_reservation_cny,
+                "p_experiment_llm_max_cny": experiment_llm_max_cny,
+                "p_global_llm_max_cny": global_llm_max_cny,
+            },
+        )
+        return dict(response.json())
 
     async def claim_next_experiment_cleanup(
         self, worker_id: str, lease_seconds: int

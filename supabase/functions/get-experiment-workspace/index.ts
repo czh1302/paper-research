@@ -1,7 +1,7 @@
 import { authenticate, handleError, json, preflight } from "../_shared/http.ts";
 import { checkpointSourceFiles, legacyCheckpointFileEntries } from "../_shared/experiment-checkpoint-files.ts";
 import { publicAttachment } from "../_shared/experiment-attachments.ts";
-import { actionFeed, getExperimentAccess, publicExperiment } from "../_shared/experiments.ts";
+import { actionFeed, experimentReadiness, getExperimentAccess, publicExperiment } from "../_shared/experiments.ts";
 
 Deno.serve(async (request) => {
   const early = preflight(request); if (early) return early;
@@ -49,10 +49,12 @@ Deno.serve(async (request) => {
     const checkpointFiles = checkpointGeneratedFiles.length
       ? checkpointGeneratedFiles
       : legacyCheckpointFileEntries(checkpoint);
+    const runtimeState = runtime.data ?? { state: "absent" };
     return json(request, {
       experiment: { ...publicExperiment(access.experiment), runCount: runs.data?.length ?? 0 },
       pilotSpecification: access.experiment.pilot_specification ?? {},
       permissions: access.permissions,
+      readiness: experimentReadiness(access.experiment, runtimeState),
       accessMode: access.adminMode ? "admin" : "owner",
       files: files.length ? files : checkpointFiles,
       revisions: (revisions.data ?? []).map((row) => ({
@@ -90,7 +92,7 @@ Deno.serve(async (request) => {
         mimeType: row.mime_type, byteSize: row.byte_size, publicSafe: row.public_safe,
         createdAt: row.created_at, metadata: row.metadata,
       })),
-      runtime: runtime.data ?? { state: "absent" },
+      runtime: runtimeState,
     });
   } catch (error) { return handleError(request, error); }
 });

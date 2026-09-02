@@ -7,6 +7,7 @@ import logging
 import re
 import shutil
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +19,7 @@ from .clients.llm import ClaudeCodeClient, ClaudeCodeError
 from .clients.mineru import MinerUClient
 from .config import Settings
 from .document import blocks_as_prompt, chunk_blocks, normalize_mineru_zip, validate_pdf
+from .experiment_models import PilotCompilation
 from .models import (
     AnalysisMode,
     AnalysisReport,
@@ -47,6 +49,7 @@ from .models import (
     LiteratureLandscapeDraft,
     PaperEvidenceProfile,
     PaperRankingBatch,
+    PilotSpecification,
     ProblemBrief,
     ProblemStatement,
     ProviderUsage,
@@ -64,6 +67,10 @@ from .models import (
     SubmissionIdeaSingleBatch,
     WebDiscovery,
 )
+from .pilot_validation import (
+    PilotSpecificationValidationError,
+    validate_pilot_specification,
+)
 from .prompts import (
     baseline_report_prompt,
     brainstorm_ideas_prompt,
@@ -77,6 +84,8 @@ from .prompts import (
     merge_problem_prompt,
     paper_profile_prompt,
     paper_ranking_prompt,
+    pilot_specification_prompt,
+    pilot_specification_repair_prompt,
     problem_brief_prompt,
     problem_brief_review_prompt,
     problem_statement_prompt,
@@ -106,6 +115,8 @@ PRO_LLM_STAGES = frozenset(
         "v3_idea_generation",
         "v4_idea_generation",
         "v4_idea_review",
+        "v4_pilot_specification",
+        "v4_pilot_specification_repair",
     }
 )
 
@@ -1179,22 +1190,27 @@ def finalize_v4_ideas(
         counter = [value for value in dict.fromkeys(review.counterevidence_work_ids) if value in profile_map]
         evidence_ids = list(dict.fromkeys(closest + supporting + counter))
         relaxed = qualification_tier == "relaxed"
-        passes = (
-            review.decision != "rejected"
-            and len(evidence_ids) >= 6
+        exploratory = qualification_tier == "exploratory"
+        grounded_structure = (
+            len(evidence_ids) >= 6
             and len(closest) >= 2
             and len(supporting) >= 2
-            and review.collision_risk != "high"
-            and review.feasibility >= (0.60 if relaxed else 0.65)
-            and review.evidence_confidence >= (0.55 if relaxed else 0.70)
-            and review.submission_value >= (0.65 if relaxed else 0.70)
-            and (
-                not require_pilot_specification
-                or draft.pilot_specification is not None
+        )
+        passes = grounded_structure and (
+            exploratory
+            or (
+                review.decision != "rejected"
+                and review.collision_risk != "high"
+                and review.feasibility >= (0.60 if relaxed else 0.65)
+                and review.evidence_confidence >= (0.55 if relaxed else 0.70)
+                and review.submission_value >= (0.65 if relaxed else 0.70)
             )
+        ) and (
+            not require_pilot_specification
+            or draft.pilot_specification is not None
         )
         decision = review.decision if passes else "needs_evidence"
-        if review.collision_risk == "high":
+        if review.collision_risk == "high" and not exploratory:
             decision = "rejected"
         grounded_review = review.model_copy(
             update={
@@ -1259,7 +1275,10 @@ def finalize_v4_ideas(
         item.model_copy(
             update={
                 "decision": (
-                    "recommended"
+                    "needs_evidence"
+                    if qualification_tier == "exploratory"
+                    and item.idea_key in selected_keys
+                    else "recommended"
                     if item.idea_key == (selected[0].key if selected else None)
                     else "alternative"
                     if item.idea_key in selected_keys
@@ -2498,6 +2517,10 @@ class AnalysisPipeline:
             )
             return presentation, stored_candidates, audit, bundles
 
+        generation_id = str(v4_checkpoint.get("generation_id") or uuid.uuid4())
+        if not v4_checkpoint.get("generation_id"):
+            await save_v4_checkpoint(generation_id=generation_id)
+
         if v4_checkpoint.get("retrieval_complete") and stored_candidates:
             candidates = stored_candidates
             audit = list(v4_checkpoint.get("audit") or [])
@@ -2610,6 +2633,31 @@ class AnalysisPipeline:
             )
             await save_v4_checkpoint(
                 landscape=landscape.model_dump(mode="json", exclude={"profiles"})
+            )
+        # The landscape is an upstream result. Idea-only recovery may read a
+        # few additional papers to resolve review objections, but those papers
+        # must not silently rewrite the Overview/Input/Landscape sections that
+        # the user already inspected. Keep a stable presentation snapshot;
+        # supplemental profiles remain available to Idea evidence boards.
+        delivery_landscape_values = v4_checkpoint.get("delivery_landscape")
+        delivery_profile_ids = [
+            str(value)
+            for value in (v4_checkpoint.get("delivery_profile_ids") or [])
+            if str(value)
+        ]
+        delivery_snapshot_changed = False
+        if not isinstance(delivery_landscape_values, dict):
+            delivery_landscape_values = landscape.model_dump(
+                mode="json", exclude={"profiles"}
+            )
+            delivery_snapshot_changed = True
+        if not delivery_profile_ids:
+            delivery_profile_ids = [item.paper_id for item in landscape.profiles]
+            delivery_snapshot_changed = True
+        if delivery_snapshot_changed:
+            await save_v4_checkpoint(
+                delivery_landscape=delivery_landscape_values,
+                delivery_profile_ids=delivery_profile_ids,
             )
         max_attempts = (
             self.settings.V4_MAX_IDEA_REVIEW_ATTEMPTS
@@ -2890,7 +2938,9 @@ class AnalysisPipeline:
                 profiles,
                 qualification_tier="strict",
                 review_attempt=attempt,
-                require_pilot_specification=self.settings.V4_PILOT_SPEC_REQUIRED,
+                # The executable contract is deliberately compiled only after
+                # scientific selection, so it cannot bias Idea creation.
+                require_pilot_specification=False,
             )
             score = max((idea_review_score(item) for item in strict_reviews), default=-1)
             if best_batch is None or score > best_batch[3]:
@@ -3139,12 +3189,10 @@ class AnalysisPipeline:
                 profiles,
                 qualification_tier="relaxed",
                 review_attempt=best_attempt,
-                require_pilot_specification=self.settings.V4_PILOT_SPEC_REQUIRED,
+                require_pilot_specification=False,
             )
             if selected:
                 primary_key = selected[0].key
-                selected = selected[:1]
-                boards = boards[:1]
                 reviews = [
                     item.model_copy(
                         update={
@@ -3159,17 +3207,121 @@ class AnalysisPipeline:
                     )
                     for item in reviews
                 ]
+        if (
+            not selected
+            and best_batch
+            and self.settings.V4_DELIVER_EXPLORATORY_IDEA
+        ):
+            best_drafts, best_reviews, best_attempt, _ = best_batch
+            selected, reviews, boards = finalize_v4_ideas(
+                best_drafts,
+                best_reviews,
+                profiles,
+                qualification_tier="exploratory",
+                review_attempt=best_attempt,
+                require_pilot_specification=False,
+            )
         if not selected:
             raise ValueError(
                 "V4 Idea review exhausted the time/evidence budget without a structurally valid proposal"
             )
+
+        if self.settings.V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS:
+            pilot_checkpoints = dict(v4_checkpoint.get("pilot_specifications") or {})
+            compiled: list[SubmissionIdea] = []
+            for idea in selected:
+                entry = dict(pilot_checkpoints.get(idea.key) or {})
+                specification = None
+                cached = entry.get("specification")
+                if cached:
+                    try:
+                        specification = PilotSpecification.model_validate(cached)
+                        validate_pilot_specification(specification)
+                    except (ValueError, PilotSpecificationValidationError):
+                        specification = None
+                prior = dict(entry.get("last_compilation") or {})
+                validation_error = str(entry.get("validation_error") or "")
+                # Each invalid result is journaled before requesting a repair.
+                # Recovery reuses the first validated contract and resumes only
+                # the Idea whose contract is still incomplete.
+                for _ in range(3):
+                    if specification is not None:
+                        break
+                    prompt = (
+                        pilot_specification_repair_prompt(
+                            idea.model_dump(mode="json", exclude={"pilot_specification"}),
+                            prior,
+                            validation_error,
+                            force_cpu_proxy=self.settings.EXPERIMENT_FORCE_CPU_PROXY,
+                        )
+                        if prior
+                        else pilot_specification_prompt(
+                            idea.model_dump(mode="json", exclude={"pilot_specification"}),
+                            profiles,
+                            force_cpu_proxy=self.settings.EXPERIMENT_FORCE_CPU_PROXY,
+                        )
+                    )
+                    compilation = await self._call_llm(
+                        prompt,
+                        PilotCompilation,
+                        stage=(
+                            "v4_pilot_specification_repair"
+                            if prior
+                            else "v4_pilot_specification"
+                        ),
+                        route="pro",
+                    )
+                    prior = compilation.model_dump(mode="json")
+                    try:
+                        if not compilation.accepted or compilation.specification is None:
+                            raise PilotSpecificationValidationError(
+                                compilation.rationale_zh or compilation.rationale_en
+                            )
+                        validate_pilot_specification(compilation.specification)
+                        specification = compilation.specification
+                        validation_error = ""
+                    except PilotSpecificationValidationError as error:
+                        validation_error = str(error)
+                    entry = {
+                        "last_compilation": prior,
+                        "validation_error": validation_error,
+                        "attempts": int(entry.get("attempts", 0)) + 1,
+                        "specification": (
+                            specification.model_dump(mode="json")
+                            if specification is not None
+                            else None
+                        ),
+                    }
+                    pilot_checkpoints[idea.key] = entry
+                    await save_v4_checkpoint(pilot_specifications=pilot_checkpoints)
+                if specification is None:
+                    raise ValueError(
+                        f"PilotSpecification for Idea {idea.key!r} needs automatic recovery: "
+                        f"{validation_error or 'no executable contract returned'}"
+                    )
+                compiled.append(
+                    idea.model_copy(update={"pilot_specification": specification})
+                )
+            selected = compiled
         headline_zh = briefs[0].research_question_zh
         headline_en = briefs[0].research_question_en
+        frozen_profile_ids = set(delivery_profile_ids)
+        delivery_landscape = LiteratureLandscape.model_validate(
+            {
+                **delivery_landscape_values,
+                "profiles": [
+                    item.model_dump(mode="json")
+                    for item in profiles
+                    if item.paper_id in frozen_profile_ids
+                ],
+            }
+        )
         presentation = ReportPresentationV4(
+            generation_id=generation_id,
             headline_zh=headline_zh,
             headline_en=headline_en,
             problem_briefs=briefs,
-            literature_landscape=landscape,
+            literature_landscape=delivery_landscape,
             ideas=selected,
             reviews=reviews,
             comparison_boards=boards,
@@ -3470,6 +3622,12 @@ class AnalysisPipeline:
                     for item in presentation_v4.literature_landscape.profiles
                     if item.role == "external"
                 }
+                external_ids.update(
+                    item.paper_id
+                    for board in presentation_v4.comparison_boards
+                    for item in board.profiles
+                    if item.role == "external"
+                )
                 if (
                     self.repository
                     and persist
@@ -3513,6 +3671,7 @@ class AnalysisPipeline:
                 await self._update(job.id, JobStatus.RENDERING, "rendering", 92)
                 report = AnalysisReport(
                     job_id=job.id,
+                    generation_id=presentation_v4.generation_id,
                     problem_statements=problems,
                     joint_problem_statement=joint,
                     related_papers=all_candidates,
@@ -3532,28 +3691,44 @@ class AnalysisPipeline:
                 report.source_coverage["visualizations"] = report_visualization_data(report)
                 markdown = report_markdown(report)
                 if self.repository and persist:
-                    await self.repository.save_report(
-                        job.id,
-                        report.model_dump(mode="json"),
-                        markdown,
-                        report_summary(report),
-                        report_section_payloads(report)
-                        if self.settings.REPORT_SECTIONS_ENABLED
-                        else None,
-                    )
-                    if (
+                    auto_experiment = (
                         self.settings.E2B_PILOT_ENABLED
                         and self.settings.E2B_AUTO_EXPERIMENT_ENABLED
                         and presentation_v4.ideas
                         and presentation_v4.ideas[0].pilot_specification is not None
-                    ):
+                    )
+                    if auto_experiment:
                         pipeline_checkpoint["experiment_auto_enqueue"] = {
                             "idea_key": presentation_v4.ideas[0].key,
+                            "generation_id": presentation_v4.generation_id,
                             "state": "pending",
                             "requested_at": datetime.now(timezone.utc).isoformat(),
                         }
-                        await self._save_pipeline_checkpoint(
-                            job.id, pipeline_checkpoint, persist=persist
+                    sections = (
+                        report_section_payloads(report)
+                        if self.settings.REPORT_SECTIONS_ENABLED
+                        else None
+                    )
+                    if (
+                        presentation_v4.generation_id
+                        and hasattr(self.repository, "save_v4_report_generation")
+                    ):
+                        await self.repository.save_v4_report_generation(
+                            job.id,
+                            presentation_v4.generation_id,
+                            report.model_dump(mode="json"),
+                            markdown,
+                            report_summary(report),
+                            pipeline_checkpoint,
+                            sections,
+                        )
+                    else:
+                        await self.repository.save_report(
+                            job.id,
+                            report.model_dump(mode="json"),
+                            markdown,
+                            report_summary(report),
+                            sections,
                         )
                     if self.settings.PDF_EVIDENCE_PREVIEW_ENABLED and hasattr(
                         self.repository, "generate_evidence_previews"

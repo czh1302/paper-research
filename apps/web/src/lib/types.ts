@@ -67,7 +67,7 @@ export interface ExperimentPlan {
   metrics_zh: string; metrics_en: string; success_criterion_zh: string; success_criterion_en: string; resources_zh: string; resources_en: string;
 }
 
-export type ExperimentExecutionMode = "native_cpu" | "valid_cpu_proxy" | "code_only";
+export type ExperimentExecutionMode = "native_cpu" | "valid_cpu_proxy" | "exploratory_cpu_proxy" | "code_only";
 export interface PilotResource {
   key: string;
   name: string;
@@ -191,7 +191,7 @@ export interface SubmissionIdea {
   unresolved_questions_zh: string[]; unresolved_questions_en: string[];
   feasibility: number; submission_value: number; evidence_confidence: number; collision_risk: "low" | "medium" | "high";
   verdict: "recommended" | "alternative" | "needs_evidence" | "rejected";
-  qualification_tier?: "strict" | "relaxed"; review_attempt?: number;
+  qualification_tier?: "strict" | "relaxed" | "exploratory"; review_attempt?: number;
   missing_evidence_zh?: string[]; missing_evidence_en?: string[];
   lineage_id?: string | null; parent_key?: string | null; revision_number?: number;
   pilot_specification?: PilotSpecification | null;
@@ -205,7 +205,7 @@ export interface IdeaReview {
 }
 export interface IdeaComparisonBoard { idea_key: string; input_paper_id: string; external_paper_ids: string[]; profiles: PaperEvidenceProfile[]; }
 export interface ReportPresentationV4 {
-  version: 4; headline_zh: string; headline_en: string; problem_briefs: ProblemBrief[];
+  version: 4; generation_id?: string | null; headline_zh: string; headline_en: string; problem_briefs: ProblemBrief[];
   literature_landscape: LiteratureLandscape; ideas: SubmissionIdea[]; reviews: IdeaReview[]; comparison_boards: IdeaComparisonBoard[];
   idea_attempt_summaries?: IdeaAttemptSummary[];
   idea_evolution_audit?: Record<string, unknown>[];
@@ -288,9 +288,20 @@ export interface ExperimentPermissions {
   delete: boolean;
 }
 
+export interface ExperimentReadiness {
+  specificationReady: boolean;
+  repositoryReadable: boolean;
+  repositoryEditable: boolean;
+  runtimeReady: boolean;
+  assistantReady: boolean;
+  terminalReady: boolean;
+  validationReady: boolean;
+}
+
 export interface ExperimentSummary {
   id: string;
   reportId: string;
+  generationId?: string | null;
   jobId: string;
   ideaKey: string;
   ideaRank: number;
@@ -310,6 +321,7 @@ export interface ExperimentSummary {
   summaryEn?: string | null;
   createdAt: string;
   updatedAt: string;
+  readiness?: ExperimentReadiness;
 }
 
 export interface ReportExperimentListing {
@@ -435,9 +447,11 @@ export interface ExperimentWorkspace {
   experiment: ExperimentSummary;
   accessMode: "owner" | "admin";
   permissions: ExperimentPermissions;
+  readiness: ExperimentReadiness;
   files: ExperimentFileEntry[];
   revisions: ExperimentRevision[];
   runs: ExperimentRun[];
   artifacts: ExperimentArtifact[];
   actions: ExperimentAction[];
+  runtime?: { state: string; [key: string]: unknown };
 }

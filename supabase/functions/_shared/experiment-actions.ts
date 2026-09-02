@@ -5,6 +5,13 @@ import { HttpError, json } from "./http.ts";
 
 const allowedKinds = new Set(["assistant", "chat", "command", "rollback", "validation", "restore"]);
 
+function assistantIntent(message: string): "answer" | "mutate" {
+  // Keep the default safe and conversational. Only explicit implementation or
+  // execution verbs are allowed to mutate the workspace / request a runtime.
+  const executable = /(?:复现|实现|编写|写入|修改|修复|重构|删除|安装|运行|执行|测试|验证|重新验证|reproduce|implement|write\s+(?:the\s+)?code|modify|edit|fix|refactor|delete|install|run|execute|test|validate)/iu;
+  return executable.test(message) ? "mutate" : "answer";
+}
+
 function boundedBudget(name: string, fallback: number, maximum: number): number {
   const parsed = Number(Deno.env.get(name) ?? String(fallback));
   return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, maximum) : fallback;
@@ -47,6 +54,7 @@ export async function enqueueUserExperimentAction(
     if (!message || message.length > 20_000) throw new HttpError(400, "Assistant message or image is required");
     payload.message = message;
     payload.prompt = message;
+    payload.intent = assistantIntent(message);
     const [newAttachments, contextAttachments, history] = await Promise.all([
       finalizeNewAttachments(admin, access.experiment.id, user.id, newAttachmentIds),
       validateContextAttachments(admin, access.experiment.id, user.id, contextAttachmentIds),
@@ -94,21 +102,35 @@ export async function enqueueUserExperimentAction(
   const experimentLlm = boundedBudget("EXPERIMENT_LLM_MAX_CNY", 40, 200);
   const globalLlm = boundedBudget("EXPERIMENT_LLM_GLOBAL_MAX_CNY", 200, 10_000);
   const maxSpendUsd = boundedBudget("E2B_MAX_SPEND_USD", 90, 90);
-  const { data, error } = await admin.rpc("enqueue_experiment_action_with_attachments", {
-    p_experiment_id: access.experiment.id,
-    p_user_id: access.experiment.user_id,
-    p_kind: kind,
-    p_request: payload,
-    p_base_revision_id: baseRevisionId,
-    p_idempotency_key: idempotencyKey,
-    p_attachment_ids: newAttachmentIds,
-    p_llm_reservation_cny: perActionLlm,
-    p_assistant_llm_max_cny: assistantLlm,
-    p_experiment_llm_max_cny: experimentLlm,
-    p_global_llm_max_cny: globalLlm,
-    p_max_spend_usd: maxSpendUsd,
-  });
+  const earlyAssistant = kind === "assistant";
+  const { data, error } = earlyAssistant
+    ? await admin.rpc("enqueue_experiment_answer_action_with_attachments", {
+      p_experiment_id: access.experiment.id,
+      p_user_id: access.experiment.user_id,
+      p_request: payload,
+      p_idempotency_key: idempotencyKey,
+      p_attachment_ids: newAttachmentIds,
+      p_llm_reservation_cny: perActionLlm,
+      p_assistant_llm_max_cny: assistantLlm,
+      p_experiment_llm_max_cny: experimentLlm,
+      p_global_llm_max_cny: globalLlm,
+    })
+    : await admin.rpc("enqueue_experiment_action_with_attachments", {
+      p_experiment_id: access.experiment.id,
+      p_user_id: access.experiment.user_id,
+      p_kind: kind,
+      p_request: payload,
+      p_base_revision_id: baseRevisionId,
+      p_idempotency_key: idempotencyKey,
+      p_attachment_ids: newAttachmentIds,
+      p_llm_reservation_cny: perActionLlm,
+      p_assistant_llm_max_cny: assistantLlm,
+      p_experiment_llm_max_cny: experimentLlm,
+      p_global_llm_max_cny: globalLlm,
+      p_max_spend_usd: maxSpendUsd,
+    });
   if (error?.message.includes("revision conflict")) throw new HttpError(409, "Experiment revision conflict");
+  if (error?.message.includes("action already queued")) throw new HttpError(409, "An experiment action is already queued");
   if (error?.message.includes("manual validation limit")) throw new HttpError(409, "Manual validation limit reached");
   if (error?.message.includes("assistant budget") || error?.message.includes("inference budget")) {
     throw new HttpError(409, "Experiment inference budget reached");

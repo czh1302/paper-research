@@ -1,5 +1,5 @@
 import { authenticate, handleError, HttpError, json, preflight, requireActiveAccount } from "../_shared/http.ts";
-import { experimentPermissions, isUuid, publicExperiment, requireManualExperimentEnabled } from "../_shared/experiments.ts";
+import { experimentPermissions, experimentReadiness, isUuid, publicExperiment, requireManualExperimentEnabled } from "../_shared/experiments.ts";
 
 Deno.serve(async (request) => {
   const early = preflight(request); if (early) return early;
@@ -46,7 +46,12 @@ Deno.serve(async (request) => {
     }
     if (error) throw error;
     return json(request, {
-      experiment: publicExperiment(data), permissions: experimentPermissions(data, false),
+      experiment: {
+        ...publicExperiment(data),
+        permissions: experimentPermissions(data, false),
+        readiness: experimentReadiness(data),
+        accessMode: "owner",
+      },
     }, 201);
   } catch (error) { return handleError(request, error); }
 });

@@ -30,12 +30,14 @@ export function requireManualExperimentEnabled(): void {
 export type ExperimentRow = {
   id: string;
   report_id: string;
+  report_generation_id?: string | null;
   job_id: string;
   user_id: string;
   idea_key: string;
   idea_rank: number;
   idea_snapshot: Record<string, unknown>;
   pilot_specification?: Record<string, unknown>;
+  pilot_compilation_required?: boolean;
   status: string;
   stage: string;
   progress: number;
@@ -71,6 +73,16 @@ export type ExperimentPermissions = {
   delete: boolean;
 };
 
+export type ExperimentReadiness = {
+  specificationReady: boolean;
+  repositoryReadable: boolean;
+  repositoryEditable: boolean;
+  runtimeReady: boolean;
+  assistantReady: boolean;
+  terminalReady: boolean;
+  validationReady: boolean;
+};
+
 export type ExperimentAccess = {
   experiment: ExperimentRow;
   adminMode: boolean;
@@ -102,20 +114,58 @@ export function experimentPermissions(
 ): ExperimentPermissions {
   const deleting = Boolean(experiment.deletion_requested_at);
   const cancelled = experiment.status === "cancelled" || experiment.cancellation_requested;
-  const readable = ["running", "recovering", "waiting_resources", "ready", "cancelled"].includes(experiment.status);
-  const terminalReadable = ["running", "recovering", "waiting_resources", "ready"].includes(experiment.status) && !deleting;
-  const editable = !adminMode && experiment.status === "ready" && !deleting && !cancelled;
+  const readable = !deleting;
+  const mutable = !adminMode && !deleting && !cancelled;
   return {
     readCode: readable,
-    editCode: editable,
-    chat: editable,
-    terminalRead: terminalReadable,
-    terminalWrite: editable,
-    runValidation: editable && experiment.user_validation_count < experiment.max_user_validations,
-    rollback: editable,
+    editCode: mutable,
+    chat: mutable,
+    terminalRead: !deleting && !cancelled,
+    terminalWrite: mutable,
+    runValidation: mutable && experiment.user_validation_count < experiment.max_user_validations,
+    rollback: mutable,
     download: readable,
     cancel: !deleting && !["ready", "cancelled"].includes(experiment.status),
     delete: !deleting,
+  };
+}
+
+function generatedCheckpointFiles(checkpoint: Record<string, unknown> | undefined): boolean {
+  const batches = checkpoint?.file_batches;
+  if (!batches || typeof batches !== "object" || Array.isArray(batches)) return false;
+  return Object.values(batches).some((batch) => {
+    if (!batch || typeof batch !== "object" || Array.isArray(batch)) return false;
+    return Array.isArray((batch as Record<string, unknown>).files)
+      && ((batch as Record<string, unknown>).files as unknown[]).length > 0;
+  });
+}
+
+export function experimentReadiness(
+  experiment: ExperimentRow,
+  runtime?: Record<string, unknown> | null,
+): ExperimentReadiness {
+  const specificationReady = Boolean(
+    experiment.pilot_specification
+      && Object.keys(experiment.pilot_specification).length
+      && !experiment.pilot_compilation_required,
+  );
+  const repositoryReadable = Boolean(
+    experiment.current_revision_id || generatedCheckpointFiles(experiment.checkpoint),
+  );
+  const inactive = experiment.status === "cancelled"
+    || experiment.cancellation_requested
+    || Boolean(experiment.deletion_requested_at);
+  const runtimeReady = ["running", "paused"].includes(String(runtime?.state ?? ""));
+  return {
+    specificationReady,
+    repositoryReadable,
+    // Checkpoint file batches are immediately readable, but edits wait for the
+    // first immutable Git revision so optimistic writes have a stable base.
+    repositoryEditable: Boolean(experiment.current_revision_id) && !inactive,
+    runtimeReady,
+    assistantReady: specificationReady && !inactive,
+    terminalReady: runtimeReady && !inactive,
+    validationReady: specificationReady && Boolean(experiment.current_revision_id) && runtimeReady && !inactive,
   };
 }
 
@@ -125,6 +175,7 @@ export function publicExperiment(experiment: ExperimentRow): Record<string, unkn
   return {
     id: experiment.id,
     reportId: experiment.report_id,
+    generationId: experiment.report_generation_id ?? null,
     jobId: experiment.job_id,
     ideaKey: experiment.idea_key,
     ideaRank: experiment.idea_rank,

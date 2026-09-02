@@ -1151,6 +1151,47 @@ def test_v4_relaxed_gate_only_lowers_numeric_scores() -> None:
     assert model_rejected == []
 
 
+def test_v4_exploratory_delivery_keeps_grounding_without_faking_a_pass() -> None:
+    profiles = [v4_profile("input", "input")] + [
+        v4_profile(f"paper-{index}") for index in range(6)
+    ]
+    review = v4_review(
+        decision="rejected",
+        collision_risk="high",
+        feasibility=0.42,
+        submission_value=0.51,
+        evidence_confidence=0.7,
+        missing_evidence_zh=["需要由代理实验验证机制是否可实现"],
+        missing_evidence_en=["A proxy experiment must test whether the mechanism is implementable"],
+    )
+
+    selected, grounded_reviews, boards = finalize_v4_ideas(
+        [v4_idea()],
+        [review],
+        profiles,
+        qualification_tier="exploratory",
+        review_attempt=8,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].qualification_tier == "exploratory"
+    assert selected[0].review_attempt == 8
+    assert selected[0].collision_risk == "high"
+    assert grounded_reviews[0].decision == "needs_evidence"
+    assert len(boards[0].profiles) == 7
+
+    ungrounded = review.model_copy(update={"supporting_work_ids": []})
+    selected, _, boards = finalize_v4_ideas(
+        [v4_idea()],
+        [ungrounded],
+        profiles,
+        qualification_tier="exploratory",
+        review_attempt=8,
+    )
+    assert selected == []
+    assert boards == []
+
+
 def test_v4_evidence_confidence_is_computed_from_grounded_coverage() -> None:
     profiles = [v4_profile("input", "input")] + [
         v4_profile(f"paper-{index}") for index in range(6)

@@ -312,6 +312,21 @@ describe("ReportPage", () => {
     expect(document.body.textContent).not.toContain("Not covered");
   });
 
+  it("labels an exploratory delivered Idea honestly in the overview and proposal", async () => {
+    const record = v4Fixture();
+    const presentation = record.content.presentation as ReportPresentationV4;
+    presentation.ideas[0].qualification_tier = "exploratory";
+    presentation.reviews[0].decision = "needs_evidence";
+    api.getReport.mockResolvedValue(record);
+
+    renderReport();
+
+    expect((await screen.findAllByText("探索性方案 · 等待实验验证")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("严格审查通过")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "论文级 Idea" }));
+    expect(screen.getAllByText("探索性方案 · 等待实验验证").length).toBeGreaterThan(0);
+  });
+
   it("renders V4 ideas as one structured proposal list with inline details", async () => {
     const user = userEvent.setup();
     const record = v4Fixture();
