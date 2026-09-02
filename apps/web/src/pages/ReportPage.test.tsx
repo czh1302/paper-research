@@ -278,6 +278,8 @@ describe("ReportPage", () => {
   it("renders V4 after full-text review, paginates complete profiles, and opens PDF evidence", async () => {
     const user = userEvent.setup();
     const record = v4Fixture();
+    const presentation = record.content.presentation as ReportPresentationV4;
+    presentation.literature_landscape.themes[0].paper_ids = ["paper-0", "paper-2"];
     api.getReport.mockResolvedValue(record);
     api.getFullReport.mockResolvedValue(record);
     renderReport();
@@ -295,11 +297,28 @@ describe("ReportPage", () => {
 
     await user.click(screen.getByRole("tab", { name: "研究现状" }));
     expect(screen.getAllByText("Evidence Paper paper-0").length).toBeGreaterThan(0);
+    const firstProfileToggle = screen.getByRole("button", { name: "展开完整档案：Evidence Paper paper-0" });
+    const secondProfileToggle = screen.getByRole("button", { name: "展开完整档案：Evidence Paper paper-2" });
+    expect(firstProfileToggle).toHaveAttribute("aria-expanded", "false");
+    expect(secondProfileToggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(firstProfileToggle);
+    await user.click(secondProfileToggle);
+    expect(firstProfileToggle).toHaveAttribute("aria-expanded", "true");
+    expect(secondProfileToggle).toHaveAttribute("aria-expanded", "true");
+    const firstProfileRow = firstProfileToggle.closest(".v4-theme-paper-row");
+    expect(firstProfileRow?.textContent).toContain("输出与评价");
+    expect(firstProfileRow?.textContent).toContain("关键约束");
+    expect(firstProfileRow?.textContent).toContain("主要局限");
+    expect(document.querySelector(".print-only .v4-theme-paper-row.is-expanded")).not.toBeNull();
     const validationTheme = screen.getByRole("button", { name: /结果验证/ });
     await user.click(validationTheme);
     expect(validationTheme).toHaveClass("active");
+    const reproductionTheme = screen.getByRole("button", { name: /论文复现系统/ });
+    await user.click(reproductionTheme);
+    expect(screen.getByRole("button", { name: "展开完整档案：Evidence Paper paper-0" })).toHaveAttribute("aria-expanded", "false");
+    await user.click(validationTheme);
     await user.click(screen.getByRole("tab", { name: "Idea 差异" }));
-    expect(screen.getByText("Evidence Paper paper-2")).toBeInTheDocument();
+    expect(screen.getAllByText("Evidence Paper paper-2").length).toBeGreaterThan(0);
     expect(screen.queryByText("Evidence Paper paper-3")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "下一组" }));
     expect(await screen.findByText("Evidence Paper paper-3")).toBeInTheDocument();
