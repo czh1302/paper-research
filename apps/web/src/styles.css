@@ -405,6 +405,9 @@ button, input, select { font: inherit; }
 .experiment-output > nav button:focus-visible,
 .experiment-mobile-tabs button:focus-visible,
 .experiment-composer button:focus-visible,
+.experiment-chat-image:focus-visible,
+.experiment-pending-images button:focus-visible,
+.experiment-context-images button:focus-visible,
 .experiment-artifacts > button:focus-visible {
   position: relative;
   z-index: 1;
@@ -499,12 +502,46 @@ button, input, select { font: inherit; }
 .experiment-action-audit footer > button:hover, .experiment-action-audit footer > button:focus-visible { border-color: rgb(var(--accent)); color: rgb(var(--accent-strong)); outline: none; }
 .experiment-action-audit footer > button:disabled { cursor: wait; opacity: .55; }
 .experiment-action-audit footer svg { width: .75rem; height: .75rem; }
-.experiment-composer { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: .45rem; border-top: 1px solid rgb(var(--line)); padding: .65rem; }
+.experiment-composer-shell { flex: none; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
+.experiment-composer { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: end; gap: .45rem; padding: .65rem; }
 .experiment-composer textarea { width: 100%; min-height: 4rem; max-height: 10rem; resize: vertical; border: 1px solid rgb(var(--line)); border-radius: 10px; background: rgb(var(--canvas)); padding: .7rem .75rem; color: rgb(var(--content)); font-family: inherit; font-size: .875rem; line-height: 1.4rem; outline: none; }
 .experiment-composer textarea:focus { border-color: rgb(var(--accent)); box-shadow: 0 0 0 2px rgb(var(--accent) / .12); }
-.experiment-composer button { display: grid; width: 2.625rem; height: 2.625rem; cursor: pointer; place-items: center; border: 0; border-radius: 10px; background: rgb(var(--primary)); color: rgb(var(--primary-foreground)); }
+.experiment-composer button { display: grid; width: 2.625rem; height: 2.625rem; cursor: pointer; place-items: center; border-radius: 10px; }
+.experiment-composer .experiment-image-button { border: 1px solid rgb(var(--line)); background: rgb(var(--surface)); color: rgb(var(--accent-strong)); }
+.experiment-composer .experiment-image-button:hover:not(:disabled) { border-color: rgb(var(--accent)); background: rgb(var(--accent) / .07); }
+.experiment-composer .experiment-send-button { border: 0; background: rgb(var(--primary)); color: rgb(var(--primary-foreground)); }
 .experiment-composer button:disabled { cursor: not-allowed; opacity: .4; }
 .experiment-composer svg { width: 1rem; height: 1rem; }
+.experiment-pending-images { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .4rem; padding: .6rem .65rem 0; }
+.experiment-pending-images figure { position: relative; min-width: 0; overflow: hidden; margin: 0; border: 1px solid rgb(var(--line)); border-radius: 9px; background: rgb(var(--canvas)); }
+.experiment-pending-images img { display: block; width: 100%; height: 4.2rem; object-fit: cover; }
+.experiment-pending-images figcaption { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .25rem; padding: .3rem .4rem; }
+.experiment-pending-images figcaption span { overflow: hidden; min-width: 0; color: rgb(var(--content)); font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
+.experiment-pending-images figcaption small { flex: none; color: rgb(var(--muted)); font-size: .6rem; }
+.experiment-pending-images figure[data-state="error"] { border-color: rgb(var(--warning) / .55); }
+.experiment-pending-images figure > button { position: absolute; top: .25rem; right: .25rem; display: grid; width: 1.45rem; height: 1.45rem; cursor: pointer; place-items: center; border: 0; border-radius: 999px; background: rgb(var(--surface) / .9); color: rgb(var(--content)); box-shadow: 0 2px 8px rgb(0 0 0 / .12); }
+.experiment-pending-images figure > button:disabled { cursor: wait; opacity: .45; }
+.experiment-pending-images figure > button svg { width: .75rem; height: .75rem; }
+.experiment-pending-images figure > i { position: absolute; bottom: 0; left: 0; height: 2px; background: rgb(var(--accent)); transition: width 120ms linear; }
+.experiment-context-images { padding: .55rem .65rem 0; }
+.experiment-context-images > span { color: rgb(var(--muted)); font-size: .66rem; font-weight: 650; }
+.experiment-context-images > div { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .35rem; }
+.experiment-context-images > div > span { display: inline-flex; max-width: 100%; align-items: center; gap: .3rem; border: 1px solid rgb(var(--line)); border-radius: 999px; background: rgb(var(--subtle)); padding: .28rem .32rem .28rem .45rem; color: rgb(var(--content)); }
+.experiment-context-images svg { width: .72rem; height: .72rem; flex: none; color: rgb(var(--accent-strong)); }
+.experiment-context-images span span { overflow: hidden; max-width: 8rem; font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
+.experiment-context-images button { display: grid; width: 1.2rem; height: 1.2rem; cursor: pointer; place-items: center; border: 0; border-radius: 999px; background: transparent; color: rgb(var(--muted)); }
+.experiment-message-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; margin-top: .45rem; }
+.experiment-chat-image { min-width: 0; overflow: hidden; cursor: pointer; border: 1px solid rgb(var(--line)); border-radius: 8px; background: rgb(var(--surface)); padding: 0; color: rgb(var(--muted)); }
+.experiment-chat-image:disabled { cursor: wait; }
+.experiment-chat-image img { display: block; width: 100%; height: 6.5rem; object-fit: cover; }
+.experiment-chat-image > span { display: grid; min-height: 4rem; place-items: center; padding: .5rem; font-size: .68rem; }
+.experiment-image-lightbox { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; background: rgb(3 12 22 / .72); padding: 1rem; backdrop-filter: blur(3px); }
+.experiment-image-lightbox > div { display: flex; width: min(72rem, 96vw); max-height: 94vh; flex-direction: column; overflow: hidden; border: 1px solid rgb(var(--line)); border-radius: 14px; background: rgb(var(--surface)); box-shadow: 0 20px 80px rgb(0 0 0 / .32); }
+.experiment-image-lightbox header { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid rgb(var(--line)); padding: .65rem .8rem; color: rgb(var(--content)); font-size: .8rem; font-weight: 650; }
+.experiment-image-lightbox header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.experiment-image-lightbox header button { display: grid; width: 2rem; height: 2rem; cursor: pointer; place-items: center; border: 0; border-radius: 8px; background: rgb(var(--subtle)); color: rgb(var(--content)); }
+.experiment-image-lightbox header svg { width: .9rem; height: .9rem; }
+.experiment-image-lightbox img { display: block; min-height: 0; max-width: 100%; max-height: calc(94vh - 3.5rem); object-fit: contain; background: rgb(var(--canvas)); }
 .experiment-readonly-note { border-top: 1px solid rgb(var(--line)); background: rgb(var(--warning) / .07); padding: .7rem .8rem; color: rgb(var(--muted)); font-size: .78rem; line-height: 1.35rem; }
 .experiment-empty, .experiment-loading { display: flex; min-width: 0; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: .5rem; padding: 1.25rem; color: rgb(var(--muted)); text-align: center; }
 .experiment-loading { min-height: 24rem; }
@@ -569,6 +606,8 @@ button, input, select { font: inherit; }
   .experiment-mobile-content .experiment-pane,
   .experiment-mobile-content .experiment-editor-shell { border-width: 0; border-radius: 0; box-shadow: none; }
   .experiment-notice { max-height: 3.7rem; overflow-y: auto; }
+  .experiment-pending-images { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .experiment-pending-images img { height: 5.5rem; }
   .v4-input-workbench { display: block; }
   .v4-input-directory { z-index: 8; top: 4.4rem; display: grid; grid-auto-columns: minmax(4.35rem, 1fr); grid-auto-flow: column; width: 100%; margin-bottom: .75rem; overflow-x: auto; padding: .35rem; }
   .v4-input-directory-label { display: none; }

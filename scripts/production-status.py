@@ -24,11 +24,20 @@ async def main() -> None:
             "&select=status",
         )
         rows = response.json()
+        experiment_response = await repository._request(
+            "GET",
+            "/rest/v1/idea_experiments"
+            "?status=in.(queued,running,recovering,waiting_resources)"
+            "&select=status",
+        )
+        experiments = experiment_response.json()
         print(
             json.dumps(
                 {
                     "active_jobs": len(rows),
                     "statuses": [row["status"] for row in rows],
+                    "active_experiments": len(experiments),
+                    "experiment_statuses": [row["status"] for row in experiments],
                     "monthly_spend_cny": round(await repository.monthly_spend_cny(), 2),
                     "budget_guard_cny": settings.BUDGET_GUARD_CNY,
                 },

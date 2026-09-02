@@ -1,5 +1,6 @@
 import { authenticate, handleError, json, preflight } from "../_shared/http.ts";
 import { checkpointSourceFiles, legacyCheckpointFileEntries } from "../_shared/experiment-checkpoint-files.ts";
+import { publicAttachment } from "../_shared/experiment-attachments.ts";
 import { actionFeed, getExperimentAccess, publicExperiment } from "../_shared/experiments.ts";
 
 Deno.serve(async (request) => {
@@ -12,7 +13,7 @@ Deno.serve(async (request) => {
     const actionColumns = access.adminMode
       ? "id,kind,status,base_revision_id,result_revision_id,safe_error,created_at,updated_at,completed_at"
       : "id,kind,status,request,response,base_revision_id,result_revision_id,safe_error,created_at,updated_at,completed_at";
-    const [revisions, runs, actions, artifacts, runtime] = await Promise.all([
+    const [revisions, runs, actions, artifacts, runtime, attachments] = await Promise.all([
       admin.from("experiment_revisions").select("id,parent_revision_id,revision_number,actor,git_commit,tree_hash,summary,immutable,created_at")
         .eq("experiment_id", id).order("revision_number", { ascending: false }).limit(100),
       admin.from("experiment_runs").select("id,revision_id,run_number,trigger_kind,status,outcome,metrics,evaluation,safe_error,e2b_seconds,e2b_cost_usd,llm_cost_cny,started_at,completed_at,created_at")
@@ -23,8 +24,12 @@ Deno.serve(async (request) => {
         .eq("experiment_id", id).order("created_at", { ascending: false }).limit(500),
       admin.from("experiment_runtime").select("state,paused_at,destroy_after,last_heartbeat_at")
         .eq("experiment_id", id).maybeSingle(),
+      access.adminMode
+        ? Promise.resolve({ data: [], error: null })
+        : admin.from("experiment_chat_attachments").select("id,action_id,file_name,mime_type,declared_mime_type,byte_size,sha256,width,height,status,created_at")
+          .eq("experiment_id", id).eq("status", "bound").order("created_at", { ascending: true }).limit(400),
     ]);
-    for (const result of [revisions, runs, actions, artifacts, runtime]) if (result.error) throw result.error;
+    for (const result of [revisions, runs, actions, artifacts, runtime, attachments]) if (result.error) throw result.error;
     const checkpoint = access.experiment.checkpoint ?? {};
     const sourceRows = (artifacts.data ?? []).filter((row) => row.kind === "source_file"
       && row.revision_id === access.experiment.current_revision_id);
@@ -69,6 +74,12 @@ Deno.serve(async (request) => {
       actions: access.adminMode
         ? []
         : ((actions.data ?? []) as unknown as Array<Record<string, unknown>>)
+          .map((row) => ({
+            ...row,
+            attachments: (attachments.data ?? [])
+              .filter((attachment) => attachment.action_id === row.id)
+              .map((attachment) => publicAttachment(attachment)),
+          }))
           .reverse()
           .flatMap((row) => actionFeed(row)),
       artifacts: (artifacts.data ?? []).filter((row) => !["source_file", "git_bundle"].includes(row.kind)).map((row) => ({

@@ -32,7 +32,7 @@ cleanup() { rm -f -- "${temporary}"; }
 trap cleanup EXIT
 
 awk -v enabled="${enabled}" -v manual_enabled="${manual_enabled}" -v auto_enabled="${auto_enabled}" -v template_id="${template_id}" '
-  BEGIN { wrote_enabled = 0; wrote_manual = 0; wrote_auto = 0; wrote_template = 0 }
+  BEGIN { wrote_enabled = 0; wrote_manual = 0; wrote_auto = 0; wrote_template = 0; wrote_vision = 0 }
   /^E2B_PILOT_ENABLED=/ {
     if (!wrote_enabled) print "E2B_PILOT_ENABLED=" enabled
     wrote_enabled = 1
@@ -53,12 +53,18 @@ awk -v enabled="${enabled}" -v manual_enabled="${manual_enabled}" -v auto_enable
     wrote_template = 1
     next
   }
+  /^CLAUDE_VISION_MODEL=/ {
+    if (!wrote_vision) print "CLAUDE_VISION_MODEL=deepseek-v4-flash-vision-exp"
+    wrote_vision = 1
+    next
+  }
   { print }
   END {
     if (!wrote_enabled) print "E2B_PILOT_ENABLED=" enabled
     if (!wrote_manual) print "E2B_MANUAL_EXPERIMENT_ENABLED=" manual_enabled
     if (!wrote_auto) print "E2B_AUTO_EXPERIMENT_ENABLED=" auto_enabled
     if (!wrote_template) print "E2B_TEMPLATE_ID=" template_id
+    if (!wrote_vision) print "CLAUDE_VISION_MODEL=deepseek-v4-flash-vision-exp"
   }
 ' "${secrets_path}" > "${temporary}"
 

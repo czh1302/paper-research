@@ -264,6 +264,7 @@ export function actionSummary(row: Record<string, unknown>): Record<string, unkn
     commandResults: actionCommandResults(response.commands ?? response.commandResults),
     revisionIdBefore: row.base_revision_id ?? null,
     revisionIdAfter: row.result_revision_id ?? null,
+    attachments: Array.isArray(row.attachments) ? row.attachments : [],
     createdAt: row.created_at,
     completedAt: row.completed_at ?? null,
     updatedAt: row.updated_at,
@@ -277,5 +278,5 @@ export function actionFeed(row: Record<string, unknown>): Array<Record<string, u
   return [{
     ...item, id: `${String(row.id)}:request`, role: "user", content: null,
     prompt: request.message ?? request.prompt ?? null,
-  }, item];
+  }, { ...item, attachments: [] }];
 }

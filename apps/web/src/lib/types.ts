@@ -368,6 +368,17 @@ export interface ExperimentArtifact {
   createdAt: string;
 }
 
+export interface ExperimentChatAttachment {
+  id: string;
+  name: string;
+  mimeType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+  byteSize: number;
+  width?: number | null;
+  height?: number | null;
+  sha256?: string | null;
+  createdAt?: string;
+}
+
 export interface SharedExperimentArtifact {
   artifactId: string;
   kind: "plot" | "metrics" | "result_report";
@@ -415,6 +426,7 @@ export interface ExperimentAction {
   }>;
   revisionIdBefore?: string | null;
   revisionIdAfter?: string | null;
+  attachments?: ExperimentChatAttachment[];
   createdAt: string;
   completedAt?: string | null;
 }

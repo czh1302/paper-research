@@ -193,11 +193,14 @@ class SupabaseRepository:
         await self.update_job(job_id, checkpoint=checkpoint)
 
     async def cleanup_expired(self) -> dict[str, int]:
-        response, preview_response, experiment_response = await asyncio.gather(
+        response, preview_response, experiment_response, chat_response = await asyncio.gather(
             self._request("POST", "/rest/v1/rpc/claim_expired_storage", json={}),
             self._request("POST", "/rest/v1/rpc/claim_expired_preview_storage", json={}),
             self._request(
                 "POST", "/rest/v1/rpc/claim_expired_experiment_storage", json={}
+            ),
+            self._request(
+                "POST", "/rest/v1/rpc/claim_expired_experiment_chat_storage", json={}
             ),
         )
         rows = response.json() or []
@@ -256,12 +259,27 @@ class SupabaseRepository:
                 f"/rest/v1/storage_deletion_queue?id=in.({ids})",
                 headers={"Prefer": "return=minimal"},
             )
+        chat_rows = chat_response.json() or []
+        chat_paths = [row["storage_path"] for row in chat_rows if row.get("storage_path")]
+        if chat_paths:
+            await self._request(
+                "DELETE",
+                "/storage/v1/object/experiment-chat-attachments",
+                json={"prefixes": chat_paths},
+            )
+            ids = ",".join(quote(row["record_id"]) for row in chat_rows)
+            await self._request(
+                "DELETE",
+                f"/rest/v1/storage_deletion_queue?id=in.({ids})",
+                headers={"Prefer": "return=minimal"},
+            )
         return {
             "uploads": len(upload_rows),
             "orphans": len(orphan_rows),
             "reports": sum(1 for row in rows if row.get("kind") == "report"),
             "previews": len(preview_rows),
             "experiment_artifacts": len(experiment_rows),
+            "experiment_chat_attachments": len(chat_rows),
         }
 
     async def claim_admin_deletion_request(
@@ -1572,6 +1590,40 @@ class SupabaseRepository:
             raise ValueError("Experiment artifact storage path is empty")
         response = await self._request(
             "GET", f"/storage/v1/object/experiment-artifacts/{encoded_path}"
+        )
+        return response.content
+
+    async def load_experiment_chat_attachments(
+        self, experiment_id: str, user_id: str, attachment_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        unique_ids = list(dict.fromkeys(attachment_ids))
+        if not unique_ids:
+            return []
+        if len(unique_ids) > 4:
+            raise ValueError("Too many experiment chat attachments")
+        encoded_ids = ",".join(quote(item, safe="") for item in unique_ids)
+        response = await self._request(
+            "GET",
+            "/rest/v1/experiment_chat_attachments"
+            f"?id=in.({encoded_ids})"
+            f"&experiment_id=eq.{quote(experiment_id)}"
+            f"&user_id=eq.{quote(user_id)}"
+            "&status=eq.bound&select=id,storage_path,file_name,mime_type,byte_size,sha256,width,height,created_at",
+        )
+        rows = response.json()
+        if not isinstance(rows, list) or len(rows) != len(unique_ids):
+            raise ValueError("Experiment chat attachment is unavailable")
+        by_id = {str(row.get("id") or ""): dict(row) for row in rows}
+        return [by_id[item] for item in unique_ids if item in by_id]
+
+    async def download_experiment_chat_attachment(self, storage_path: str) -> bytes:
+        encoded_path = "/".join(
+            quote(part, safe="") for part in storage_path.split("/") if part
+        )
+        if not encoded_path:
+            raise ValueError("Experiment chat attachment storage path is empty")
+        response = await self._request(
+            "GET", f"/storage/v1/object/experiment-chat-attachments/{encoded_path}"
         )
         return response.content
 

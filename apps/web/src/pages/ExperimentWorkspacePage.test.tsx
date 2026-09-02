@@ -11,7 +11,8 @@ const api = vi.hoisted(() => ({
   getExperimentWorkspace: vi.fn(), readExperimentFile: vi.fn(), saveExperimentFile: vi.fn(),
   moveExperimentFile: vi.fn(), deleteExperimentFile: vi.fn(), submitExperimentAction: vi.fn(),
   subscribeToExperiment: vi.fn(() => () => undefined), cancelExperiment: vi.fn(), deleteExperiment: vi.fn(),
-  downloadExperimentRepository: vi.fn(), getExperimentArtifact: vi.fn(),
+  downloadExperimentRepository: vi.fn(), getExperimentArtifact: vi.fn(), getExperimentChatAttachment: vi.fn(),
+  uploadExperimentChatImages: vi.fn(),
 }));
 vi.mock("../lib/api", () => api);
 vi.mock("../components/ExperimentEditor", () => ({ ExperimentEditor: ({ value, readOnly, onChange }: { value: string; readOnly: boolean; onChange: (value: string) => void }) => <textarea aria-label="mock editor" readOnly={readOnly} value={value} onChange={(event) => onChange(event.target.value)}/> }));
@@ -51,6 +52,8 @@ describe("ExperimentWorkspacePage", () => {
     api.moveExperimentFile.mockReset(); api.moveExperimentFile.mockResolvedValue({ files: fixture().files, revision: { id: "revision-3" } });
     api.deleteExperimentFile.mockReset(); api.deleteExperimentFile.mockResolvedValue({ files: fixture().files, revision: { id: "revision-3" } });
     api.submitExperimentAction.mockReset(); api.submitExperimentAction.mockResolvedValue({ id: "action-1", kind: "assistant", state: "queued", role: "user", prompt: "改进测试", createdAt: "2026-09-02T00:11:00Z" });
+    api.uploadExperimentChatImages.mockReset(); api.uploadExperimentChatImages.mockResolvedValue([]);
+    api.getExperimentChatAttachment.mockReset(); api.getExperimentChatAttachment.mockResolvedValue({ attachment: {}, signedUrl: "https://private.example/image.png", expiresIn: 300 });
     api.subscribeToExperiment.mockReset(); api.subscribeToExperiment.mockReturnValue(() => undefined);
     vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -71,7 +74,7 @@ describe("ExperimentWorkspacePage", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "发送给 Flash" }), { target: { value: "improve tests" } });
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "发送" }));
-    await waitFor(() => expect(api.submitExperimentAction).toHaveBeenCalledWith(expect.any(String), { kind: "assistant", prompt: "improve tests" }));
+    await waitFor(() => expect(api.submitExperimentAction).toHaveBeenCalledWith(expect.any(String), { kind: "assistant", prompt: "improve tests", attachmentIds: [], contextAttachmentIds: [] }));
   });
 
   it("keeps multiple source files in Monaco-style editor tabs", async () => {
@@ -238,7 +241,39 @@ describe("ExperimentWorkspacePage", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(api.saveExperimentFile).toHaveBeenCalledTimes(1));
     expect(api.submitExperimentAction).not.toHaveBeenCalled();
-    expect(await screen.findByText(/修改已保留在编辑器中/)).toBeInTheDocument();
+    expect(await screen.findByText(/消息或图片尚未发送/)).toBeInTheDocument();
+  });
+
+  it("uploads pasted images and can send an image-only assistant request", async () => {
+    const image = new File([new Uint8Array([1, 2, 3])], "layout.png", { type: "image/png" });
+    api.uploadExperimentChatImages.mockResolvedValue([{ id: "attachment-1", name: "layout.png", mimeType: "image/png", byteSize: 3 }]);
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:layout"), revokeObjectURL: vi.fn() });
+    const rendered = renderPage();
+    await screen.findByText("可证伪的主 Idea");
+    const input = rendered.container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [image] } });
+    expect(await screen.findByAltText("layout.png")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(api.uploadExperimentChatImages).toHaveBeenCalledWith(expect.any(String), [image], expect.any(Function)));
+    await waitFor(() => expect(api.submitExperimentAction).toHaveBeenCalledWith(expect.any(String), {
+      kind: "assistant", prompt: "", attachmentIds: ["attachment-1"], contextAttachmentIds: [],
+    }));
+  });
+
+  it("automatically includes recent private images and lets the user exclude them", async () => {
+    const workspace = fixture();
+    workspace.actions = [{
+      id: "action-image", kind: "assistant", state: "completed", role: "user", prompt: "参考这张图",
+      attachments: [{ id: "attachment-old", name: "old.png", mimeType: "image/png", byteSize: 20 }],
+      createdAt: "2026-09-02T00:11:00Z",
+    }];
+    api.getExperimentWorkspace.mockResolvedValue(workspace);
+    renderPage();
+    expect(await screen.findByText("继续参考最近图片")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "不再带入 old.png" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "发送给 Flash" }), { target: { value: "只看当前代码" } });
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(api.submitExperimentAction).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ contextAttachmentIds: [] })));
   });
 
   it("rebases the next open document after a save creates a new revision", async () => {

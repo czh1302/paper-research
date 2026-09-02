@@ -818,6 +818,15 @@ async def test_experiment_model_routes_flash_and_pro_explicitly(tmp_path) -> Non
 
     await worker._structured("repository", Response, stage="repository")
     await worker._structured("specification", Response, stage="specification", pro=True)
+    image_path = tmp_path / "attachment.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    await worker._structured(
+        "screenshot",
+        Response,
+        stage="experiment_workspace_assistant_vision",
+        image_paths=[image_path],
+        image_audit=[{"sha256": "digest", "byte_size": 8}],
+    )
 
     assert llm.calls[0]["model"] == settings.CLAUDE_MODEL
     assert llm.calls[0]["stage"] == "repository"
@@ -827,6 +836,9 @@ async def test_experiment_model_routes_flash_and_pro_explicitly(tmp_path) -> Non
     assert llm.calls[1]["stage"] == "specification"
     assert llm.calls[1]["max_turns"] == 2
     assert 0 < llm.calls[1]["max_budget_usd"] < 1
+    assert llm.calls[2]["model"] == settings.CLAUDE_VISION_MODEL
+    assert llm.calls[2]["image_paths"] == [image_path]
+    assert llm.calls[2]["usage_metadata"] == {"attachment_count": 1, "attachment_bytes": 8}
 
 
 async def test_experiment_reuses_journaled_result_after_usage_callback_failure(

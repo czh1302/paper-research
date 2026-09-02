@@ -31,6 +31,19 @@ def test_explicit_claude_model_is_preserved() -> None:
     assert client.cli_model == "claude-sonnet-4-5"
 
 
+def test_vision_model_uses_restricted_read_only_claude_code() -> None:
+    client = ClaudeCodeClient("test")
+    model = client._claude_cli_model("deepseek-v4-flash-vision-exp")
+    command = client._command("{}", model, allow_web_search=False, allow_read=True)
+
+    assert model == "deepseek-v4-flash-vision-exp"
+    assert "--bare" in command
+    assert "--restricted" in command
+    assert command[command.index("--tools") + 1] == "Read"
+    assert command[command.index("--allowedTools") + 1] == "Read"
+    assert "WebSearch" not in command
+
+
 def test_analysis_command_uses_supported_permission_mode_and_disables_tools() -> None:
     client = ClaudeCodeClient("test")
 

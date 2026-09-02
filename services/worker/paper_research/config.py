@@ -89,6 +89,7 @@ class Settings(BaseSettings):
         default=300, ge=30, le=600
     )
     EXPERIMENT_ASSISTANT_MAX_CNY: float = Field(default=20, gt=0, le=100)
+    CLAUDE_VISION_MODEL: str = "deepseek-v4-flash-vision-exp"
     EXPERIMENT_LLM_MAX_CNY: float = Field(default=40, gt=0, le=200)
     EXPERIMENT_LLM_GLOBAL_MAX_CNY: float = Field(default=200, gt=0, le=10000)
     EXPERIMENT_REPOSITORY_MAX_FILES: int = Field(default=500, ge=48, le=1000)

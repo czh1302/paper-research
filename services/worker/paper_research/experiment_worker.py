@@ -9,6 +9,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import tempfile
 import time
 import uuid
 from contextlib import suppress
@@ -75,6 +76,28 @@ FROZEN_PATHS = frozenset(
         f"{FROZEN_ROOT}/evaluate.py",
     }
 )
+
+CHAT_IMAGE_MAX_COUNT = 4
+CHAT_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+CHAT_IMAGE_MAX_TOTAL_BYTES = 25 * 1024 * 1024
+CHAT_IMAGE_SUFFIXES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+def _chat_image_mime(content: bytes) -> str | None:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 _REPOSITORY_AUDIT_SCRIPT = r"""
 import json
@@ -706,6 +729,8 @@ class ExperimentWorker:
         stage: str,
         pro: bool = False,
         progress_callback: Any | None = None,
+        image_paths: list[Path] | None = None,
+        image_audit: list[dict[str, Any]] | None = None,
     ) -> Any:
         self._ensure_active_lease()
         active = self._active_experiment
@@ -719,9 +744,12 @@ class ExperimentWorker:
                     "stage": stage,
                     "model": self.settings.CLAUDE_PRO_MODEL
                     if pro
+                    else self.settings.CLAUDE_VISION_MODEL
+                    if image_paths
                     else self.settings.CLAUDE_MODEL,
                     "response_model": response_model.__name__,
                     "prompt": prompt,
+                    "images": image_audit or [],
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -804,16 +832,28 @@ class ExperimentWorker:
         journal["provider_started_at"] = utc_now()
         self._write_llm_journal(journal_path, journal)
         try:
+            selected_model = (
+                self.settings.CLAUDE_PRO_MODEL
+                if pro
+                else self.settings.CLAUDE_VISION_MODEL
+                if image_paths
+                else self.settings.CLAUDE_MODEL
+            )
             result = await self.llm.structured(
                 prompt,
                 response_model,
-                model=self.settings.CLAUDE_PRO_MODEL if pro else self.settings.CLAUDE_MODEL,
+                model=selected_model,
                 stage=stage,
                 progress_callback=progress_callback,
                 usage_id=str(journal["invocation_id"]),
                 before_usage_callback=journal_result,
                 max_turns=max_turns,
                 max_budget_usd=max_budget_usd,
+                image_paths=image_paths,
+                usage_metadata={
+                    "attachment_count": len(image_audit or []),
+                    "attachment_bytes": sum(int(item.get("byte_size") or 0) for item in (image_audit or [])),
+                } if image_paths else None,
             )
         except ClaudeCodeAccountingError as accounting_error:
             # Usage (and, when parsing succeeded, the structured result) is
@@ -3151,14 +3191,38 @@ class ExperimentWorker:
                                 action_id, {"content": streamed, "streaming": True}
                             )
 
-                    change = await self._structured(
-                        self._assistant_prompt(
-                            str(request.get("prompt") or ""), current_files, specification
-                        ),
-                        AssistantWorkspaceChange,
-                        stage="experiment_workspace_assistant",
-                        progress_callback=publish,
-                    )
+                    raw_context = request.get("conversationContext")
+                    conversation_context = [
+                        {
+                            "role": str(item.get("role") or "")[:16],
+                            "content": str(item.get("content") or "")[:2000],
+                        }
+                        for item in (raw_context if isinstance(raw_context, list) else [])[-12:]
+                        if isinstance(item, dict)
+                        and item.get("role") in {"user", "assistant"}
+                        and isinstance(item.get("content"), str)
+                    ]
+                    with tempfile.TemporaryDirectory(
+                        prefix="research-atlas-chat-images-"
+                    ) as temporary_directory:
+                        image_paths, image_audit = await self._materialize_assistant_images(
+                            experiment, request, Path(temporary_directory)
+                        )
+                        change = await self._structured(
+                            self._assistant_prompt(
+                                str(request.get("prompt") or ""),
+                                current_files,
+                                specification,
+                                conversation_context,
+                            ),
+                            AssistantWorkspaceChange,
+                            stage="experiment_workspace_assistant_vision"
+                            if image_paths
+                            else "experiment_workspace_assistant",
+                            progress_callback=publish,
+                            image_paths=image_paths or None,
+                            image_audit=image_audit or None,
+                        )
                     action_progress = {
                         "content": change.explanation_zh,
                         "streaming": False,
@@ -3360,6 +3424,7 @@ class ExperimentWorker:
         prompt: str,
         files: list[GeneratedRepositoryFile],
         specification: PilotSpecification,
+        conversation_context: list[dict[str, str]] | None = None,
     ) -> str:
         payload = [
             {"path": item.path, "content": item.content[:40_000]} for item in files
@@ -3374,12 +3439,71 @@ resource URLs, .research-atlas, .git or secrets. Do not exfiltrate data.
 USER REQUEST:
 {prompt[:4000]}
 
+RECENT CONVERSATION CONTEXT:
+{json.dumps((conversation_context or [])[-12:], ensure_ascii=False)}
+
 FILES:
 {json.dumps(payload, ensure_ascii=False)}
 
 FROZEN SPECIFICATION:
 {specification.model_dump_json()}
 """
+
+    async def _materialize_assistant_images(
+        self,
+        experiment: ExperimentRecord,
+        request: dict[str, Any],
+        directory: Path,
+    ) -> tuple[list[Path], list[dict[str, Any]]]:
+        raw_ids = [
+            *(request.get("attachmentIds") or []),
+            *(request.get("contextAttachmentIds") or []),
+        ]
+        attachment_ids = list(
+            dict.fromkeys(item for item in raw_ids if isinstance(item, str))
+        )
+        if len(attachment_ids) > CHAT_IMAGE_MAX_COUNT:
+            raise ValueError("Too many experiment chat attachments")
+        rows = await self.repository.load_experiment_chat_attachments(
+            experiment.id, experiment.user_id, attachment_ids
+        )
+        paths: list[Path] = []
+        audit: list[dict[str, Any]] = []
+        total_bytes = 0
+        for index, row in enumerate(rows, start=1):
+            content = await self.repository.download_experiment_chat_attachment(
+                str(row.get("storage_path") or "")
+            )
+            declared_size = int(row.get("byte_size") or 0)
+            declared_mime = str(row.get("mime_type") or "")
+            declared_digest = str(row.get("sha256") or "")
+            actual_digest = hashlib.sha256(content).hexdigest()
+            actual_mime = _chat_image_mime(content)
+            if (
+                not content
+                or len(content) > CHAT_IMAGE_MAX_BYTES
+                or len(content) != declared_size
+                or actual_digest != declared_digest
+                or actual_mime != declared_mime
+                or declared_mime not in CHAT_IMAGE_SUFFIXES
+            ):
+                raise ValueError("Experiment chat attachment failed integrity validation")
+            total_bytes += len(content)
+            if total_bytes > CHAT_IMAGE_MAX_TOTAL_BYTES:
+                raise ValueError("Experiment chat attachments exceed the total size limit")
+            path = directory / f"attachment-{index}{CHAT_IMAGE_SUFFIXES[declared_mime]}"
+            path.write_bytes(content)
+            path.chmod(0o600)
+            paths.append(path)
+            audit.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "sha256": actual_digest,
+                    "mime_type": declared_mime,
+                    "byte_size": len(content),
+                }
+            )
+        return paths, audit
 
     async def _read_tracked_files(
         self, sandbox: SandboxHandle

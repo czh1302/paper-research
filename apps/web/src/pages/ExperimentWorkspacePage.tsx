@@ -10,6 +10,7 @@ import {
   FilePlus2,
   Folder,
   FolderOpen,
+  ImagePlus,
   LoaderCircle,
   Play,
   RotateCcw,
@@ -31,17 +32,20 @@ import {
   deleteExperimentFile,
   downloadExperimentRepository,
   getExperimentArtifact,
+  getExperimentChatAttachment,
   getExperimentWorkspace,
   moveExperimentFile,
   readExperimentFile,
   saveExperimentFile,
   submitExperimentAction,
   subscribeToExperiment,
+  uploadExperimentChatImages,
 } from "../lib/api";
 import { useLanguage } from "../lib/language";
 import type {
   ExperimentAction,
   ExperimentArtifact,
+  ExperimentChatAttachment,
   ExperimentFileContent,
   ExperimentFileEntry,
   ExperimentOutcome,
@@ -54,10 +58,15 @@ type MobilePane = "files" | "editor" | "terminal" | "assistant";
 type BottomPane = "terminal" | "results";
 type OpenDocument = ExperimentFileContent & { savedContent: string; error?: string };
 type FileTreeNode = { name: string; path: string; type: "file" | "directory"; children: FileTreeNode[] };
+type PendingChatImage = { key: string; file: File; previewUrl: string; progress: number; state: "ready" | "uploading" | "error"; attachmentId?: string };
 
 const activeStatuses: ExperimentStatus[] = ["queued", "running", "recovering", "waiting_resources"];
 const LOCAL_DRAFT_DELAY_MS = 800;
 const REVISION_IDLE_DELAY_MS = 5000;
+const CHAT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const CHAT_IMAGE_MAX_COUNT = 4;
+const CHAT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const CHAT_IMAGE_MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 
 function workspaceDraftKey(experimentId: string, path: string) {
   return `research-atlas:experiment-draft:${experimentId}:${encodeURIComponent(path)}`;
@@ -270,6 +279,7 @@ function assistantFeed(actions: ExperimentAction[]): ExperimentAction[] {
         ...action,
         content: action.content ?? null,
         prompt: null,
+        attachments: [],
         role: "assistant" as const,
       }] : [];
       return [...request, ...response];
@@ -324,9 +334,38 @@ function AssistantActionDetails({ action, canRollback, onOpenFile, onRollback }:
   </div>;
 }
 
+function ChatAttachmentPreview({ experimentId, attachment }: { experimentId: string; attachment: ExperimentChatAttachment }) {
+  const { text } = useLanguage();
+  const [signedUrl, setSignedUrl] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void getExperimentChatAttachment(experimentId, attachment.id).then((result) => {
+      if (active) setSignedUrl(result.signedUrl);
+    }).catch(() => { if (active) setUnavailable(true); });
+    return () => { active = false; };
+  }, [attachment.id, experimentId]);
+  return <>
+    <button type="button" className="experiment-chat-image" disabled={!signedUrl} onClick={() => setExpanded(true)} aria-label={text(`查看图片 ${attachment.name}`, `View image ${attachment.name}`)}>
+      {signedUrl ? <img src={signedUrl} alt={attachment.name}/> : <span>{unavailable ? text("图片不可用", "Image unavailable") : text("载入图片…", "Loading image…")}</span>}
+    </button>
+    {expanded && signedUrl && <div className="experiment-image-lightbox" role="dialog" aria-modal="true" aria-label={attachment.name} onClick={() => setExpanded(false)}>
+      <div onClick={(event) => event.stopPropagation()}><header><span>{attachment.name}</span><button type="button" onClick={() => setExpanded(false)} aria-label={text("关闭图片", "Close image")}><X/></button></header><img src={signedUrl} alt={attachment.name}/></div>
+    </div>}
+  </>;
+}
+
+function recentImageContext(actions: ExperimentAction[]): ExperimentChatAttachment[] {
+  const imageTurns = actions.filter((action) => action.role === "user" && (action.attachments?.length ?? 0) > 0).slice(-2);
+  const unique = new Map<string, ExperimentChatAttachment>();
+  for (const action of imageTurns) for (const attachment of action.attachments ?? []) unique.set(attachment.id, attachment);
+  return [...unique.values()].slice(-CHAT_IMAGE_MAX_COUNT);
+}
+
 function AssistantPane({ workspace, onSubmit, onAction, onOpenFile, onRollback, rollbackBusy }: {
   workspace: ExperimentWorkspace;
-  onSubmit: (message: string) => Promise<ExperimentAction>;
+  onSubmit: (message: string, attachmentIds: string[], contextAttachmentIds: string[]) => Promise<ExperimentAction>;
   onAction: (action: ExperimentAction) => void;
   onOpenFile: (path: string) => void;
   onRollback: (revisionId: string) => Promise<void>;
@@ -334,25 +373,91 @@ function AssistantPane({ workspace, onSubmit, onAction, onOpenFile, onRollback, 
 }) {
   const { text } = useLanguage();
   const [prompt, setPrompt] = useState("");
+  const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
+  const [excludedContextIds, setExcludedContextIds] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewUrlsRef = useRef(new Set<string>());
   const adminReadOnly = workspace.accessMode === "admin";
   const actions = adminReadOnly ? [] : assistantFeed(workspace.actions);
+  const contextImages = recentImageContext(actions)
+    .filter((attachment) => !excludedContextIds.has(attachment.id))
+    .slice(0, Math.max(0, CHAT_IMAGE_MAX_COUNT - pendingImages.length));
+  useEffect(() => () => {
+    for (const url of previewUrlsRef.current) URL.revokeObjectURL(url);
+    previewUrlsRef.current.clear();
+  }, []);
+  function addImages(files: File[]) {
+    setSubmitError("");
+    const accepted: PendingChatImage[] = [];
+    const existing = new Set(pendingImages.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`));
+    let total = pendingImages.reduce((sum, item) => sum + item.file.size, 0);
+    for (const file of files) {
+      const identity = `${file.name}:${file.size}:${file.lastModified}`;
+      if (existing.has(identity)) continue;
+      if (!CHAT_IMAGE_TYPES.has(file.type)) {
+        setSubmitError(text("仅支持 JPEG、PNG、WebP 和 GIF 图片。", "Only JPEG, PNG, WebP, and GIF images are supported."));
+        continue;
+      }
+      if (file.size < 1 || file.size > CHAT_IMAGE_MAX_BYTES) {
+        setSubmitError(text("每张图片不能超过 10 MB。", "Each image must be no larger than 10 MB."));
+        continue;
+      }
+      if (pendingImages.length + accepted.length >= CHAT_IMAGE_MAX_COUNT || total + file.size > CHAT_IMAGE_MAX_TOTAL_BYTES) {
+        setSubmitError(text("每条消息最多 4 张图片，合计不超过 25 MB。", "A message can contain up to four images and 25 MB in total."));
+        break;
+      }
+      const previewUrl = URL.createObjectURL(file);
+      previewUrlsRef.current.add(previewUrl);
+      accepted.push({ key: crypto.randomUUID(), file, previewUrl, progress: 0, state: "ready" });
+      existing.add(identity); total += file.size;
+    }
+    if (accepted.length) setPendingImages((items) => [...items, ...accepted]);
+  }
+  function removePendingImage(key: string) {
+    setPendingImages((items) => {
+      const item = items.find((candidate) => candidate.key === key);
+      if (item) { URL.revokeObjectURL(item.previewUrl); previewUrlsRef.current.delete(item.previewUrl); }
+      return items.filter((candidate) => candidate.key !== key);
+    });
+  }
   async function submit() {
     const message = prompt.trim();
-    if (!message || submitting || !workspace.permissions.chat) return;
+    if ((!message && pendingImages.length === 0) || submitting || !workspace.permissions.chat) return;
     setSubmitting(true); setSubmitError("");
     try {
-      const action = await onSubmit(message);
-      setPrompt(""); onAction(action);
+      const missing = pendingImages.map((item, index) => ({ item, index })).filter(({ item }) => !item.attachmentId);
+      setPendingImages((items) => items.map((item) => item.attachmentId ? item : { ...item, state: "uploading", progress: 0 }));
+      const uploaded = missing.length ? await uploadExperimentChatImages(
+        workspace.experiment.id,
+        missing.map(({ item }) => item.file),
+        (index, progress) => setPendingImages((items) => items.map((item, itemIndex) => itemIndex === missing[index].index ? { ...item, state: "uploading", progress } : item)),
+      ) : [];
+      const attachmentIds = pendingImages.map((item, index) => item.attachmentId
+        ?? uploaded[missing.findIndex((candidate) => candidate.index === index)]?.id).filter((id): id is string => Boolean(id));
+      setPendingImages((items) => items.map((item, index) => ({
+        ...item,
+        attachmentId: attachmentIds[index],
+        state: "ready",
+        progress: 100,
+      })));
+      const action = await onSubmit(message, attachmentIds, contextImages.map((item) => item.id));
+      for (const item of pendingImages) { URL.revokeObjectURL(item.previewUrl); previewUrlsRef.current.delete(item.previewUrl); }
+      setPrompt(""); setPendingImages([]); setExcludedContextIds(new Set()); onAction(action);
     } catch {
-      setSubmitError(text("修改已保留在编辑器中；保存完成后可重新发送。", "Your edits remain in the editor. Send again after they are saved."));
+      setPendingImages((items) => items.map((item) => ({ ...item, state: item.attachmentId ? "ready" : "error" })));
+      setSubmitError(text("消息或图片尚未发送；内容已保留，可以重试。", "The message or images were not sent. Your content is preserved for retry."));
     } finally { setSubmitting(false); }
   }
   return <section className="experiment-pane experiment-assistant" aria-label={text("Flash 编程助手", "Flash coding assistant")}>
     <header className="experiment-pane-heading"><div><strong className="flex items-center gap-2"><Bot/>{text("Flash 编程助手", "Flash coding assistant")}</strong><span>{text("通过 Claude Code 安全执行", "Safely executed through Claude Code")}</span></div></header>
-    <div className="experiment-chat experiment-pane-scroll">{adminReadOnly ? <div className="experiment-empty"><Bot/><strong>{text("助手对话保持私密", "Assistant conversations stay private")}</strong><span>{text("管理员可以查看代码、终端输出和实验结果，但不能查看实验所有者与助手的对话。", "Administrators can inspect code, terminal output, and experiment results, but cannot read the owner's assistant conversations.")}</span></div> : actions.length ? actions.map((action) => <article className={`experiment-message is-${action.role ?? "assistant"}`} key={action.id}><span>{action.role === "user" ? text("你", "You") : "Flash"}</span><p>{action.content || action.prompt || (action.state === "running" ? text("正在处理并验证修改…", "Applying and validating changes…") : text("请求已加入队列", "Request queued"))}</p>{action.command && <code>{action.command}</code>}<AssistantActionDetails action={action} canRollback={workspace.permissions.rollback && !rollbackBusy && action.state === "completed"} onOpenFile={onOpenFile} onRollback={onRollback}/></article>) : <div className="experiment-empty"><Bot/><strong>{text("从一个明确目标开始", "Start with a clear goal")}</strong><span>{text("让 Flash 修改代码、运行测试或解释实验结果。每次操作都会保留 Diff 和回滚点。", "Ask Flash to edit code, run tests, or explain results. Every action keeps a diff and rollback point.")}</span></div>}</div>
-    {workspace.permissions.chat ? <>{submitError && <div className="experiment-readonly-note" role="status">{submitError}</div>}<div className="experiment-composer"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder={text("描述你想修改或验证的内容…", "Describe what you want to change or validate…")} aria-label={text("发送给 Flash", "Message Flash")}/><button disabled={!prompt.trim() || submitting} onClick={() => void submit()} aria-label={text("发送", "Send")}>{submitting ? <LoaderCircle className="animate-spin"/> : <Send/>}</button></div></> : <div className="experiment-readonly-note">{text("管理员只能查看代码、终端输出和实验结果；助手对话仅对实验所有者可见。", "Administrators can inspect code, terminal output, and results; assistant conversations are visible only to the experiment owner.")}</div>}
+    <div className="experiment-chat experiment-pane-scroll">{adminReadOnly ? <div className="experiment-empty"><Bot/><strong>{text("助手对话保持私密", "Assistant conversations stay private")}</strong><span>{text("管理员可以查看代码、终端输出和实验结果，但不能查看实验所有者与助手的对话。", "Administrators can inspect code, terminal output, and experiment results, but cannot read the owner's assistant conversations.")}</span></div> : actions.length ? actions.map((action) => <article className={`experiment-message is-${action.role ?? "assistant"}`} key={action.id}><span>{action.role === "user" ? text("你", "You") : "Flash"}</span>{(action.attachments?.length ?? 0) > 0 && <div className="experiment-message-images">{action.attachments!.map((attachment) => <ChatAttachmentPreview key={attachment.id} experimentId={workspace.experiment.id} attachment={attachment}/>)}</div>}<p>{action.content || action.prompt || (action.state === "running" ? text("正在处理并验证修改…", "Applying and validating changes…") : text("请求已加入队列", "Request queued"))}</p>{action.command && <code>{action.command}</code>}<AssistantActionDetails action={action} canRollback={workspace.permissions.rollback && !rollbackBusy && action.state === "completed"} onOpenFile={onOpenFile} onRollback={onRollback}/></article>) : <div className="experiment-empty"><Bot/><strong>{text("从一个明确目标开始", "Start with a clear goal")}</strong><span>{text("让 Flash 修改代码、运行测试、解释实验结果，或发送界面截图。每次操作都会保留 Diff 和回滚点。", "Ask Flash to edit code, run tests, explain results, or inspect screenshots. Every action keeps a diff and rollback point.")}</span></div>}</div>
+    {workspace.permissions.chat ? <>{submitError && <div className="experiment-readonly-note" role="status">{submitError}</div>}<div className="experiment-composer-shell" onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDrop={(event) => { event.preventDefault(); addImages(Array.from(event.dataTransfer.files)); }}>
+      {contextImages.length > 0 && <div className="experiment-context-images"><span>{text("继续参考最近图片", "Recent images included")}</span><div>{contextImages.map((attachment) => <span key={attachment.id}><ImagePlus/><span>{attachment.name}</span><button type="button" onClick={() => setExcludedContextIds((ids) => new Set([...ids, attachment.id]))} aria-label={text(`不再带入 ${attachment.name}`, `Exclude ${attachment.name}`)}><X/></button></span>)}</div></div>}
+      {pendingImages.length > 0 && <div className="experiment-pending-images">{pendingImages.map((item) => <figure key={item.key} data-state={item.state}><img src={item.previewUrl} alt={item.file.name}/><figcaption><span>{item.file.name}</span>{item.state === "uploading" && <small>{item.progress}%</small>}{item.state === "error" && <small>{text("待重试", "Retry")}</small>}</figcaption><button type="button" disabled={submitting} onClick={() => removePendingImage(item.key)} aria-label={text(`移除 ${item.file.name}`, `Remove ${item.file.name}`)}><X/></button>{item.state === "uploading" && <i style={{ width: `${item.progress}%` }}/>}</figure>)}</div>}
+      <div className="experiment-composer"><input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={(event) => { addImages(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }}/><button type="button" className="experiment-image-button" disabled={submitting || pendingImages.length >= CHAT_IMAGE_MAX_COUNT} onClick={() => fileInputRef.current?.click()} aria-label={text("添加图片", "Add images")}><ImagePlus/></button><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/")); if (images.length) { event.preventDefault(); addImages(images); } }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder={text("描述目标，或粘贴界面截图…", "Describe a goal or paste a screenshot…")} aria-label={text("发送给 Flash", "Message Flash")}/><button type="button" className="experiment-send-button" disabled={(!prompt.trim() && pendingImages.length === 0) || submitting} onClick={() => void submit()} aria-label={text("发送", "Send")}>{submitting ? <LoaderCircle className="animate-spin"/> : <Send/>}</button></div>
+    </div></> : <div className="experiment-readonly-note">{text("管理员只能查看代码、终端输出和实验结果；助手对话仅对实验所有者可见。", "Administrators can inspect code, terminal output, and results; assistant conversations are visible only to the experiment owner.")}</div>}
   </section>;
 }
 
@@ -598,9 +703,9 @@ export function ExperimentWorkspacePage({ adminMode = false }: { adminMode?: boo
   const repository = <RepositoryPane workspace={visibleWorkspace} selectedPath={selectedPath} onOpen={(path) => void openFile(path)} onRefresh={refresh} onBeforeMutation={flushDocuments} onMove={applyMovedFile} onDelete={applyDeletedFile}/>;
   const editor = <EditorPane path={selectedPath} openPaths={openPaths} document={currentDocument} canEdit={permissions.editCode && experiment.status === "ready"} saving={savingPaths.has(selectedPath)} diffMode={diffMode} setDiffMode={setDiffMode} onChange={(content) => setDocuments((items) => ({ ...items, [selectedPath]: { ...items[selectedPath], content, error: undefined } }))} onSelect={(path) => { void persistDocument(selectedPath); setSelectedPath(path); setDiffMode(false); }} onClose={(path) => { void persistDocument(path); const next = openPaths.filter((item) => item !== path); setOpenPaths(next); if (path === selectedPath) setSelectedPath(next.at(-1) ?? ""); setDiffMode(false); }}/>
   const terminal = <ExperimentTerminal experimentId={id} canRead={permissions.terminalRead} canWrite={permissions.terminalWrite && experiment.status === "ready"} active={compact ? mobilePane === "terminal" : true}/>;
-  const assistant = <AssistantPane workspace={visibleWorkspace} onSubmit={async (message) => {
+  const assistant = <AssistantPane workspace={visibleWorkspace} onSubmit={async (message, attachmentIds, contextAttachmentIds) => {
     if (!await flushDocuments()) throw new Error("unsaved workspace");
-    return submitExperimentAction(id, { kind: "assistant", prompt: message });
+    return submitExperimentAction(id, { kind: "assistant", prompt: message, attachmentIds, contextAttachmentIds });
   }} onAction={(action) => setWorkspace((current) => current ? { ...current, actions: [...current.actions, action] } : current)} onOpenFile={(path) => void openFile(path)} onRollback={(revisionId) => perform("rollback", () => submitExperimentAction(id, { kind: "rollback", revisionId }))} rollbackBusy={Boolean(working) || activeAction}/>;
 
   return <div className="experiment-workspace">

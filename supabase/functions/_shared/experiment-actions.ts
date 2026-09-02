@@ -1,4 +1,5 @@
 import type { SupabaseClient, User } from "npm:@supabase/supabase-js@2.112.4";
+import { attachmentIds, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_MAX_TOTAL_BYTES, finalizeNewAttachments, publicAttachment, validateContextAttachments } from "./experiment-attachments.ts";
 import { actionSummary, getExperimentAccess, isUuid, requireExperimentPilotEnabled, requirePermission } from "./experiments.ts";
 import { HttpError, json } from "./http.ts";
 
@@ -32,11 +33,44 @@ export async function enqueueUserExperimentAction(
   if (body.prompt !== undefined) { payload.message = body.prompt; payload.prompt = body.prompt; }
   if (body.command !== undefined) payload.command = body.command;
   if (body.revisionId !== undefined) payload.revisionId = body.revisionId;
+  const newAttachmentIds = kind === "assistant" ? attachmentIds(body.attachmentIds) : [];
+  const requestedContextIds = kind === "assistant" ? attachmentIds(body.contextAttachmentIds) : [];
+  const contextAttachmentIds = requestedContextIds.filter((id) => !newAttachmentIds.includes(id));
+  if (newAttachmentIds.length + contextAttachmentIds.length > CHAT_IMAGE_MAX_COUNT) {
+    throw new HttpError(400, "At most four images can be sent to the assistant");
+  }
   if (kind === "assistant") {
-    const message = typeof payload.message === "string" ? payload.message.trim() : "";
-    if (!message || message.length > 20_000) throw new HttpError(400, "Assistant message is required");
+    let message = typeof payload.message === "string" ? payload.message.trim() : "";
+    if (!message && newAttachmentIds.length) {
+      message = "请分析这些图片与当前仓库的关系并给出下一步建议。除非图片中有明确要求，否则不要修改文件或执行命令。";
+    }
+    if (!message || message.length > 20_000) throw new HttpError(400, "Assistant message or image is required");
     payload.message = message;
     payload.prompt = message;
+    const [newAttachments, contextAttachments, history] = await Promise.all([
+      finalizeNewAttachments(admin, access.experiment.id, user.id, newAttachmentIds),
+      validateContextAttachments(admin, access.experiment.id, user.id, contextAttachmentIds),
+      admin.from("experiment_actions").select("request,response,created_at")
+        .eq("experiment_id", access.experiment.id).eq("kind", "assistant").eq("status", "completed")
+        .order("created_at", { ascending: false }).limit(6),
+    ]);
+    if (history.error) throw history.error;
+    if ([...newAttachments, ...contextAttachments].reduce((sum, item) => sum + Number(item.byte_size), 0) > CHAT_IMAGE_MAX_TOTAL_BYTES) {
+      throw new HttpError(400, "Assistant image context exceeds the total size limit");
+    }
+    const bounded = (value: unknown) => typeof value === "string" ? value.trim().slice(0, 2_000) : "";
+    payload.conversationContext = (history.data ?? []).reverse().flatMap((row) => {
+      const requestPayload = row.request && typeof row.request === "object" ? row.request as Record<string, unknown> : {};
+      const responsePayload = row.response && typeof row.response === "object" ? row.response as Record<string, unknown> : {};
+      const userMessage = bounded(requestPayload.message ?? requestPayload.prompt);
+      const assistantMessage = bounded(responsePayload.explanationZh ?? responsePayload.explanationEn ?? responsePayload.content ?? responsePayload.message);
+      return [
+        ...(userMessage ? [{ role: "user", content: userMessage }] : []),
+        ...(assistantMessage ? [{ role: "assistant", content: assistantMessage }] : []),
+      ];
+    }).slice(-12);
+    payload.attachmentIds = newAttachmentIds;
+    payload.contextAttachmentIds = contextAttachmentIds;
   }
   if (kind === "command") {
     const command = typeof payload.command === "string" ? payload.command.trim() : "";
@@ -60,13 +94,14 @@ export async function enqueueUserExperimentAction(
   const experimentLlm = boundedBudget("EXPERIMENT_LLM_MAX_CNY", 40, 200);
   const globalLlm = boundedBudget("EXPERIMENT_LLM_GLOBAL_MAX_CNY", 200, 10_000);
   const maxSpendUsd = boundedBudget("E2B_MAX_SPEND_USD", 90, 90);
-  const { data, error } = await admin.rpc("enqueue_experiment_action", {
+  const { data, error } = await admin.rpc("enqueue_experiment_action_with_attachments", {
     p_experiment_id: access.experiment.id,
     p_user_id: access.experiment.user_id,
     p_kind: kind,
     p_request: payload,
     p_base_revision_id: baseRevisionId,
     p_idempotency_key: idempotencyKey,
+    p_attachment_ids: newAttachmentIds,
     p_llm_reservation_cny: perActionLlm,
     p_assistant_llm_max_cny: assistantLlm,
     p_experiment_llm_max_cny: experimentLlm,
@@ -79,6 +114,14 @@ export async function enqueueUserExperimentAction(
     throw new HttpError(409, "Experiment inference budget reached");
   }
   if (error?.message.includes("spend limit")) throw new HttpError(503, "Experiment budget is temporarily unavailable");
+  if (error?.message.includes("attachment")) throw new HttpError(409, "Experiment chat image is unavailable");
   if (error) throw error;
-  return json(request, { state: data.status, action: actionSummary(data) }, 202);
+  const { data: attachedRows, error: attachedError } = newAttachmentIds.length
+    ? await admin.from("experiment_chat_attachments").select("*").in("id", newAttachmentIds)
+    : { data: [], error: null };
+  if (attachedError) throw attachedError;
+  return json(request, {
+    state: data.status,
+    action: actionSummary({ ...data, attachments: (attachedRows ?? []).map(publicAttachment) }),
+  }, 202);
 }

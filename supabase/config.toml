@@ -73,6 +73,12 @@ verify_jwt = true
 [functions.get-experiment-workspace]
 verify_jwt = true
 
+[functions.create-experiment-chat-upload]
+verify_jwt = true
+
+[functions.get-experiment-chat-attachment]
+verify_jwt = true
+
 [functions.read-experiment-file]
 verify_jwt = true
 

@@ -5,6 +5,7 @@ import type {
   AdminUserRow,
   ExperimentAction,
   ExperimentArtifact,
+  ExperimentChatAttachment,
   ExperimentFileContent,
   ExperimentFileEntry,
   ExperimentSummary,
@@ -260,10 +261,60 @@ export async function submitExperimentAction(
     prompt?: string;
     command?: string;
     revisionId?: string;
+    attachmentIds?: string[];
+    contextAttachmentIds?: string[];
   },
 ): Promise<ExperimentAction> {
   const data = await invokeExperiment<{ action: ExperimentAction }>("submit-experiment-action", { experimentId, ...input });
   return data.action;
+}
+
+export async function uploadExperimentChatImages(
+  experimentId: string,
+  files: File[],
+  onProgress?: (index: number, percent: number) => void,
+): Promise<ExperimentChatAttachment[]> {
+  const client = requireSupabase();
+  const { data, error } = await client.functions.invoke("create-experiment-chat-upload", {
+    body: { experimentId, files: files.map((file) => ({ name: file.name, size: file.size, type: file.type })) },
+  });
+  if (error) throw error;
+  const uploads = data.uploads as Array<{ attachmentId: string; uploadUrl: string }>;
+  if (!Array.isArray(uploads) || uploads.length !== files.length) throw new Error("Invalid chat upload response");
+  const completed: ExperimentChatAttachment[] = [];
+  for (let index = 0; index < files.length; index += 1) {
+    await new Promise<void>((resolve, reject) => {
+      const form = new FormData();
+      form.append("cacheControl", "3600");
+      form.append("", files[index]);
+      const request = new XMLHttpRequest();
+      request.open("PUT", uploads[index].uploadUrl);
+      request.setRequestHeader("x-upsert", "false");
+      request.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) onProgress?.(index, Math.round(event.loaded / event.total * 100));
+      });
+      request.addEventListener("load", () => request.status >= 200 && request.status < 300
+        ? resolve() : reject(new Error("Chat image upload failed")));
+      request.addEventListener("error", () => reject(new Error("Chat image upload failed")));
+      request.addEventListener("abort", () => reject(new Error("Chat image upload was cancelled")));
+      request.send(form);
+    });
+    onProgress?.(index, 100);
+    completed.push({
+      id: uploads[index].attachmentId,
+      name: files[index].name,
+      mimeType: files[index].type as ExperimentChatAttachment["mimeType"],
+      byteSize: files[index].size,
+    });
+  }
+  return completed;
+}
+
+export async function getExperimentChatAttachment(
+  experimentId: string,
+  attachmentId: string,
+): Promise<{ attachment: ExperimentChatAttachment; signedUrl: string; expiresIn: number }> {
+  return invokeExperiment("get-experiment-chat-attachment", { experimentId, attachmentId });
 }
 
 export async function createTerminalTicket(experimentId: string, cols: number, rows: number, writable = false): Promise<{ websocketUrl: string; expiresAt: string }> {
