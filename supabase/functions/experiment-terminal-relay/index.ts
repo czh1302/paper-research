@@ -374,8 +374,8 @@ Deno.serve(async (request) => {
   let context: TerminalContext | null = null;
   let terminalReady: Promise<TerminalContext> | null = null;
   let operations = Promise.resolve();
-  let reconnectTimer: number | undefined;
-  let authorizationTimer: number | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let authorizationTimer: ReturnType<typeof setInterval> | undefined;
   let authorizationCheckRunning = false;
   let disconnectPromise: Promise<void> | null = null;
   let checkpointSequence = 0;
