@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     V4_FULL_TEXT_TARGET: int = Field(default=20, ge=6, le=30)
     V4_MAX_RETRIEVAL_BATCHES: int = Field(default=3, ge=1, le=5)
     V4_IDEA_RETRY_ENABLED: bool = True
-    V4_MAX_IDEA_REVIEW_ATTEMPTS: int = Field(default=8, ge=1, le=8)
+    V4_MAX_IDEA_REVIEW_ATTEMPTS: int = Field(default=3, ge=1, le=8)
     IDEA_EVOLUTION_LOOP_ENABLED: bool = True
     JOB_AUTO_RECOVERY_ENABLED: bool = True
     JOB_RETRY_MAX_DELAY_SECONDS: int = Field(default=21600, ge=30, le=86400)
