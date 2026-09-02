@@ -58,4 +58,11 @@ describe("DashboardPage", () => {
     await user.click(screen.getByRole("button", { name: "确认取消" }));
     await waitFor(() => expect(api.cancelJob).toHaveBeenCalledWith("job-12345678"));
   });
+
+  it("uses the stable workflow stage instead of the broad database status", async () => {
+    api.listJobs.mockResolvedValue([job({ status: "analyzing", stage: "v4_pilot_specification", progress: 90 })]);
+    renderPage();
+    expect(await screen.findByText("Idea 与实验规范")).toBeInTheDocument();
+    expect(screen.queryByText("分析中")).not.toBeInTheDocument();
+  });
 });

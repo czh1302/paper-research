@@ -109,6 +109,21 @@ from .sources.web import SerperSource, TavilySource
 
 LOGGER = logging.getLogger(__name__)
 IDEA_REVIEW_PROMPT_VERSION = 3
+WORKFLOW_STAGE_ORDER = {
+    "queued": (0, 0),
+    "parsing": (1, 0),
+    "problem_ready": (2, 0),
+    "searching": (3, 0),
+    "v4_literature_landscape": (3, 1),
+    "v4_full_text": (4, 0),
+    "v4_landscape": (4, 1),
+    "analyzing": (5, 0),
+    "v4_ideas": (5, 1),
+    "v4_pilot_specification": (5, 2),
+    "rendering": (6, 0),
+    "completed": (7, 0),
+}
+WORKFLOW_STAGE_FLOORS = (0, 5, 15, 35, 52, 74, 92, 100)
 PRO_LLM_STAGES = frozenset(
     {
         "baseline_problem_and_report",
@@ -126,6 +141,29 @@ PRO_LLM_STAGES = frozenset(
         "v4_pilot_specification_repair",
     }
 )
+
+
+def v4_checkpoint_workflow_state(
+    pipeline_checkpoint: dict[str, Any],
+) -> tuple[JobStatus, str, int]:
+    """Return the furthest public workflow milestone represented by a V4 checkpoint."""
+    checkpoint = dict(pipeline_checkpoint.get("v4") or {})
+    if checkpoint.get("complete") or checkpoint.get("presentation"):
+        return JobStatus.RENDERING, "rendering", 92
+    if checkpoint.get("pilot_specifications"):
+        return JobStatus.ANALYZING, "v4_pilot_specification", 90
+    if checkpoint.get("idea_attempts") or checkpoint.get("evolution_pool"):
+        return JobStatus.ANALYZING, "v4_ideas", 74
+    # A saved landscape means full-text research is already an upstream result.
+    if checkpoint.get("landscape"):
+        return JobStatus.ANALYZING, "v4_ideas", 74
+    if checkpoint.get("full_text_ranking") or checkpoint.get("retrieval_complete"):
+        return JobStatus.SEARCHING, "v4_full_text", 52
+    if checkpoint.get("bundles") or checkpoint.get("audit"):
+        return JobStatus.SEARCHING, "v4_literature_landscape", 35
+    if pipeline_checkpoint.get("problem_briefs"):
+        return JobStatus.PROBLEM_READY, "problem_ready", 30
+    return JobStatus.QUEUED, "queued", 0
 
 
 def validate_cached_evidence_profiles(
@@ -1862,6 +1900,7 @@ class AnalysisPipeline:
         self.settings = settings
         self.repository = repository
         self._active_job_id: str | None = None
+        self._workflow_state: dict[str, tuple[int, int, str, JobStatus, int]] = {}
         self.llm = ClaudeCodeClient(
             Settings.reveal(settings.DEEPSEEK_API_KEY) or "mock",
             binary=settings.CLAUDE_BIN,
@@ -2062,6 +2101,20 @@ class AnalysisPipeline:
     async def _update(
         self, job_id: str, status: JobStatus, stage: str, progress: int, **extra: Any
     ) -> None:
+        position = WORKFLOW_STAGE_ORDER.get(stage)
+        previous = self._workflow_state.get(job_id)
+        if position is not None:
+            if previous is not None and position < previous[:2]:
+                # Reading an upstream checkpoint is a child task and must not
+                # move the public seven-step workflow backwards.
+                return
+            if previous is not None:
+                progress = max(progress, previous[4])
+            progress = max(progress, WORKFLOW_STAGE_FLOORS[position[0]])
+            progress = min(100, progress)
+            self._workflow_state[job_id] = (
+                position[0], position[1], stage, status, progress
+            )
         if self.repository:
             await self.repository.update_job(
                 job_id,
@@ -2070,6 +2123,28 @@ class AnalysisPipeline:
                 progress=progress,
                 **extra,
             )
+
+    async def _workflow_event(
+        self,
+        job_id: str,
+        message: str,
+        *,
+        workflow_stage: str,
+        substage: str,
+        progress: int,
+        **data: Any,
+    ) -> None:
+        await self._event(
+            job_id,
+            "stage",
+            message,
+            {
+                "workflow_stage": workflow_stage,
+                "substage": substage,
+                "progress": progress,
+                **data,
+            },
+        )
 
     async def _cancel_guard(self, job_id: str) -> None:
         if self.repository and await self.repository.is_cancelled(job_id):
@@ -2509,10 +2584,14 @@ class AnalysisPipeline:
             if asyncio.get_running_loop().time() >= deadline:
                 break
             await self._cancel_guard(job.id)
-            await self._event(
+            await self._workflow_event(
                 job.id,
-                "stage",
                 f"Building literature landscape: retrieval batch {batch_number}",
+                workflow_stage="v4_literature_landscape",
+                substage="literature_retrieval",
+                progress=35,
+                batch=batch_number,
+                batch_total=self.settings.V4_MAX_RETRIEVAL_BATCHES,
             )
             if batch_number == 1:
                 bundle = await self._call_llm(
@@ -2924,12 +3003,6 @@ class AnalysisPipeline:
                 audit=audit,
                 bundles=[item.model_dump(mode="json") for item in bundles],
             )
-        await self._update(job.id, JobStatus.SEARCHING, "v4_full_text", 52)
-        await self._event(
-            job.id,
-            "stage",
-            "Reranking candidates for open full-text review",
-        )
         input_profiles = [build_input_profile(item) for item in problems]
         minimum_full_text = min(20, self.settings.V4_FULL_TEXT_TARGET)
         cached_profiles: list[PaperEvidenceProfile] = []
@@ -2943,6 +3016,7 @@ class AnalysisPipeline:
             and landscape_checkpoint.get("joint_coverage")
         )
         if landscape_checkpoint and len(cached_profiles) >= minimum_full_text and reusable_joint_landscape:
+            await self._update(job.id, JobStatus.ANALYZING, "v4_ideas", 74)
             resume_target = v4_resume_full_text_target(
                 v4_checkpoint, self.settings.V4_FULL_TEXT_TARGET
             )
@@ -2959,6 +3033,15 @@ class AnalysisPipeline:
                 f"Reused research landscape and {len(external_profiles)} full-text profiles",
             )
         else:
+            await self._update(job.id, JobStatus.SEARCHING, "v4_full_text", 52)
+            await self._workflow_event(
+                job.id,
+                "Reranking candidates for open full-text review",
+                workflow_stage="v4_full_text",
+                substage="full_text_ranking",
+                progress=52,
+                full_text_count=len(cached_profiles),
+            )
             ranking_checkpoint = v4_checkpoint.get("full_text_ranking")
             candidate_by_id = {item.canonical_id: item for item in candidates}
             ranked: list[CandidatePaper] = []
@@ -3068,10 +3151,13 @@ class AnalysisPipeline:
                     bridge_paper_ids=bridge_paper_ids,
                 )
             await self._update(job.id, JobStatus.ANALYZING, "v4_landscape", 72)
-            await self._event(
+            await self._workflow_event(
                 job.id,
-                "stage",
                 f"Synthesizing research landscape from {len(external_profiles)} full-text papers",
+                workflow_stage="v4_landscape",
+                substage="landscape_synthesis",
+                progress=72,
+                full_text_count=len(external_profiles),
             )
             landscape_draft = await self._call_llm(
                 landscape_prompt(profiles, joint),
@@ -3108,6 +3194,15 @@ class AnalysisPipeline:
             await save_v4_checkpoint(
                 landscape=landscape.model_dump(mode="json", exclude={"profiles"})
             )
+        await self._update(job.id, JobStatus.ANALYZING, "v4_ideas", 74)
+        await self._workflow_event(
+            job.id,
+            "Research landscape ready; continuing with paper-level Ideas",
+            workflow_stage="v4_ideas",
+            substage="idea_preparation",
+            progress=74,
+            full_text_count=len(external_profiles),
+        )
         # The landscape is an upstream result. Idea-only recovery may read a
         # few additional papers to resolve review objections, but those papers
         # must not silently rewrite the Overview/Input/Landscape sections that
@@ -3170,17 +3265,26 @@ class AnalysisPipeline:
             if asyncio.get_running_loop().time() >= deadline:
                 break
             await self._cancel_guard(job.id)
+            attempt_progress = min(
+                89, 74 + int((attempt - 1) / max(1, max_attempts) * 15)
+            )
             await self._update(
                 job.id,
                 JobStatus.ANALYZING,
                 "v4_ideas",
-                min(91, 74 + int((attempt - 1) / max(1, max_attempts) * 17)),
+                attempt_progress,
             )
             await self._event(
                 job.id,
                 "idea_attempt",
                 f"Generating and reviewing paper-core Ideas: attempt {attempt}/{max_attempts}",
-                {"attempt": attempt, "max_attempts": max_attempts},
+                {
+                    "workflow_stage": "v4_ideas",
+                    "substage": "idea_generation",
+                    "progress": attempt_progress,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                },
             )
             retry_context = "\n".join(rejected_context[-12:])
             brief_context = job.research_brief
@@ -3253,6 +3357,9 @@ class AnalysisPipeline:
                         "idea_generation_part",
                         f"Generating Idea {idea_index}/{total_ideas} for attempt {attempt}",
                         {
+                            "workflow_stage": "v4_ideas",
+                            "substage": "idea_generation",
+                            "progress": attempt_progress,
                             "attempt": attempt,
                             "part": idea_index,
                             "parts": total_ideas,
@@ -3391,6 +3498,16 @@ class AnalysisPipeline:
                     f"Reused hostile review for Idea attempt {attempt}",
                 )
             else:
+                await self._workflow_event(
+                    job.id,
+                    f"Reviewing Idea candidates: attempt {attempt}/{max_attempts}",
+                    workflow_stage="v4_ideas",
+                    substage="idea_review",
+                    progress=attempt_progress,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    candidate_count=len(grounded_drafts),
+                )
                 review_batch = await self._call_llm(
                     idea_review_prompt(
                         [item.model_dump(mode="json") for item in grounded_drafts],
@@ -3549,6 +3666,16 @@ class AnalysisPipeline:
                     f"Reused targeted evidence expansion after Idea attempt {attempt}",
                 )
                 continue
+            await self._workflow_event(
+                job.id,
+                f"Expanding evidence after Idea attempt {attempt}",
+                workflow_stage="v4_ideas",
+                substage="idea_evidence_followup",
+                progress=attempt_progress,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                full_text_count=len(external_profiles),
+            )
             if attempt_checkpoint.get("followup_bundle"):
                 bundle = QueryBundle.model_validate(
                     attempt_checkpoint["followup_bundle"]
@@ -3731,8 +3858,21 @@ class AnalysisPipeline:
         if self.settings.V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS:
             pilot_checkpoints = dict(v4_checkpoint.get("pilot_specifications") or {})
             compiled: list[SubmissionIdea] = []
-            for idea in selected:
+            await self._update(
+                job.id, JobStatus.ANALYZING, "v4_pilot_specification", 90
+            )
+            for idea_index, idea in enumerate(selected, start=1):
                 entry = dict(pilot_checkpoints.get(idea.key) or {})
+                await self._workflow_event(
+                    job.id,
+                    f"Compiling PilotSpecification {idea_index}/{len(selected)}",
+                    workflow_stage="v4_pilot_specification",
+                    substage="pilot_specification",
+                    progress=90,
+                    idea_index=idea_index,
+                    idea_total=len(selected),
+                    repair_attempt=int(entry.get("attempts", 0)),
+                )
                 specification = None
                 cached = entry.get("specification")
                 if cached:
@@ -3829,6 +3969,9 @@ class AnalysisPipeline:
                     idea.model_copy(update={"pilot_specification": specification})
                 )
             selected = compiled
+            await self._update(
+                job.id, JobStatus.ANALYZING, "v4_pilot_specification", 91
+            )
         headline_zh = (
             joint.common_problem_zh if joint is not None else briefs[0].research_question_zh
         )
@@ -4048,6 +4191,7 @@ class AnalysisPipeline:
             return grounded
         finally:
             self._active_job_id = None
+            self._workflow_state.pop(job.id, None)
             shutil.rmtree(workspace_path, ignore_errors=True)
 
     async def analyze_files(
@@ -4086,6 +4230,27 @@ class AnalysisPipeline:
             )
             if not pipeline_checkpoint:
                 pipeline_checkpoint = dict(job.checkpoint)
+            if self.settings.IDEA_PIPELINE_V4:
+                resume_status, resume_stage, resume_progress = (
+                    v4_checkpoint_workflow_state(pipeline_checkpoint)
+                )
+                resume_position = WORKFLOW_STAGE_ORDER[resume_stage]
+                job_position = WORKFLOW_STAGE_ORDER.get(job.stage, (0, 0))
+                if job_position > resume_position:
+                    resume_status = job.status
+                    resume_stage = job.stage
+                    resume_position = job_position
+                resume_progress = max(resume_progress, job.progress)
+                self._workflow_state[job.id] = (
+                    *resume_position,
+                    resume_stage,
+                    resume_status,
+                    resume_progress,
+                )
+                if resume_progress:
+                    await self._update(
+                        job.id, resume_status, resume_stage, resume_progress
+                    )
             stored_problem_rows = {
                 str(row["paper_id"]): row
                 for row in stored_state["problems"]
@@ -4107,7 +4272,14 @@ class AnalysisPipeline:
             )
             if missing_count:
                 await self._update(job.id, JobStatus.PARSING, "parsing", 5)
-                await self._event(job.id, "stage", "Parsing PDFs with MinerU Precision Extract")
+                await self._workflow_event(
+                    job.id,
+                    "Parsing PDFs with MinerU Precision Extract",
+                    workflow_stage="parsing",
+                    substage="pdf_parsing",
+                    progress=5,
+                    paper_total=len(file_pairs),
+                )
             for index, ((job_file, file_path), paper_id) in enumerate(
                 zip(file_pairs, expected_paper_ids, strict=True)
             ):
@@ -4138,11 +4310,19 @@ class AnalysisPipeline:
                 document = await self.parse_document(
                     file_path, paper_id, job_file.original_name, workspace_path
                 )
-                await self._event(
+                await self._update(
+                    job.id, JobStatus.PROBLEM_READY, "problem_ready", 15
+                )
+                await self._workflow_event(
                     job.id,
-                    "stage",
                     f"Extracting grounded problem statement from {job_file.original_name}",
-                    {"page_count": document.page_count, "parser": document.parser},
+                    workflow_stage="problem_ready",
+                    substage="problem_statement",
+                    progress=15,
+                    paper=index + 1,
+                    paper_total=len(file_pairs),
+                    page_count=document.page_count,
+                    parser=document.parser,
                 )
                 problem = await self.extract_problem(document)
                 if (
@@ -4278,14 +4458,22 @@ class AnalysisPipeline:
                         )
 
             await self._update(job.id, JobStatus.PROBLEM_READY, "problem_ready", 30)
-            await self._event(job.id, "stage", "Problem statement ready")
+            await self._workflow_event(
+                job.id,
+                "Problem statement ready",
+                workflow_stage="problem_ready",
+                substage="problem_ready",
+                progress=30,
+            )
 
             problem_briefs: list[ProblemBrief] = []
             if self.settings.IDEA_PIPELINE_V3 or self.settings.IDEA_PIPELINE_V4:
-                await self._event(
+                await self._workflow_event(
                     job.id,
-                    "stage",
                     "Reviewing the input, output, algorithm, and constraints against PDF evidence",
+                    workflow_stage="problem_ready",
+                    substage="problem_brief",
+                    progress=30,
                 )
                 cached_briefs = pipeline_checkpoint.get("problem_briefs")
                 cached_brief_map: dict[str, ProblemBrief] = {}
@@ -4322,8 +4510,19 @@ class AnalysisPipeline:
                     )
 
             if self.settings.IDEA_PIPELINE_V4:
+                resume_status, resume_stage, resume_progress = (
+                    v4_checkpoint_workflow_state(pipeline_checkpoint)
+                )
+                if resume_progress < 35:
+                    resume_status = JobStatus.SEARCHING
+                    resume_stage = "v4_literature_landscape"
+                    resume_progress = 35
                 await self._update(
-                    job.id, JobStatus.SEARCHING, "v4_literature_landscape", 35, current_round=1
+                    job.id,
+                    resume_status,
+                    resume_stage,
+                    resume_progress,
+                    current_round=1,
                 )
                 presentation_v4, all_candidates, search_audit, bundles = (
                     await self._run_v4_pipeline(
@@ -4392,6 +4591,13 @@ class AnalysisPipeline:
                         round_result.model_dump(mode="json"),
                     )
                 await self._update(job.id, JobStatus.RENDERING, "rendering", 92)
+                await self._workflow_event(
+                    job.id,
+                    "Generating the evidence-grounded report",
+                    workflow_stage="rendering",
+                    substage="report_generation",
+                    progress=92,
+                )
                 report = AnalysisReport(
                     job_id=job.id,
                     generation_id=presentation_v4.generation_id,
@@ -4456,10 +4662,12 @@ class AnalysisPipeline:
                     if self.settings.PDF_EVIDENCE_PREVIEW_ENABLED and hasattr(
                         self.repository, "generate_evidence_previews"
                     ):
-                        await self._event(
+                        await self._workflow_event(
                             job.id,
-                            "stage",
                             "Preparing fast evidence-page previews",
+                            workflow_stage="rendering",
+                            substage="evidence_previews",
+                            progress=92,
                         )
                         try:
                             preview_count = await self.repository.generate_evidence_previews(
@@ -4767,6 +4975,7 @@ class AnalysisPipeline:
             return report
         finally:
             self._active_job_id = None
+            self._workflow_state.pop(job.id, None)
             shutil.rmtree(workspace_path, ignore_errors=True)
 
     async def run_job(self, job: Job) -> AnalysisReport:

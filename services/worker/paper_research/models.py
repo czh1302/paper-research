@@ -1263,6 +1263,7 @@ class Job(BaseModel):
     status: JobStatus
     current_round: int = 0
     stage: str = "queued"
+    progress: int = Field(default=0, ge=0, le=100)
     files: list[JobFile] = Field(min_length=1, max_length=5)
     checkpoint: dict[str, Any] = Field(default_factory=dict)
     retry_count: int = Field(default=0, ge=0)

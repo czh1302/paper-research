@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "../lib/language";
 import { JobPage } from "./JobPage";
 
@@ -36,6 +36,13 @@ vi.mock("../lib/api", () => api);
 vi.mock("../lib/supabase", () => ({ requireSupabase: () => supabase }));
 
 describe("JobPage", () => {
+  afterEach(cleanup);
+
+  beforeEach(() => {
+    supabase.query.order.mockReset();
+    supabase.query.order.mockResolvedValue({ data: [], error: null });
+  });
+
   it("shows the filename, explicit back route, and seven user-facing steps", async () => {
     api.getJob.mockResolvedValue({
       id: "job-12345678",
@@ -96,7 +103,7 @@ describe("JobPage", () => {
     );
 
     expect(await screen.findByText("自动恢复中")).toBeInTheDocument();
-    expect(screen.getByText(/将从第 6 步继续/)).toBeInTheDocument();
+    expect(screen.getByText(/将在第 6 步继续/)).toBeInTheDocument();
     expect(screen.queryByText(/RAW_PROVIDER_EXCEPTION/)).not.toBeInTheDocument();
     expect(screen.queryByText(/技术日志/)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("失败");
@@ -132,5 +139,106 @@ describe("JobPage", () => {
 
     expect(await screen.findByText("第 1/8 轮 · 正在生成候选 Idea 4/8")).toBeInTheDocument();
     expect(screen.getByText("正在生成第 4/8 个候选 Idea")).toBeInTheDocument();
+  });
+
+  it("keeps the highest Idea milestone when a later event reports full-text work", async () => {
+    api.getJob.mockResolvedValue({
+      id: "job-monotonic",
+      mode: "single",
+      max_rounds: 1,
+      current_round: 1,
+      status: "searching",
+      stage: "v4_full_text",
+      progress: 52,
+      created_at: "2026-09-03T00:00:00Z",
+      file_names: ["paper.pdf"],
+    });
+    supabase.query.order.mockResolvedValueOnce({
+      data: [
+        { id: 1, kind: "idea_attempt", data: { attempt: 1, max_attempts: 3 }, created_at: "2026-09-03T00:01:00Z" },
+        { id: 2, kind: "stage", data: { workflow_stage: "v4_full_text", substage: "full_text_ranking", progress: 52 }, created_at: "2026-09-03T00:02:00Z" },
+      ],
+      error: null,
+    });
+
+    render(
+      <LanguageProvider>
+        <MemoryRouter initialEntries={["/jobs/job-monotonic"]}>
+          <Routes><Route path="/jobs/:id" element={<JobPage />} /></Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
+    );
+
+    expect((await screen.findAllByText("Idea 与实验规范")).length).toBeGreaterThan(0);
+    expect(screen.getByText("正在审查第 1/3 轮候选")).toBeInTheDocument();
+    expect(screen.getByText("74", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("筛选全文并建立研究现状", { selector: ".text-xl" })).not.toBeInTheDocument();
+  });
+
+  it("shows targeted evidence gathering as an Idea child task", async () => {
+    api.getJob.mockResolvedValue({
+      id: "job-followup",
+      mode: "single",
+      max_rounds: 1,
+      current_round: 1,
+      status: "analyzing",
+      stage: "v4_ideas",
+      progress: 79,
+      created_at: "2026-09-03T00:00:00Z",
+      file_names: ["paper.pdf"],
+    });
+    supabase.query.order.mockResolvedValueOnce({
+      data: [{
+        id: 1,
+        kind: "stage",
+        data: { workflow_stage: "v4_ideas", substage: "idea_evidence_followup", progress: 79, attempt: 1, max_attempts: 3 },
+        created_at: "2026-09-03T00:01:00Z",
+      }],
+      error: null,
+    });
+
+    render(
+      <LanguageProvider>
+        <MemoryRouter initialEntries={["/jobs/job-followup"]}>
+          <Routes><Route path="/jobs/:id" element={<JobPage />} /></Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
+    );
+
+    expect(await screen.findByText("第 1/3 轮未达门槛，正在定向补充证据")).toBeInTheDocument();
+    expect((screen.getAllByText("Idea 与实验规范")).length).toBeGreaterThan(0);
+  });
+
+  it("shows which reported Idea is receiving a PilotSpecification", async () => {
+    api.getJob.mockResolvedValue({
+      id: "job-pilot",
+      mode: "single",
+      max_rounds: 1,
+      current_round: 1,
+      status: "analyzing",
+      stage: "v4_pilot_specification",
+      progress: 90,
+      created_at: "2026-09-03T00:00:00Z",
+      file_names: ["paper.pdf"],
+    });
+    supabase.query.order.mockResolvedValueOnce({
+      data: [{
+        id: 1,
+        kind: "stage",
+        data: { workflow_stage: "v4_pilot_specification", substage: "pilot_specification", progress: 90, idea_index: 2, idea_total: 3 },
+        created_at: "2026-09-03T00:01:00Z",
+      }],
+      error: null,
+    });
+
+    render(
+      <LanguageProvider>
+        <MemoryRouter initialEntries={["/jobs/job-pilot"]}>
+          <Routes><Route path="/jobs/:id" element={<JobPage />} /></Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
+    );
+
+    expect((await screen.findAllByText("正在为第 2/3 个方案编译实验规范")).length).toBeGreaterThan(0);
   });
 });

@@ -131,6 +131,7 @@ class SupabaseRepository:
             status=row["status"],
             current_round=row.get("current_round", 0),
             stage=row.get("stage", "queued"),
+            progress=int(row.get("progress") or 0),
             research_brief=row.get("research_brief") or "",
             checkpoint=row.get("checkpoint") or {},
             retry_count=int(row.get("retry_count") or 0),

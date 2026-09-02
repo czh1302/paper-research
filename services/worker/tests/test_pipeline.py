@@ -71,6 +71,7 @@ from paper_research.pipeline import (
     report_section_payloads,
     report_summary,
     should_stop,
+    v4_checkpoint_workflow_state,
     v4_full_text_pool_limit,
     v4_remaining_seconds,
     v4_resume_full_text_target,
@@ -123,6 +124,46 @@ def test_conservative_cost_estimate() -> None:
         output_tokens=100_000,
     )
     assert estimate_usage_cny(pro) == pytest.approx(3 * estimate_usage_cny(usage))
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "expected"),
+    [
+        ({"problem_briefs": [{}]}, (JobStatus.PROBLEM_READY, "problem_ready", 30)),
+        ({"v4": {"retrieval_complete": True}}, (JobStatus.SEARCHING, "v4_full_text", 52)),
+        ({"v4": {"landscape": {"themes": []}}}, (JobStatus.ANALYZING, "v4_ideas", 74)),
+        ({"v4": {"idea_attempts": {"1": {}}}}, (JobStatus.ANALYZING, "v4_ideas", 74)),
+        ({"v4": {"pilot_specifications": {"idea": {}}}}, (JobStatus.ANALYZING, "v4_pilot_specification", 90)),
+        ({"v4": {"complete": True}}, (JobStatus.RENDERING, "rendering", 92)),
+    ],
+)
+def test_v4_checkpoint_workflow_state_uses_highest_saved_result(
+    checkpoint: dict, expected: tuple[JobStatus, str, int]
+) -> None:
+    assert v4_checkpoint_workflow_state(checkpoint) == expected
+
+
+async def test_pipeline_job_updates_never_move_the_main_workflow_backwards(
+    tmp_path,
+) -> None:
+    class CaptureRepository:
+        def __init__(self) -> None:
+            self.updates: list[dict] = []
+
+        async def update_job(self, _job_id: str, **values) -> None:
+            self.updates.append(values)
+
+    repository = CaptureRepository()
+    pipeline = AnalysisPipeline(
+        Settings(_env_file=None, ARTIFACT_ROOT=tmp_path), repository
+    )
+    await pipeline._update("job", JobStatus.ANALYZING, "v4_ideas", 82)
+    await pipeline._update("job", JobStatus.SEARCHING, "v4_full_text", 52)
+    await pipeline._update("job", JobStatus.ANALYZING, "v4_ideas", 74)
+
+    assert [item["stage"] for item in repository.updates] == ["v4_ideas", "v4_ideas"]
+    assert [item["progress"] for item in repository.updates] == [82, 82]
+    await pipeline.close()
 
 
 async def test_zero_budget_guard_disables_analysis_spending_limit(tmp_path) -> None:
