@@ -38,7 +38,7 @@ paper-research benchmark-run \
   --manifest benchmark/teacher_benchmark_v1.json \
   --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 \
   --cold --include-baseline \
-  --analysis-concurrency 2 --baseline-concurrency 2 --judge-concurrency 2 \
+  --analysis-concurrency 4 --baseline-concurrency 2 --judge-concurrency 4 \
   --resume --output .artifacts/benchmark/teacher-v1
 ```
 
@@ -74,7 +74,7 @@ paper-research benchmark-run \
   --manifest benchmark/teacher_joint_v1.json \
   --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 \
   --cold --include-baseline \
-  --analysis-concurrency 2 --baseline-concurrency 1 --judge-concurrency 1 \
+  --analysis-concurrency 4 --baseline-concurrency 1 --judge-concurrency 1 \
   --wait-for-benchmark-output .artifacts/benchmark/teacher-v1 \
   --reload-worker-service paper-research-worker.service \
   --reload-worker-service paper-research-worker-2.service \

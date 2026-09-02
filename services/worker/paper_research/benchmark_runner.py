@@ -448,8 +448,8 @@ class BenchmarkSupervisor:
         wait_for_benchmark_output: Path | None = None,
         worker_services: tuple[str, ...] = (),
     ) -> None:
-        if analysis_concurrency != 2:
-            raise ValueError("The frozen benchmark requires analysis concurrency 2")
+        if not 1 <= analysis_concurrency <= 4:
+            raise ValueError("Analysis concurrency must be between 1 and 4")
         if not 1 <= baseline_concurrency <= 4 or not 1 <= judge_concurrency <= 4:
             raise ValueError("Baseline and judge concurrency must be between 1 and 4")
         if poll_seconds <= 0:
@@ -574,10 +574,23 @@ class BenchmarkSupervisor:
             )
             if configured_dependency != requested_dependency:
                 raise ValueError("The resumed run uses a different benchmark dependency")
-            if state.get("configuration", {}).get("worker_services", []) != list(
-                self.worker_services
-            ):
-                raise ValueError("The resumed run uses different analysis worker services")
+            configuration = state.setdefault("configuration", {})
+            configured_workers = list(configuration.get("worker_services", []))
+            requested_workers = list(self.worker_services)
+            # Scaling a live benchmark may append workers without invalidating
+            # completed checkpoints. Removing or reordering workers remains an
+            # error because the dependent joint run relies on a deterministic
+            # rolling reload set.
+            if configured_workers != requested_workers:
+                if requested_workers[: len(configured_workers)] != configured_workers:
+                    raise ValueError(
+                        "The resumed run removes or reorders analysis worker services"
+                    )
+                configuration["worker_services"] = requested_workers
+            configuration["analysis_concurrency"] = self.analysis_concurrency
+            configuration["baseline_concurrency"] = self.baseline_concurrency
+            configuration["judge_concurrency"] = self.judge_concurrency
+            _atomic_json(self.state_path, state)
             return state
         self.output.mkdir(parents=True, exist_ok=True)
         for marker in ("SUCCESS", "DEGRADED", "INCOMPLETE"):

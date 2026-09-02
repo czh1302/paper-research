@@ -225,6 +225,57 @@ async def test_cold_submission_is_persisted_and_resume_is_idempotent(tmp_path: P
     assert repository.calls == calls_before_resume
 
 
+def test_resume_can_scale_analysis_and_append_worker_services(tmp_path: Path) -> None:
+    manifest = load_benchmark_manifest(_manifest(tmp_path), project_root=tmp_path)
+    output = tmp_path / "output"
+    BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        output,
+        "owner-job",
+        repository=SubmissionRepository(),
+        project_root=tmp_path,
+        analysis_concurrency=2,
+        worker_services=("paper-research-worker.service",),
+    )
+
+    resumed = BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        output,
+        "owner-job",
+        repository=SubmissionRepository(),
+        project_root=tmp_path,
+        resume=True,
+        analysis_concurrency=4,
+        judge_concurrency=4,
+        worker_services=(
+            "paper-research-worker.service",
+            "paper-research-worker-2.service",
+            "paper-research-worker-3.service",
+            "paper-research-worker-4.service",
+        ),
+    )
+
+    configuration = resumed.state["configuration"]
+    assert configuration["analysis_concurrency"] == 4
+    assert configuration["judge_concurrency"] == 4
+    assert configuration["worker_services"][-1] == "paper-research-worker-4.service"
+
+    with pytest.raises(ValueError, match="removes or reorders"):
+        BenchmarkSupervisor(
+            SimpleNamespace(),
+            manifest,
+            output,
+            "owner-job",
+            repository=SubmissionRepository(),
+            project_root=tmp_path,
+            resume=True,
+            analysis_concurrency=4,
+            worker_services=("paper-research-worker.service",),
+        )
+
+
 @pytest.mark.asyncio
 async def test_joint_submission_uses_one_idempotent_ordered_case_reservation(
     tmp_path: Path,
@@ -465,7 +516,7 @@ async def test_resume_reconciles_existing_baselines_without_relaunch(
         assert child["attempts"] == 1
 
 
-def test_cli_exposes_frozen_parallel_benchmark_options() -> None:
+def test_cli_exposes_parallel_benchmark_options() -> None:
     args = build_parser().parse_args(
         [
             "benchmark-run",
@@ -476,17 +527,19 @@ def test_cli_exposes_frozen_parallel_benchmark_options() -> None:
             "--cold",
             "--include-baseline",
             "--analysis-concurrency",
-            "2",
+            "4",
             "--baseline-concurrency",
             "2",
             "--judge-concurrency",
-            "2",
+            "4",
             "--resume",
         ]
     )
     assert args.command == "benchmark-run"
     assert args.cold and args.include_baseline and args.resume
-    assert args.analysis_concurrency == 2
+    assert args.analysis_concurrency == 4
+    assert args.baseline_concurrency == 2
+    assert args.judge_concurrency == 4
 
     baseline_args = build_parser().parse_args(
         ["baseline-local", "first.pdf", "second.pdf", "--output", "out"]
