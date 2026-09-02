@@ -1,30 +1,53 @@
-# benchmark_v1
+# Teacher benchmark v1
 
-The manifest fixes ten computer-science papers before model evaluation: two each in networking,
-systems/databases, AI/ML, security, and software engineering. PDFs are downloaded to ignored local
-artifacts and are never redistributed by this repository.
+This frozen six-paper suite evaluates the three teacher-requested stages—problem
+statement extraction, related-work retrieval, and horizontal comparison—while
+also allowing the current production pipeline to continue through Idea,
+PilotSpecification, repository generation, and the automatic main-Idea experiment.
+
+The suite deliberately does **not** publish a composite score. Measurements without
+human gold labels are named `*_auto` or `*_proxy` and are reported per paper plus
+median, IQR, macro/micro aggregation and blinded win/tie/loss. The `2509.21074v4`
+case is marked development-exposed and is excluded from the held-out count.
+
+Methodology follows these task-specific precedents:
+
+- [RPC-Bench](https://aclanthology.org/2026.acl-long.1277/): correctness,
+  completeness, and conciseness for paper comprehension.
+- [ALCE](https://arxiv.org/abs/2305.14627): citation precision/recall and
+  claim-level support.
+- [TREC pooling](https://trec.nist.gov/data/reljudge_eng.html): a frozen pooled
+  relevance set rather than an unverifiable open-Web
+  recall denominator.
+- [arXiv2Table](https://aclanthology.org/2026.acl-long.346/): schema coverage,
+  unary cell fidelity, and pairwise relational consistency for literature-review
+  tables.
+- [DeepResearch Bench](https://arxiv.org/abs/2506.11763): effective citations,
+  citation accuracy, and blinded report quality dimensions.
+
+Silver relevance labels are produced three times from a source-only frozen rubric
+and a source-hidden Top-20 result pool. Report comparison uses three independently
+judged, counterbalanced A/B pairs (each evaluated in both orientations). Citation
+deletion, citation swapping, and numeric contradiction perturbations must lower the
+associated fidelity score; otherwise that proxy is explicitly marked unreliable.
+
+Run or resume the unattended supervisor:
 
 ```bash
-python scripts/fetch-benchmark.py
-paper-research analyze-local 2509.21074v4.pdf --rounds 1 --output .artifacts/benchmark/repllm
-paper-research baseline-local 2509.21074v4.pdf --output .artifacts/benchmark/repllm-baseline
-python benchmark/evaluate.py .artifacts/benchmark/repllm/report.json
-python benchmark/judge.py \
-  .artifacts/benchmark/repllm/report.json \
-  .artifacts/benchmark/repllm-baseline/report.json
+paper-research benchmark-run \
+  --manifest benchmark/teacher_benchmark_v1.json \
+  --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 \
+  --cold --include-baseline \
+  --analysis-concurrency 2 --baseline-concurrency 2 --judge-concurrency 2 \
+  --resume --output .artifacts/benchmark/teacher-v1
 ```
 
-The evaluator measures structural and evidence proxies. It does not replace expert labels and
-must not be described as proof of research novelty. Retrieval Recall@K is added only after a
-versioned citation-label artifact has been generated from each paper's Related Work references;
-the search agent must not see that label artifact.
+Read-only progress is available with:
 
-The V4 Pro judge randomizes report order for each of three repetitions, strips run identifiers,
-uses no tools, and writes an explicit automatic-proxy disclaimer. It is offline-only and is never
-called by the public worker path.
+```bash
+paper-research benchmark-status --output .artifacts/benchmark/teacher-v1
+```
 
-Preview the budget-prioritized experiment matrix with `python benchmark/run_experiments.py`.
-Nothing paid runs unless `--execute` is supplied. The `core` tier contains ten staged one-round
-runs and ten one-call baselines; `extended` contains the three-repeat, 1-vs-3-round, and
-academic-only-vs-web ablations for one networking and one AI paper. Local model usage is appended
-to `.artifacts/provider-usage.jsonl`, and the same CNY 95 guard applies before every model call.
+The supervisor writes atomic `run-state.json`, `jobs.json`, `status.md`, and
+`status.csv`. Once all six metric records exist it writes `summary.json`,
+`summary.csv`, and `summary.md`, followed by `SUCCESS`, `DEGRADED`, or `INCOMPLETE`.

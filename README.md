@@ -179,7 +179,9 @@ Auth/Edge Functions, and the GitHub Pages variable without printing secret value
 
 ## Workers and E2B pilot
 
-Production uses a systemd user service so the worker restarts after failures and server reboots.
+Production uses two single-concurrency systemd analysis services so two independent jobs can run in
+parallel and resume after failures or server reboots. They share configuration but use distinct
+lease-owner IDs; the experiment worker remains independently single-concurrency.
 The secrets initializer pins `CLAUDE_BIN` to `/home/czh/.local/bin/claude`; keep that installation at
 Claude Code 2.1.248 or newer so systemd does not fall back to an older global binary.
 Install it once, then enable lingering so it remains active without an interactive login session:
@@ -189,8 +191,10 @@ chmod 700 scripts/install-worker-service.sh
 scripts/install-worker-service.sh
 sudo loginctl enable-linger "${USER}"
 systemctl --user status paper-research-worker.service
+systemctl --user status paper-research-worker-2.service
+scripts/check-worker-services.sh
 journalctl --user -u paper-research-experiment-worker.service -f
-journalctl --user -u paper-research-worker.service -f
+journalctl --user -u paper-research-worker.service -u paper-research-worker-2.service -f
 ```
 
 Build and verify the isolated CPU template before enabling experiments. The smoke creates one
@@ -242,8 +246,10 @@ without replaying the one-shot credential. Deploy it only together with the migr
 the token/request ledger and service-role-only RPCs. Claude Code + V4 Flash runs on the local
 experiment Worker; the Edge Function never receives the DeepSeek key.
 
-The worker polls Supabase every ten seconds and renews its lease during long MinerU/LLM calls. For
-temporary development sessions where systemd is unavailable, the legacy nohup launcher remains:
+Each analysis worker polls Supabase every ten seconds. Database row locking assigns different jobs,
+and each process renews only the lease associated with its unique worker ID during long MinerU/LLM
+calls. For temporary development sessions where systemd is unavailable, the legacy nohup launcher
+remains a single-worker fallback:
 
 ```bash
 scripts/run-worker-nohup.sh
@@ -332,7 +338,10 @@ generation.
   the job permanently removes its input PDFs, cached open-access evidence PDFs, report and citations.
   Unbound uploads retain a 24-hour expiry; MinerU's separate temporary cache follows MinerU policy.
 - PDF parsing attribution is visible in the site footer as required by the MinerU license.
-- DeepSeek spend is conservatively estimated from returned token usage. New calls stop at CNY 95,
-  reserving CNY 5 under the CNY 100 monthly cap. Disable automatic account recharge as a second guard.
-- The worker is single-concurrency. If the server reboots, rerun `scripts/run-worker-nohup.sh`; expired
-  leases and idempotent database upserts let the job resume from stored problem/search checkpoints.
+- DeepSeek spend is conservatively estimated from returned token usage. Setting
+  `BUDGET_GUARD_CNY=0` disables the analysis-call guard for unattended benchmark runs; E2B and
+  experiment inference retain their independent concurrency and per-run/global safety limits.
+- Each worker process is single-concurrency; the production installer runs two analysis processes and
+  one experiment process. With user-systemd lingering enabled they restart after a reboot without a
+  `nohup` supervisor. Expired leases and idempotent database upserts let interrupted jobs resume from
+  stored checkpoints.

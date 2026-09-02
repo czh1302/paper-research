@@ -7,9 +7,14 @@ pid_file="${project_dir}/.artifacts/worker.pid"
 mkdir -p "${log_dir}"
 
 if systemctl --user is-enabled paper-research-worker.service >/dev/null 2>&1; then
+  worker_units=(paper-research-worker.service)
   systemctl --user start paper-research-worker.service
-  printf 'Worker is managed by paper-research-worker.service.\n'
-  systemctl --user --no-pager --lines=0 status paper-research-worker.service
+  if systemctl --user is-enabled paper-research-worker-2.service >/dev/null 2>&1; then
+    systemctl --user start paper-research-worker-2.service
+    worker_units+=(paper-research-worker-2.service)
+  fi
+  printf 'Analysis workers are managed by systemd.\n'
+  systemctl --user --no-pager --lines=0 status "${worker_units[@]}"
   exit 0
 fi
 

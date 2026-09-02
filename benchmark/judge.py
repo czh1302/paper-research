@@ -93,7 +93,7 @@ async def run(args: argparse.Namespace) -> None:
     judgments = []
     for repetition in range(args.repetitions):
         spend = monthly_spend()
-        if spend >= settings.BUDGET_GUARD_CNY:
+        if settings.BUDGET_GUARD_CNY > 0 and spend >= settings.BUDGET_GUARD_CNY:
             raise RuntimeError(f"Monthly DeepSeek guard reached: CNY {spend:.2f}")
         order = [0, 1]
         rng.shuffle(order)

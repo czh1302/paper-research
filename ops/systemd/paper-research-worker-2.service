@@ -1,0 +1,26 @@
+[Unit]
+Description=Research Atlas paper analysis worker (secondary)
+Documentation=https://github.com/czh1302/paper-research
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=/home/czh/SJTU_Task_final
+EnvironmentFile=/home/czh/.config/paper-research/secrets.env
+Environment=PYTHONUNBUFFERED=1
+# /usr/bin/env deliberately overrides WORKER_ID from the shared secrets file.
+# Lease ownership depends on every concurrently running worker having a unique ID.
+ExecStart=/usr/bin/env WORKER_ID=paper-worker-2 /home/czh/SJTU_Task_final/.venv/bin/python -m paper_research.main worker
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

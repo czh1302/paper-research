@@ -3483,9 +3483,27 @@ class AnalysisPipeline:
         workspace_path = Path(tempfile.mkdtemp(prefix=f"baseline-{job.id[:8]}-", dir=artifact_root))
         try:
             paper_id = job.files[0].sha256 or hashlib.sha256(file_path.read_bytes()).hexdigest()
-            document = await self.parse_document(
-                file_path, paper_id, job.files[0].original_name, workspace_path
-            )
+            checkpoint: dict[str, Any] = {}
+            if self.repository and hasattr(self.repository, "load_pipeline_checkpoint"):
+                checkpoint = await self.repository.load_pipeline_checkpoint(job.id)
+            baseline_checkpoint = dict(checkpoint.get("baseline") or {})
+
+            cached_report = baseline_checkpoint.get("report")
+            if isinstance(cached_report, dict):
+                return AnalysisReport.model_validate(cached_report)
+
+            cached_document = baseline_checkpoint.get("document")
+            if isinstance(cached_document, dict):
+                document = DocumentIR.model_validate(cached_document)
+            else:
+                document = await self.parse_document(
+                    file_path, paper_id, job.files[0].original_name, workspace_path
+                )
+                baseline_checkpoint["document"] = document.model_dump(mode="json")
+                checkpoint["baseline"] = baseline_checkpoint
+                if self.repository and hasattr(self.repository, "save_pipeline_checkpoint"):
+                    await self.repository.save_pipeline_checkpoint(job.id, checkpoint)
+
             report = await self._call_llm(
                 baseline_report_prompt(job.id, document),
                 AnalysisReport,
@@ -3527,6 +3545,11 @@ class AnalysisPipeline:
                 }
             )
             grounded.source_coverage["visualizations"] = report_visualization_data(grounded)
+            baseline_checkpoint["report"] = grounded.model_dump(mode="json")
+            baseline_checkpoint["completed"] = True
+            checkpoint["baseline"] = baseline_checkpoint
+            if self.repository and hasattr(self.repository, "save_pipeline_checkpoint"):
+                await self.repository.save_pipeline_checkpoint(job.id, checkpoint)
             return grounded
         finally:
             self._active_job_id = None

@@ -168,8 +168,9 @@ async def run_worker(settings: Settings) -> None:
 
 async def analyze_baseline_local(settings: Settings, file: Path, output: Path) -> int:
     size, _ = validate_pdf(file)
+    digest = hashlib.sha256(file.read_bytes()).hexdigest()
     job = Job(
-        id=str(uuid.uuid4()),
+        id=f"local-baseline-{digest[:32]}",
         user_id="local-baseline",
         mode=AnalysisMode.SINGLE,
         max_rounds=1,
@@ -180,10 +181,16 @@ async def analyze_baseline_local(settings: Settings, file: Path, output: Path) -
                 storage_path="local",
                 original_name=file.name,
                 size_bytes=size,
+                sha256=digest,
             )
         ],
     )
-    pipeline = AnalysisPipeline(settings)
+    repository = LocalCheckpointRepository(
+        output / ".checkpoint.json",
+        f"baseline-v2:{digest}",
+        settings.ARTIFACT_ROOT / "provider-usage.jsonl",
+    )
+    pipeline = AnalysisPipeline(settings, repository)
     try:
         report = await pipeline.analyze_baseline(job, file)
     finally:
@@ -325,6 +332,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-sha256",
         help="Expected single input PDF SHA-256 (required except for the documented recovery job)",
     )
+    benchmark = subparsers.add_parser(
+        "benchmark-run",
+        help="Submit and supervise the frozen six-paper production benchmark",
+    )
+    benchmark.add_argument("--manifest", type=Path, required=True)
+    benchmark.add_argument("--owner-from-job", required=True)
+    benchmark.add_argument("--cold", action="store_true", required=True)
+    benchmark.add_argument("--include-baseline", action="store_true", required=True)
+    benchmark.add_argument("--analysis-concurrency", type=int, default=2)
+    benchmark.add_argument("--baseline-concurrency", type=int, default=2)
+    benchmark.add_argument("--judge-concurrency", type=int, default=2)
+    benchmark.add_argument("--resume", action="store_true")
+    benchmark.add_argument(
+        "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
+    )
+    benchmark.add_argument("--poll-seconds", type=float, default=15.0)
+    benchmark.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the manifest and print the frozen run without network calls",
+    )
+    benchmark_status_parser = subparsers.add_parser(
+        "benchmark-status", help="Read a benchmark supervisor's last atomic status"
+    )
+    benchmark_status_parser.add_argument(
+        "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
+    )
     return parser
 
 
@@ -374,6 +408,54 @@ def main() -> None:
                     expected_sha256.lower(),
                 )
             )
+        elif args.command == "benchmark-run":
+            from .benchmark_runner import load_benchmark_manifest, run_benchmark
+
+            if args.dry_run:
+                manifest = load_benchmark_manifest(args.manifest)
+                print(
+                    json.dumps(
+                        {
+                            "name": manifest.name,
+                            "version": manifest.version,
+                            "sha256": manifest.sha256,
+                            "papers": [
+                                {
+                                    "id": paper.id,
+                                    "sha256": paper.sha256,
+                                    "pages": paper.pages,
+                                    "development_exposed": paper.development_exposed,
+                                }
+                                for paper in manifest.papers
+                            ],
+                            "network_calls": 0,
+                            "paid_calls": 0,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                code = 0
+            else:
+                code = asyncio.run(
+                    run_benchmark(
+                        settings,
+                        manifest_path=args.manifest,
+                        output=args.output,
+                        owner_job_id=args.owner_from_job,
+                        include_baseline=args.include_baseline,
+                        resume=args.resume,
+                        analysis_concurrency=args.analysis_concurrency,
+                        baseline_concurrency=args.baseline_concurrency,
+                        judge_concurrency=args.judge_concurrency,
+                        poll_seconds=args.poll_seconds,
+                    )
+                )
+        elif args.command == "benchmark-status":
+            from .benchmark_runner import benchmark_status
+
+            print(json.dumps(benchmark_status(args.output), ensure_ascii=False, indent=2))
+            code = 0
         else:
             if not settings.DEEPSEEK_API_KEY:
                 raise RuntimeError("A rotated DEEPSEEK_API_KEY is required")
