@@ -4,11 +4,17 @@ set -euo pipefail
 project_dir="/home/czh/SJTU_Task_final"
 source_unit="${project_dir}/ops/systemd/paper-research-worker.service"
 secondary_source_unit="${project_dir}/ops/systemd/paper-research-worker-2.service"
+tertiary_source_unit="${project_dir}/ops/systemd/paper-research-worker-3.service"
+quaternary_source_unit="${project_dir}/ops/systemd/paper-research-worker-4.service"
 experiment_source_unit="${project_dir}/ops/systemd/paper-research-experiment-worker.service"
+experiment_template_source_unit="${project_dir}/ops/systemd/paper-research-experiment-worker@.service"
 user_unit_dir="/home/czh/.config/systemd/user"
 target_unit="${user_unit_dir}/paper-research-worker.service"
 secondary_target_unit="${user_unit_dir}/paper-research-worker-2.service"
+tertiary_target_unit="${user_unit_dir}/paper-research-worker-3.service"
+quaternary_target_unit="${user_unit_dir}/paper-research-worker-4.service"
 experiment_target_unit="${user_unit_dir}/paper-research-experiment-worker.service"
+experiment_template_target_unit="${user_unit_dir}/paper-research-experiment-worker@.service"
 secrets_file="/home/czh/.config/paper-research/secrets.env"
 secondary_worker_id="paper-worker-2"
 
@@ -40,16 +46,25 @@ fi
 install -d -m 700 "${user_unit_dir}"
 install -m 600 "${source_unit}" "${target_unit}"
 install -m 600 "${secondary_source_unit}" "${secondary_target_unit}"
+install -m 600 "${tertiary_source_unit}" "${tertiary_target_unit}"
+install -m 600 "${quaternary_source_unit}" "${quaternary_target_unit}"
 install -m 600 "${experiment_source_unit}" "${experiment_target_unit}"
+install -m 600 "${experiment_template_source_unit}" "${experiment_template_target_unit}"
 systemctl --user daemon-reload
 systemctl --user enable --now paper-research-worker.service
 systemctl --user enable --now paper-research-worker-2.service
+systemctl --user enable --now paper-research-worker-3.service
+systemctl --user enable --now paper-research-worker-4.service
 systemctl --user enable --now paper-research-experiment-worker.service
+for worker_number in {2..8}; do
+  systemctl --user enable --now "paper-research-experiment-worker@${worker_number}.service"
+done
 
-printf 'Installed and started two analysis workers and one experiment worker.\n'
-printf 'Analysis worker IDs: %s and %s\n' \
+printf 'Installed and started four analysis workers and eight experiment workers.\n'
+printf 'Analysis worker IDs: %s, %s, paper-worker-3, paper-worker-4\n' \
   "${primary_worker_id}" "${secondary_worker_id}"
+printf 'Experiment worker IDs: paper-experiment-worker-1 through paper-experiment-worker-8\n'
 printf 'Enable lingering once with: sudo loginctl enable-linger %s\n' "${USER}"
 printf 'Verify services with: %s/scripts/check-worker-services.sh\n' "${project_dir}"
-printf 'Inspect logs with: journalctl --user -u paper-research-worker.service -u paper-research-worker-2.service -f\n'
-printf 'Experiment logs: journalctl --user -u paper-research-experiment-worker.service -f\n'
+printf 'Inspect analysis logs with: journalctl --user -u "paper-research-worker*.service" -f\n'
+printf 'Experiment logs: journalctl --user -u "paper-research-experiment-worker*.service" -f\n'

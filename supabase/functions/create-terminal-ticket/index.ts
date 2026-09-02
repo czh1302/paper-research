@@ -33,6 +33,10 @@ Deno.serve(async (request) => {
     const maxSpend = Number(Deno.env.get("E2B_MAX_SPEND_USD") ?? "90");
     const costRate = Number(Deno.env.get("E2B_ESTIMATED_COST_PER_SECOND_USD") ?? "0.000092");
     const reserveSeconds = Number(Deno.env.get("E2B_RUN_TIMEOUT_SECONDS") ?? "3600");
+    const configuredConcurrency = Number(Deno.env.get("E2B_GLOBAL_CONCURRENCY") ?? "8");
+    const maxConcurrency = Number.isFinite(configuredConcurrency)
+      ? Math.max(1, Math.min(Math.trunc(configuredConcurrency), 8))
+      : 8;
     const { data: updatedRuntime, error } = await admin.rpc("issue_experiment_terminal_ticket", {
       p_experiment_id: access.experiment.id,
       p_user_id: access.experiment.user_id,
@@ -41,7 +45,7 @@ Deno.serve(async (request) => {
       p_expires_at: expiresAt,
       p_max_spend_usd: Number.isFinite(maxSpend) && maxSpend >= 0
         ? Math.min(maxSpend, 90) : 90,
-      p_max_concurrency: 1,
+      p_max_concurrency: maxConcurrency,
       p_estimated_cost_per_second_usd: Number.isFinite(costRate) && costRate > 0 ? costRate : 0.000092,
       p_reserve_seconds: Number.isFinite(reserveSeconds) && reserveSeconds > 0
         ? Math.min(Math.floor(reserveSeconds), 3600) : 3600,

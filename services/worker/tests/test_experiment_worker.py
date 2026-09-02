@@ -38,6 +38,12 @@ from paper_research.validation_bundle import ValidationInput, build_validation_b
 from pydantic import ValidationError
 
 
+def test_e2b_global_concurrency_accepts_eight_and_rejects_more() -> None:
+    assert Settings(_env_file=None, E2B_GLOBAL_CONCURRENCY=8).E2B_GLOBAL_CONCURRENCY == 8
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, E2B_GLOBAL_CONCURRENCY=9)
+
+
 def pilot_payload(*, comparison: str = "absolute") -> dict:
     metric = {
         "key": "effect",

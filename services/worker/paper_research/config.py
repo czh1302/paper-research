@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     E2B_RUN_TIMEOUT_SECONDS: int = Field(default=3600, ge=60, le=3600)
     E2B_IDLE_PAUSE_SECONDS: int = Field(default=600, ge=60, le=3600)
     E2B_DESTROY_AFTER_SECONDS: int = Field(default=604800, ge=3600)
-    E2B_GLOBAL_CONCURRENCY: int = Field(default=1, ge=1, le=1)
+    E2B_GLOBAL_CONCURRENCY: int = Field(default=8, ge=1, le=8)
     E2B_MAX_SPEND_USD: float = Field(default=90, gt=0, le=90)
     E2B_ESTIMATED_COST_PER_SECOND_USD: float = Field(default=0.000092, gt=0)
     EXPERIMENT_MAX_REPAIRS: int = Field(default=2, ge=0, le=2)

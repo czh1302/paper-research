@@ -1,5 +1,5 @@
 [Unit]
-Description=Research Atlas isolated Idea experiment worker
+Description=Research Atlas isolated Idea experiment worker %i of 8
 Documentation=https://github.com/czh1302/paper-research
 Wants=network-online.target
 After=network-online.target paper-research-worker.service
@@ -11,7 +11,7 @@ Type=simple
 WorkingDirectory=/home/czh/SJTU_Task_final
 EnvironmentFile=/home/czh/.config/paper-research/secrets.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env EXPERIMENT_WORKER_ID=paper-experiment-worker-1 E2B_GLOBAL_CONCURRENCY=8 /home/czh/SJTU_Task_final/.venv/bin/python -m paper_research.main experiment-worker
+ExecStart=/usr/bin/env EXPERIMENT_WORKER_ID=paper-experiment-worker-%i E2B_GLOBAL_CONCURRENCY=8 /home/czh/SJTU_Task_final/.venv/bin/python -m paper_research.main experiment-worker
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
