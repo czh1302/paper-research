@@ -1352,6 +1352,96 @@ def idea_review_score(review: IdeaReview) -> float:
     )
 
 
+def recover_checkpointed_idea_results(
+    attempt_checkpoints: dict[str, Any],
+    profiles: list[PaperEvidenceProfile],
+    max_attempts: int,
+) -> tuple[
+    list[SubmissionIdea],
+    list[IdeaReview],
+    list[IdeaComparisonBoard],
+    tuple[list[SubmissionIdea], list[IdeaReview], int, float] | None,
+    list[IdeaAttemptSummary],
+]:
+    """Recover reviewed Ideas when no active-time budget remains after restart."""
+
+    best_batch: tuple[list[SubmissionIdea], list[IdeaReview], int, float] | None = None
+    summaries: list[IdeaAttemptSummary] = []
+    for attempt_key, raw_checkpoint in sorted(
+        attempt_checkpoints.items(),
+        key=lambda item: int(item[0]) if str(item[0]).isdigit() else max_attempts + 1,
+    ):
+        if not str(attempt_key).isdigit():
+            continue
+        attempt = int(attempt_key)
+        if attempt < 1 or attempt > max_attempts:
+            continue
+        checkpoint = dict(raw_checkpoint or {})
+        if not checkpoint.get("drafts") or not idea_review_checkpoint_is_current(
+            checkpoint
+        ):
+            continue
+        try:
+            drafts = [
+                SubmissionIdea.model_validate(item) for item in checkpoint["drafts"]
+            ]
+            checkpoint_reviews = [
+                IdeaReview.model_validate(item) for item in checkpoint["reviews"]
+            ]
+        except (TypeError, ValueError):
+            continue
+        checkpoint_reviews = [
+            item.model_copy(
+                update={
+                    "evidence_confidence": deterministic_evidence_confidence(
+                        item, profiles
+                    )
+                }
+            )
+            for item in checkpoint_reviews
+        ]
+        strict_selected, strict_reviews, strict_boards = finalize_v4_ideas(
+            drafts,
+            checkpoint_reviews,
+            profiles,
+            qualification_tier="strict",
+            review_attempt=attempt,
+            require_pilot_specification=False,
+        )
+        score = max((idea_review_score(item) for item in strict_reviews), default=-1)
+        if best_batch is None or score > best_batch[3]:
+            best_batch = (drafts, checkpoint_reviews, attempt, score)
+        summaries.append(
+            IdeaAttemptSummary(
+                attempt=attempt,
+                generated=int(checkpoint.get("generated", len(drafts))),
+                grounded=len(drafts),
+                strict_passed=len(strict_selected),
+                rejection_reasons_zh=[
+                    item.rationale_zh
+                    for item in strict_reviews
+                    if item.decision not in {"recommended", "alternative"}
+                ][:12],
+                rejection_reasons_en=[
+                    item.rationale_en
+                    for item in strict_reviews
+                    if item.decision not in {"recommended", "alternative"}
+                ][:12],
+                added_candidates=int(checkpoint.get("added_candidates", 0)),
+                added_full_text=int(checkpoint.get("added_full_text", 0)),
+            )
+        )
+        if strict_selected:
+            return (
+                strict_selected,
+                strict_reviews,
+                strict_boards,
+                best_batch,
+                summaries,
+            )
+    return [], [], [], best_batch, summaries
+
+
 def idea_semantic_tokens(idea: SubmissionIdea) -> set[str]:
     """Build a stable English token signature for cross-attempt Idea deduping."""
 
@@ -2676,7 +2766,25 @@ class AnalysisPipeline:
         attempt_checkpoints = dict(v4_checkpoint.get("idea_attempts") or {})
         evolution_pool = list(v4_checkpoint.get("evolution_pool") or [])
 
+        # The active research timer survives worker restarts. If it has already
+        # elapsed, recover completed review attempts so selection and Pilot
+        # compilation can continue without regenerating upstream work.
+        if asyncio.get_running_loop().time() >= deadline:
+            (
+                selected,
+                reviews,
+                boards,
+                best_batch,
+                attempt_summaries,
+            ) = recover_checkpointed_idea_results(
+                attempt_checkpoints,
+                profiles,
+                max_attempts,
+            )
+
         for attempt in range(1, max_attempts + 1):
+            if selected:
+                break
             if asyncio.get_running_loop().time() >= deadline:
                 break
             await self._cancel_guard(job.id)

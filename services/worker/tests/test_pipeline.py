@@ -56,6 +56,7 @@ from paper_research.pipeline import (
     query_bundle_from_plan,
     rank_candidates,
     reconstruct_search_audit,
+    recover_checkpointed_idea_results,
     report_section_payloads,
     report_summary,
     should_stop,
@@ -951,6 +952,30 @@ def test_v4_idea_gate_requires_six_complete_full_text_profiles() -> None:
     assert selected == []
     assert boards == []
     assert reviews[0].decision == "needs_evidence"
+
+
+def test_completed_idea_checkpoint_survives_expired_active_timer() -> None:
+    profiles = [v4_profile("input", "input")] + [
+        v4_profile(f"paper-{index}") for index in range(6)
+    ]
+    checkpoint = {
+        "1": {
+            "generated": 8,
+            "drafts": [v4_idea().model_dump(mode="json")],
+            "reviews": [v4_review().model_dump(mode="json")],
+            "review_prompt_version": IDEA_REVIEW_PROMPT_VERSION,
+        }
+    }
+
+    selected, reviews, boards, best_batch, summaries = (
+        recover_checkpointed_idea_results(checkpoint, profiles, max_attempts=3)
+    )
+
+    assert [item.key for item in selected] == ["submission-idea"]
+    assert reviews[0].decision == "recommended"
+    assert boards[0].idea_key == "submission-idea"
+    assert best_batch is not None and best_batch[2] == 1
+    assert summaries[0].generated == 8
 
 
 def test_v4_high_collision_is_rejected_and_summary_stays_compact() -> None:
