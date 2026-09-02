@@ -73,6 +73,7 @@ from paper_research.pipeline import (
     should_stop,
     v4_remaining_seconds,
     v4_resume_full_text_target,
+    validate_cached_evidence_profiles,
     validate_joint_problem_statement,
 )
 from paper_research.reporting import comparison_csv
@@ -1134,6 +1135,16 @@ def v4_profile(paper_id: str, role: str = "external") -> PaperEvidenceProfile:
         constraints=claim("约束"),
         limitations=claim("局限"),
     )
+
+
+def test_cached_evidence_profiles_skip_only_incompatible_historical_rows() -> None:
+    valid = v4_profile("valid").model_dump(mode="json")
+    invalid = v4_profile("invalid").model_dump(mode="json")
+    invalid["limitations"]["evidence"][0]["quote"] = "32"
+
+    profiles = validate_cached_evidence_profiles([invalid, valid])
+
+    assert [profile.paper_id for profile in profiles] == ["valid"]
 
 
 def v4_idea() -> SubmissionIdea:

@@ -124,6 +124,22 @@ PRO_LLM_STAGES = frozenset(
 )
 
 
+def validate_cached_evidence_profiles(
+    payloads: list[dict[str, Any]],
+) -> list[PaperEvidenceProfile]:
+    """Reuse valid historical profiles without letting one stale locator block a job."""
+    profiles: list[PaperEvidenceProfile] = []
+    for payload in payloads:
+        try:
+            profiles.append(PaperEvidenceProfile.model_validate(payload))
+        except ValueError:
+            LOGGER.warning(
+                "Ignored incompatible cached evidence profile paper_id=%s",
+                str(payload.get("paper_id") or "unknown"),
+            )
+    return profiles
+
+
 class JobCancelled(RuntimeError):
     pass
 
@@ -2669,13 +2685,10 @@ class AnalysisPipeline:
             and persist
             and hasattr(self.repository, "load_external_profiles")
         ):
-            cached_payloads = await self.repository.load_external_profiles(job.id)
             cached: dict[str, PaperEvidenceProfile] = {}
-            for payload in cached_payloads:
-                try:
-                    profile = PaperEvidenceProfile.model_validate(payload)
-                except ValueError:
-                    continue
+            for profile in validate_cached_evidence_profiles(
+                await self.repository.load_external_profiles(job.id)
+            ):
                 if profile.role == "external" and profile.evidence_grade == "full_text":
                     cached[profile.paper_id] = profile
             profiles = [
@@ -2879,10 +2892,9 @@ class AnalysisPipeline:
         minimum_full_text = min(20, self.settings.V4_FULL_TEXT_TARGET)
         cached_profiles: list[PaperEvidenceProfile] = []
         if self.repository and persist and hasattr(self.repository, "load_external_profiles"):
-            cached_profiles = [
-                PaperEvidenceProfile.model_validate(item)
-                for item in await self.repository.load_external_profiles(job.id)
-            ]
+            cached_profiles = validate_cached_evidence_profiles(
+                await self.repository.load_external_profiles(job.id)
+            )
         landscape_checkpoint = v4_checkpoint.get("landscape")
         reusable_joint_landscape = joint is None or bool(
             isinstance(landscape_checkpoint, dict)
