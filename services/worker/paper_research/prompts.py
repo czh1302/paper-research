@@ -506,8 +506,8 @@ Provide complete evaluator source files under `.research-atlas/evaluator/`. Eval
 must execute exactly one declared evaluator file and compute metrics from declared raw JSON
 baseline/intervention artifacts under `artifacts/`, not from an editable repository score. For
 delta/ratio metrics freeze both raw JSON pointers. If bounded live inference is genuinely required,
-declare narrow inference_contracts using only the managed Claude Code + V4 Flash proxy; never put a
-provider hostname or credential in the sandbox allow-list.
+set requires_live_inference=true and declare narrow inference_contracts using only the managed
+Claude Code + V4 Flash proxy; never put a provider hostname or credential in the sandbox allow-list.
 
 SELECTED IDEA:
 {json.dumps(idea, ensure_ascii=False)}
