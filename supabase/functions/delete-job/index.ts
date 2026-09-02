@@ -18,6 +18,16 @@ Deno.serve(async (request) => {
     if (!["completed", "cancelled", "failed", "budget_blocked", "needs_input"].includes(job.status)) {
       throw new HttpError(409, "Cancel the active job before deleting it");
     }
+    const { data: experiments, error: experimentsError } = await admin
+      .from("idea_experiments").select("id").eq("job_id", jobId).limit(1);
+    if (experimentsError) throw experimentsError;
+    if (experiments?.length) {
+      const { error: requestError } = await admin.rpc("request_user_job_deletion", {
+        p_job_id: jobId, p_user_id: user.id,
+      });
+      if (requestError) throw requestError;
+      return json(request, { deleted: false, state: "pending" }, 202);
+    }
     const { data: assets, error: assetsError } = await admin
       .from("report_evidence_assets")
       .select("id,storage_path")

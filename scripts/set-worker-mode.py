@@ -43,6 +43,8 @@ def main() -> None:
     parser.add_argument("--report-sections", choices=("true", "false"))
     parser.add_argument("--pdf-evidence-preview", choices=("true", "false"))
     parser.add_argument("--e2b-pilot", choices=("true", "false"))
+    parser.add_argument("--e2b-manual-experiment", choices=("true", "false"))
+    parser.add_argument("--e2b-auto-experiment", choices=("true", "false"))
     parser.add_argument("--job-auto-recovery", choices=("true", "false"))
     parser.add_argument("--idea-evolution-loop", choices=("true", "false"))
     parser.add_argument("--v4-max-idea-review-attempts", type=int, choices=range(1, 9))
@@ -55,6 +57,8 @@ def main() -> None:
         "REPORT_SECTIONS_ENABLED": args.report_sections,
         "PDF_EVIDENCE_PREVIEW_ENABLED": args.pdf_evidence_preview,
         "E2B_PILOT_ENABLED": args.e2b_pilot,
+        "E2B_MANUAL_EXPERIMENT_ENABLED": args.e2b_manual_experiment,
+        "E2B_AUTO_EXPERIMENT_ENABLED": args.e2b_auto_experiment,
         "JOB_AUTO_RECOVERY_ENABLED": args.job_auto_recovery,
         "IDEA_EVOLUTION_LOOP_ENABLED": args.idea_evolution_loop,
         "V4_MAX_IDEA_REVIEW_ATTEMPTS": args.v4_max_idea_review_attempts,

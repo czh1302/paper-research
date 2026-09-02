@@ -63,3 +63,54 @@ verify_jwt = true
 
 [functions.admin-delete-user]
 verify_jwt = true
+
+[functions.list-report-experiments]
+verify_jwt = true
+
+[functions.start-idea-experiment]
+verify_jwt = true
+
+[functions.get-experiment-workspace]
+verify_jwt = true
+
+[functions.read-experiment-file]
+verify_jwt = true
+
+[functions.save-experiment-file]
+verify_jwt = true
+
+[functions.move-experiment-file]
+verify_jwt = true
+
+[functions.delete-experiment-file]
+verify_jwt = true
+
+[functions.submit-experiment-action]
+verify_jwt = true
+
+[functions.experiment-inference]
+verify_jwt = true
+
+[functions.experiment-sandbox-inference]
+verify_jwt = false
+
+[functions.create-terminal-ticket]
+verify_jwt = true
+
+[functions.experiment-terminal-relay]
+verify_jwt = false
+
+[functions.cancel-experiment]
+verify_jwt = true
+
+[functions.delete-experiment]
+verify_jwt = true
+
+[functions.download-experiment-repository]
+verify_jwt = true
+
+[functions.get-experiment-artifact]
+verify_jwt = true
+
+[functions.get-shared-experiment-artifact]
+verify_jwt = false

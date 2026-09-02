@@ -93,7 +93,7 @@ from .sources.retriever import merge_candidates, normalize_title, source_coverag
 from .sources.web import SerperSource, TavilySource
 
 LOGGER = logging.getLogger(__name__)
-IDEA_REVIEW_PROMPT_VERSION = 2
+IDEA_REVIEW_PROMPT_VERSION = 3
 PRO_LLM_STAGES = frozenset(
     {
         "baseline_problem_and_report",
@@ -1161,6 +1161,7 @@ def finalize_v4_ideas(
     *,
     qualification_tier: str = "strict",
     review_attempt: int = 1,
+    require_pilot_specification: bool = False,
 ) -> tuple[list[SubmissionIdea], list[IdeaReview], list[IdeaComparisonBoard]]:
     profile_map = {
         item.paper_id: item for item in profiles if item.role == "external"
@@ -1187,6 +1188,10 @@ def finalize_v4_ideas(
             and review.feasibility >= (0.60 if relaxed else 0.65)
             and review.evidence_confidence >= (0.55 if relaxed else 0.70)
             and review.submission_value >= (0.65 if relaxed else 0.70)
+            and (
+                not require_pilot_specification
+                or draft.pilot_specification is not None
+            )
         )
         decision = review.decision if passes else "needs_evidence"
         if review.collision_risk == "high":
@@ -1408,6 +1413,11 @@ def report_summary(report: AnalysisReport) -> dict[str, Any]:
         # Overview needs only the leading proposal. The Ideas section replaces
         # these arrays with the complete review payload on first navigation.
         presentation["ideas"] = presentation["ideas"][:1]
+        # PilotSpecification may contain complete frozen evaluator source files.
+        # It is execution-only data and would otherwise dominate the <80 KB
+        # overview response even though no report component renders it.
+        for idea in presentation["ideas"]:
+            idea.pop("pilot_specification", None)
         leading_key = presentation["ideas"][0]["key"] if presentation["ideas"] else None
         presentation["reviews"] = [
             item
@@ -1485,6 +1495,14 @@ def report_section_payloads(report: AnalysisReport) -> dict[str, dict[str, Any]]
     if not isinstance(report.presentation, ReportPresentationV4):
         return {}
     presentation = report.presentation.model_dump(mode="json")
+    public_ideas: list[dict[str, Any]] = []
+    for idea in presentation["ideas"]:
+        public_idea = dict(idea)
+        # Keep the frozen executable contract in reports.content for the
+        # experiment service and JSON export, but do not send evaluator source
+        # code with the normal Ideas tab.
+        public_idea.pop("pilot_specification", None)
+        public_ideas.append(public_idea)
     return {
         "overview": {"summary": report_summary(report)},
         "problem": {
@@ -1502,7 +1520,7 @@ def report_section_payloads(report: AnalysisReport) -> dict[str, dict[str, Any]]
             "source_coverage": report.source_coverage,
         },
         "ideas": {
-            "ideas": presentation["ideas"],
+            "ideas": public_ideas,
             "reviews": presentation["reviews"],
             "comparison_boards": presentation["comparison_boards"],
             "idea_attempt_summaries": presentation["idea_attempt_summaries"],
@@ -2872,6 +2890,7 @@ class AnalysisPipeline:
                 profiles,
                 qualification_tier="strict",
                 review_attempt=attempt,
+                require_pilot_specification=self.settings.V4_PILOT_SPEC_REQUIRED,
             )
             score = max((idea_review_score(item) for item in strict_reviews), default=-1)
             if best_batch is None or score > best_batch[3]:
@@ -3120,6 +3139,7 @@ class AnalysisPipeline:
                 profiles,
                 qualification_tier="relaxed",
                 review_attempt=best_attempt,
+                require_pilot_specification=self.settings.V4_PILOT_SPEC_REQUIRED,
             )
             if selected:
                 primary_key = selected[0].key
@@ -3521,6 +3541,20 @@ class AnalysisPipeline:
                         if self.settings.REPORT_SECTIONS_ENABLED
                         else None,
                     )
+                    if (
+                        self.settings.E2B_PILOT_ENABLED
+                        and self.settings.E2B_AUTO_EXPERIMENT_ENABLED
+                        and presentation_v4.ideas
+                        and presentation_v4.ideas[0].pilot_specification is not None
+                    ):
+                        pipeline_checkpoint["experiment_auto_enqueue"] = {
+                            "idea_key": presentation_v4.ideas[0].key,
+                            "state": "pending",
+                            "requested_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        await self._save_pipeline_checkpoint(
+                            job.id, pipeline_checkpoint, persist=persist
+                        )
                     if self.settings.PDF_EVIDENCE_PREVIEW_ENABLED and hasattr(
                         self.repository, "generate_evidence_previews"
                     ):

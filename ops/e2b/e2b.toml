@@ -1,0 +1,3 @@
+template_id = "research-atlas-cpu-v1"
+dockerfile = "e2b.Dockerfile"
+template_name = "research-atlas-cpu-v1"

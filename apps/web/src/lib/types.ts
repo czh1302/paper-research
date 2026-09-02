@@ -66,6 +66,85 @@ export interface ExperimentPlan {
   inputs_zh: string; inputs_en: string; baseline_zh: string; baseline_en: string; intervention_zh: string; intervention_en: string;
   metrics_zh: string; metrics_en: string; success_criterion_zh: string; success_criterion_en: string; resources_zh: string; resources_en: string;
 }
+
+export type ExperimentExecutionMode = "native_cpu" | "valid_cpu_proxy" | "code_only";
+export interface PilotResource {
+  key: string;
+  name: string;
+  kind: "dataset" | "code" | "model" | "benchmark" | "other";
+  url: string;
+  version: string;
+  license: string;
+  sha256?: string;
+  estimated_bytes?: number;
+  purpose_zh: string;
+  purpose_en: string;
+}
+export interface PilotMetric {
+  key: string;
+  name_zh: string;
+  name_en: string;
+  definition_zh: string;
+  definition_en: string;
+  json_pointer: string;
+  direction: "higher" | "lower";
+  comparison: "absolute" | "delta" | "ratio";
+  baseline_json_pointer?: string;
+  intervention_json_pointer?: string;
+  success_threshold: number;
+  unit?: string;
+}
+export interface PilotEvaluatorFile { path: string; content: string; }
+export interface PilotEvaluatorCase { name: string; metrics: Record<string, number>; expected_pass: boolean; }
+export interface PilotArtifactRule {
+  path: string;
+  kind: "metrics" | "plot" | "log" | "table" | "report" | "repository";
+  public_safe: boolean;
+  description_zh: string;
+  description_en: string;
+}
+export interface PilotInferenceContract {
+  key: string;
+  purpose_zh: string;
+  purpose_en: string;
+  instruction: string;
+  request_json_schema: Record<string, unknown>;
+  response_json_schema: Record<string, unknown>;
+  max_calls: number;
+  max_request_bytes: number;
+  max_response_bytes: number;
+}
+export interface PilotSpecification {
+  version: 1;
+  hypothesis_zh: string;
+  hypothesis_en: string;
+  execution_mode: ExperimentExecutionMode;
+  cpu_proxy_rationale_zh?: string;
+  cpu_proxy_rationale_en?: string;
+  invariants_zh: string[];
+  invariants_en: string[];
+  resources: PilotResource[];
+  allowed_hosts: string[];
+  environment_commands: string[];
+  test_commands: string[];
+  baseline_commands: string[];
+  intervention_commands: string[];
+  evaluation_commands: string[];
+  metrics_output_path: string;
+  metrics_json_schema: Record<string, unknown>;
+  metrics: PilotMetric[];
+  primary_metric_key: string;
+  evaluator_files: PilotEvaluatorFile[];
+  evaluator_test_commands: string[];
+  evaluator_cases: PilotEvaluatorCase[];
+  artifacts: PilotArtifactRule[];
+  requires_live_inference?: boolean;
+  inference_contracts?: PilotInferenceContract[];
+  estimated_minutes: number;
+  estimated_cpu_count: number;
+  estimated_memory_mib: number;
+  estimated_disk_mib: number;
+}
 export interface IdeaEvidence { paper_id: string; relationship: "support" | "overlap" | "counterevidence"; claim_zh: string; claim_en: string; evidence_urls: string[]; }
 export interface IdeaAssessment {
   idea_key: string; axis: string; title_zh: string; title_en: string; hypothesis_zh: string; hypothesis_en: string;
@@ -115,6 +194,7 @@ export interface SubmissionIdea {
   qualification_tier?: "strict" | "relaxed"; review_attempt?: number;
   missing_evidence_zh?: string[]; missing_evidence_en?: string[];
   lineage_id?: string | null; parent_key?: string | null; revision_number?: number;
+  pilot_specification?: PilotSpecification | null;
 }
 export interface IdeaReview {
   idea_key: string; decision: SubmissionIdea["verdict"]; rationale_zh: string; rationale_en: string;
@@ -188,4 +268,164 @@ export interface AdminDeletionRequest {
   next_attempt_at: string;
   last_error: string | null;
   created_at: string;
+}
+
+
+export type ExperimentStatus = "queued" | "running" | "recovering" | "waiting_resources" | "ready" | "cancelled";
+export type ExperimentStage = "spec_freeze" | "repo_generation" | "environment_setup" | "baseline" | "intervention" | "evaluation" | "repair" | "archive" | "interactive";
+export type ExperimentOutcome = "pending" | "initial_support" | "not_support" | "inconclusive" | "environment_blocked" | "resource_limited" | "budget_blocked" | "cancelled";
+
+export interface ExperimentPermissions {
+  readCode: boolean;
+  editCode: boolean;
+  chat: boolean;
+  terminalRead: boolean;
+  terminalWrite: boolean;
+  runValidation: boolean;
+  rollback: boolean;
+  download: boolean;
+  cancel: boolean;
+  delete: boolean;
+}
+
+export interface ExperimentSummary {
+  id: string;
+  reportId: string;
+  jobId: string;
+  ideaKey: string;
+  ideaRank: number;
+  ideaTitleZh: string;
+  ideaTitleEn: string;
+  status: ExperimentStatus;
+  stage: ExperimentStage;
+  outcome: ExperimentOutcome;
+  progress: number;
+  currentRevisionId?: string | null;
+  runCount: number;
+  userValidationCount?: number;
+  maxUserValidations: number;
+  e2bCostUsd: number;
+  llmCostCny: number;
+  summaryZh?: string | null;
+  summaryEn?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReportExperimentListing {
+  experiments: ExperimentSummary[];
+  manualEnabled: boolean;
+  automaticEnabled: boolean;
+}
+
+export interface ExperimentFileEntry {
+  path: string;
+  type: "file" | "directory";
+  size?: number;
+  sha256?: string;
+  updatedAt?: string;
+}
+
+export interface ExperimentFileContent {
+  path: string;
+  content: string;
+  originalContent?: string;
+  sha256: string;
+  revisionId?: string | null;
+}
+
+export interface ExperimentRevision {
+  id: string;
+  parentId?: string | null;
+  label: string;
+  actor: "worker" | "user" | "assistant" | "terminal";
+  commitSha?: string | null;
+  createdAt: string;
+}
+
+export interface ExperimentRun {
+  id: string;
+  kind: "automatic" | "manual";
+  status: ExperimentStatus;
+  outcome: ExperimentOutcome;
+  metrics: Record<string, number | string | boolean | null>;
+  summaryZh?: string | null;
+  summaryEn?: string | null;
+  e2bSeconds?: number;
+  e2bCostUsd?: number;
+  llmCostCny?: number;
+  createdAt: string;
+  completedAt?: string | null;
+}
+
+export interface ExperimentArtifact {
+  id: string;
+  name: string;
+  kind: "source" | "log" | "metrics" | "plot" | "report" | "archive";
+  mimeType?: string;
+  byteSize?: number;
+  publicSafe?: boolean;
+  createdAt: string;
+}
+
+export interface SharedExperimentArtifact {
+  artifactId: string;
+  kind: "plot" | "metrics" | "result_report";
+  fileName: string;
+  mimeType: string;
+  byteSize?: number | null;
+  sha256?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SharedExperimentPublicSummary {
+  outcome?: ExperimentOutcome;
+  summary_zh?: string;
+  summary_en?: string;
+  primary_metric?: string;
+  primary_value?: number | string | boolean | null;
+  threshold?: number | string | null;
+  direction?: "higher" | "lower" | string;
+}
+
+/** Public-share shape: private experiment/workspace identifiers are omitted. */
+export interface SharedExperimentSummary {
+  ideaKey: string;
+  ideaRank: number;
+  outcome: ExperimentOutcome;
+  summary: SharedExperimentPublicSummary;
+  artifacts: SharedExperimentArtifact[];
+}
+
+export interface ExperimentAction {
+  id: string;
+  kind: "assistant" | "command" | "validation" | "rollback" | "system";
+  state: "queued" | "running" | "completed" | "cancelled";
+  role?: "user" | "assistant" | "system";
+  prompt?: string | null;
+  content?: string | null;
+  command?: string | null;
+  modifiedFiles?: string[];
+  deletedFiles?: string[];
+  commandResults?: Array<{
+    command: string;
+    exitCode?: number | null;
+    elapsedSeconds?: number | null;
+    resultSummary?: string | null;
+  }>;
+  revisionIdBefore?: string | null;
+  revisionIdAfter?: string | null;
+  createdAt: string;
+  completedAt?: string | null;
+}
+
+export interface ExperimentWorkspace {
+  experiment: ExperimentSummary;
+  accessMode: "owner" | "admin";
+  permissions: ExperimentPermissions;
+  files: ExperimentFileEntry[];
+  revisions: ExperimentRevision[];
+  runs: ExperimentRun[];
+  artifacts: ExperimentArtifact[];
+  actions: ExperimentAction[];
 }

@@ -1,0 +1,10 @@
+{
+  "template_name": "research-atlas-cpu-v1",
+  "template_id": "dwojnepi8427cokbwi7e",
+  "build_id": "86b625f7-1ba1-4887-af89-881ef021bb7a",
+  "base_image_digest": "sha256:4a369f01a820fe5e65f53c2c5727a78899daf86f0541b721097f289559c8b73f",
+  "built_at": "2026-09-02T15:37:53+08:00",
+  "cpu_count": 4,
+  "memory_mib": 8192,
+  "disk_mib": 10240
+}

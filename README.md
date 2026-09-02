@@ -13,11 +13,12 @@ on the research server performs MinerU parsing and DeepSeek analysis.
 ```text
 React/Vite on GitHub Pages
   └─ Supabase Auth + private Storage + Postgres/RLS + Realtime + Edge Functions
-       └─ outbound Python worker (no public port)
+       ├─ outbound Python analysis worker (no public port)
             ├─ MinerU Precision Extract → Flash fallback
-            ├─ Claude Code → DeepSeek V4 Flash (high effort)
+            ├─ Claude Code → DeepSeek V4 Pro/Flash (high effort)
             ├─ arXiv, OpenReview, OpenAlex, Crossref, DBLP
             └─ Serper Scholar/Web, Tavily, DeepSeek WebSearch
+       └─ isolated experiment worker → private E2B CPU sandboxes
 ```
 
 The model never receives Bash or file-write tools. Analysis calls expose no tools; the isolated
@@ -78,20 +79,43 @@ and DBLP do not need API keys; Crossref only requires a contact email for its po
    npx supabase db push
    ```
 
-3. Add Edge Function secrets. Provider secrets do **not** belong in Supabase because only the
-   worker needs them.
+3. Add Edge Function secrets. DeepSeek credentials remain Worker-only. The terminal relay needs
+   `E2B_API_KEY` to attach to an existing PTY; the sandbox-inference endpoint needs only the normal
+   Supabase function environment (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`) plus the runtime
+   flag. Neither function sends a long-lived credential into a sandbox.
 
    ```bash
    npx supabase secrets set \
      TURNSTILE_SECRET_KEY=ROTATED_VALUE \
      PUBLIC_SITE_URL=https://YOUR_USER.github.io/paper-research/ \
-     ADMIN_REDIRECT_URL=https://YOUR_USER.github.io/paper-research/?admin=1
+     ADMIN_REDIRECT_URL=https://YOUR_USER.github.io/paper-research/?admin=1 \
+     E2B_API_KEY=ROTATED_VALUE \
+     E2B_PILOT_ENABLED=false \
+     E2B_MANUAL_EXPERIMENT_ENABLED=false \
+     E2B_AUTO_EXPERIMENT_ENABLED=false \
+     E2B_MAX_SPEND_USD=90 \
+     E2B_ESTIMATED_COST_PER_SECOND_USD=0.000092 \
+     E2B_RUN_TIMEOUT_SECONDS=3600 \
+     EXPERIMENT_LLM_MAX_CNY_PER_RUN=5 \
+     EXPERIMENT_ASSISTANT_MAX_CNY=20 \
+     EXPERIMENT_LLM_MAX_CNY=40 \
+     EXPERIMENT_LLM_GLOBAL_MAX_CNY=200
    ```
 
-4. Deploy the Edge Functions:
+   Keep the same three runtime flags in the Worker secrets file and in Edge
+   Function secrets. Changing only one side is intentionally insufficient: the
+   API gate and the background executor must both authorize creation. The
+   optional `EXPERIMENT_TERMINAL_WS_URL` is derived from `SUPABASE_URL` when it
+   is not configured.
+
+4. Deploy the Edge Functions. The experiment functions may be deployed while
+   `E2B_PILOT_ENABLED=false`, `E2B_MANUAL_EXPERIMENT_ENABLED=false`, and
+   `E2B_AUTO_EXPERIMENT_ENABLED=false`; enable the runtime first, then manual
+   creation, and enable automatic primary-Idea experiments only after the
+   manual smoke passes:
 
    ```bash
-   for function_name in create-upload create-job cancel-job delete-job create-share revoke-share get-share admin-qr-login get-source-pdf get-report-section set-job-favorite admin-delete-job admin-delete-user; do
+   for function_name in create-upload create-job cancel-job delete-job create-share revoke-share get-share admin-qr-login get-source-pdf get-report-section set-job-favorite admin-delete-job admin-delete-user list-report-experiments start-idea-experiment get-experiment-workspace read-experiment-file save-experiment-file move-experiment-file delete-experiment-file submit-experiment-action experiment-inference experiment-sandbox-inference create-terminal-ticket experiment-terminal-relay cancel-experiment delete-experiment download-experiment-repository get-experiment-artifact get-shared-experiment-artifact; do
      npx supabase functions deploy "${function_name}"
    done
    ```
@@ -107,8 +131,10 @@ Private reports remain until their owner deletes the corresponding job.
 ### Administrator dashboard
 
 The `/admin` route is available only to users explicitly listed in `public.admin_users`. It
-provides a read-only, paginated view of every registered user and analysis job; it does not grant
-cross-user mutation or PDF Storage access.
+provides a paginated view of every registered user and analysis job. Administrators can submit
+audited permanent deletion requests for non-admin users and jobs, while reports remain non-editable.
+Cross-user experiment workspaces are review-only: administrators can inspect and cancel/delete but
+cannot edit code, write to the terminal, chat with Flash, or start validation runs.
 
 Password login and administrator QR login both open the new-analysis workspace. Supabase permits
 multiple active sessions for the same account by default, and the frontend uses local-scope sign-out
@@ -151,7 +177,7 @@ Auth/Edge Functions, and the GitHub Pages variable without printing secret value
 .venv/bin/python scripts/configure-production-turnstile.py
 ```
 
-## Worker and pilot
+## Workers and E2B pilot
 
 Production uses a systemd user service so the worker restarts after failures and server reboots.
 The secrets initializer pins `CLAUDE_BIN` to `/home/czh/.local/bin/claude`; keep that installation at
@@ -163,8 +189,58 @@ chmod 700 scripts/install-worker-service.sh
 scripts/install-worker-service.sh
 sudo loginctl enable-linger "${USER}"
 systemctl --user status paper-research-worker.service
+journalctl --user -u paper-research-experiment-worker.service -f
 journalctl --user -u paper-research-worker.service -f
 ```
+
+Build and verify the isolated CPU template before enabling experiments. The smoke creates one
+short-lived sandbox, checks file/command/PTY access, outbound network filtering, pause/resume and
+destruction, and never invokes a model or analyzes a paper:
+
+```bash
+set -a
+source /home/czh/.config/paper-research/secrets.env
+set +a
+scripts/build-e2b-template.sh
+.venv/bin/python scripts/e2b-smoke.py --template research-atlas-cpu-v1
+```
+
+Install the services and enable features in stages. First write the verified
+template while every creation gate remains closed:
+
+```bash
+scripts/set-experiment-runtime-config.sh false research-atlas-cpu-v1 false false
+scripts/install-worker-service.sh
+```
+
+After the migration and Edge Functions are deployed, enable the runtime on the
+Worker and Edge sides, then the manual entry point, and only then automatic
+primary-Idea experiments. Restart both Worker services after each local flag
+change. Disabling all three flags on both sides is the immediate kill switch;
+the additive database migration does not need to be rolled back.
+
+New V4 reports freeze a Pro-authored `PilotSpecification` before code generation. The separate
+experiment worker then uses Claude Code + V4 Flash to generate a layered repository, runs the
+baseline/intervention against the immutable evaluator, archives every Git revision, and exposes a
+private Monaco/xterm workspace. Experiment status and scientific outcome are separate: a valid
+`not_support` result is not a system failure. The report remains complete while an experiment is
+queued or automatically recovering. Historical V4 Ideas compile the same frozen specification
+only after their owner explicitly starts an experiment.
+
+Python uses the latest published E2B SDK (`2.46.0`); the Edge terminal relay pins the JavaScript
+SDK to `2.46.1`. Sandboxes receive no E2B, DeepSeek, or Supabase service-role credential and no
+input PDFs. A frozen pilot that explicitly declares managed inference receives only expiring,
+one-shot tokens bound to that experiment run, specification hash, and schema. Subject sandboxes
+expose no public port and can reach only package/resource hosts plus the project's exact Supabase
+Edge hostname. The fresh evaluator sandbox has no token and runs with networking disabled.
+
+`experiment-sandbox-inference` deliberately uses `verify_jwt=false`: E2B subject code has no user
+JWT, so the function authenticates an atomically consumed one-shot SHA-256-backed credential on
+submit and a separate opaque polling credential on GET. The client chooses the request ID and poll
+credential before submit, so it can recover a committed request even when the POST response is lost
+without replaying the one-shot credential. Deploy it only together with the migration that creates
+the token/request ledger and service-role-only RPCs. Claude Code + V4 Flash runs on the local
+experiment Worker; the Edge Function never receives the DeepSeek key.
 
 The worker polls Supabase every ten seconds and renews its lease during long MinerU/LLM calls. For
 temporary development sessions where systemd is unavailable, the legacy nohup launcher remains:
@@ -199,8 +275,9 @@ that command with the credentials exposed in chat.
 - With `IDEA_PIPELINE_V4=true`, the worker first completes multi-platform retrieval, screens open
   papers, and builds full-text evidence profiles. Only then does it propose and review paper-core
   Ideas. V3 and V4 are mutually exclusive.
-- V4 proposes four to six paper-level Ideas only after the literature landscape is built. It can
-  run up to six hostile review attempts; numerical thresholds may be relaxed once, but collision,
+- V4 proposes eight diverse paper-level candidates only after the literature landscape is built,
+  then evolves the strongest lineages for up to eight hostile review attempts. Numerical thresholds
+  may be relaxed only after all strict attempts, but collision,
   full-text evidence, experiment completeness and computer-science relevance are never relaxed.
   A successful V4 task always contains at least one strict or explicitly low-confidence pass;
   otherwise the task fails or becomes budget-blocked instead of publishing a zero-Idea report.

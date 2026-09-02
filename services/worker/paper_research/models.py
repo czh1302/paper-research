@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import ipaddress
+import json
+import shlex
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
+from jsonschema import Draft202012Validator
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -15,6 +19,21 @@ from pydantic import (
 )
 
 HttpUrlString = Annotated[str, StringConstraints(pattern=r"^https?://")]
+
+PILOT_PACKAGE_HOSTS = frozenset(
+    {
+        "pypi.org",
+        "*.pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org",
+        "github.com",
+        "*.github.com",
+        "githubusercontent.com",
+        "*.githubusercontent.com",
+        "huggingface.co",
+        "*.huggingface.co",
+    }
+)
 
 
 def _public_http_url(value: str) -> str:
@@ -235,6 +254,401 @@ class ExperimentPlan(BaseModel):
     success_criterion_en: str = Field(min_length=10, max_length=440)
     resources_zh: str = Field(min_length=3, max_length=220)
     resources_en: str = Field(min_length=5, max_length=440)
+
+
+class PilotResource(BaseModel):
+    """A public, immutable input that an experiment is allowed to download."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=60, pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    kind: Literal["dataset", "code", "model", "benchmark", "other"]
+    name: str = Field(min_length=2, max_length=180)
+    url: HttpUrlString
+    version: str = Field(min_length=1, max_length=100)
+    license: str = Field(min_length=1, max_length=120)
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    estimated_bytes: int | None = Field(default=None, ge=0, le=10_000_000_000)
+    purpose_zh: str = Field(min_length=4, max_length=240)
+    purpose_en: str = Field(min_length=8, max_length=480)
+
+    @field_validator("url")
+    @classmethod
+    def validate_resource_url(cls, value: str) -> str:
+        checked = _public_http_url(value)
+        parsed = urlparse(checked)
+        if parsed.username or parsed.password:
+            raise ValueError("Pilot resource URLs must not contain credentials")
+        host = parsed.hostname or ""
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+        if address is not None and (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_reserved
+            or address.is_multicast
+            or address.is_unspecified
+        ):
+            raise ValueError("Pilot resources must use a public network address")
+        return checked
+
+
+class PilotMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=60, pattern=r"^[a-z][a-z0-9_.-]*$")
+    name_zh: str = Field(min_length=2, max_length=120)
+    name_en: str = Field(min_length=2, max_length=180)
+    definition_zh: str = Field(min_length=8, max_length=300)
+    definition_en: str = Field(min_length=12, max_length=600)
+    json_pointer: str = Field(min_length=1, max_length=160, pattern=r"^/")
+    direction: Literal["higher", "lower"]
+    comparison: Literal["absolute", "delta", "ratio"] = "absolute"
+    baseline_json_pointer: str | None = Field(
+        default=None, max_length=160, pattern=r"^/"
+    )
+    intervention_json_pointer: str | None = Field(
+        default=None, max_length=160, pattern=r"^/"
+    )
+    success_threshold: float
+    unit: str | None = Field(default=None, max_length=40)
+
+    @model_validator(mode="after")
+    def validate_comparison_inputs(self) -> PilotMetric:
+        if self.comparison == "absolute":
+            if self.baseline_json_pointer or self.intervention_json_pointer:
+                raise ValueError("Absolute metrics must use only json_pointer")
+        elif not (self.baseline_json_pointer and self.intervention_json_pointer):
+            raise ValueError(
+                "Delta and ratio metrics require baseline and intervention JSON pointers"
+            )
+        return self
+
+
+class PilotEvaluatorCase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=2, max_length=100)
+    metrics: dict[str, float] = Field(min_length=1, max_length=12)
+    expected_pass: bool
+
+
+class PilotEvaluatorFile(BaseModel):
+    """A Pro-authored deterministic evaluator file frozen with the contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=180)
+    content: str = Field(min_length=20, max_length=60_000)
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        cleaned = value.replace("\\", "/").strip()
+        if cleaned.startswith("/") or any(
+            part in {"", ".", ".."} for part in cleaned.split("/")
+        ):
+            raise ValueError("Frozen evaluator paths must be safe relative paths")
+        return cleaned
+
+
+class PilotArtifactRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=240)
+    kind: Literal["metrics", "plot", "log", "table", "report", "repository"]
+    public_safe: bool = False
+    description_zh: str = Field(min_length=2, max_length=180)
+    description_en: str = Field(min_length=3, max_length=360)
+
+    @field_validator("path")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        cleaned = value.replace("\\", "/").strip()
+        if cleaned.startswith("/") or any(part in {"", ".", ".."} for part in cleaned.split("/")):
+            raise ValueError("Pilot artifact paths must be safe relative paths")
+        return cleaned
+
+
+_INFERENCE_SCHEMA_KEYWORDS = frozenset(
+    {
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "enum",
+        "const",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minProperties",
+        "maxProperties",
+        "description",
+        "title",
+    }
+)
+_INFERENCE_SCHEMA_TYPES = frozenset(
+    {"object", "array", "string", "number", "integer", "boolean", "null"}
+)
+
+
+def _validate_inference_schema(schema: dict[str, Any], *, label: str) -> dict[str, Any]:
+    """Validate the deliberately small JSON-Schema dialect shared with Edge.
+
+    The inference proxy accepts only this non-recursive, reference-free subset so
+    the Edge admission check and the Worker output check have identical semantics.
+    A Pro-authored contract therefore cannot introduce remote references, regular
+    expressions, executable formats, or an unbounded recursive schema.
+    """
+
+    serialized = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) > 12_000:
+        raise ValueError(f"{label} is too large")
+    try:
+        Draft202012Validator.check_schema(schema)
+    except Exception as error:
+        raise ValueError(f"{label} is not a valid JSON schema") from error
+
+    def visit(node: Any, depth: int) -> None:
+        if not isinstance(node, dict) or depth > 8:
+            raise ValueError(f"{label} must be a bounded JSON object schema")
+        unexpected = set(node).difference(_INFERENCE_SCHEMA_KEYWORDS)
+        if unexpected:
+            raise ValueError(f"{label} uses unsupported keywords: {sorted(unexpected)!r}")
+        schema_type = node.get("type")
+        if schema_type not in _INFERENCE_SCHEMA_TYPES:
+            raise ValueError(f"{label} requires one supported explicit type per node")
+        if "enum" in node and (
+            not isinstance(node["enum"], list) or not 1 <= len(node["enum"]) <= 64
+        ):
+            raise ValueError(f"{label} enum must contain 1-64 values")
+        if schema_type == "object":
+            properties = node.get("properties", {})
+            required = node.get("required", [])
+            if not isinstance(properties, dict) or len(properties) > 64:
+                raise ValueError(f"{label} has invalid object properties")
+            if not isinstance(required, list) or any(
+                not isinstance(item, str) or item not in properties for item in required
+            ):
+                raise ValueError(f"{label} has invalid required properties")
+            if node.get("additionalProperties", False) is not False:
+                raise ValueError(f"{label} must forbid additional object properties")
+            for child in properties.values():
+                visit(child, depth + 1)
+        elif schema_type == "array":
+            if "items" not in node:
+                raise ValueError(f"{label} arrays require an item schema")
+            visit(node["items"], depth + 1)
+        elif "properties" in node or "required" in node or "items" in node:
+            raise ValueError(f"{label} contains keywords incompatible with its type")
+
+    visit(schema, 0)
+    if schema.get("type") != "object":
+        raise ValueError(f"{label} must describe a top-level object")
+    return schema
+
+
+class PilotInferenceContract(BaseModel):
+    """A frozen, bounded managed-inference call exposed to subject code only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{1,47}$")
+    purpose_zh: str = Field(min_length=8, max_length=300)
+    purpose_en: str = Field(min_length=12, max_length=600)
+    instruction: str = Field(min_length=20, max_length=4_000)
+    request_json_schema: dict[str, Any]
+    response_json_schema: dict[str, Any]
+    max_calls: int = Field(default=1, ge=1, le=8)
+    max_request_bytes: int = Field(default=16_384, ge=256, le=32_768)
+    max_response_bytes: int = Field(default=32_768, ge=256, le=65_536)
+
+    @field_validator("request_json_schema")
+    @classmethod
+    def validate_request_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _validate_inference_schema(value, label="request_json_schema")
+
+    @field_validator("response_json_schema")
+    @classmethod
+    def validate_response_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _validate_inference_schema(value, label="response_json_schema")
+
+
+class PilotSpecification(BaseModel):
+    """Frozen, executable contract compiled by the Pro model before code generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1] = 1
+    hypothesis_zh: str = Field(min_length=20, max_length=420)
+    hypothesis_en: str = Field(min_length=30, max_length=800)
+    execution_mode: Literal["native_cpu", "valid_cpu_proxy", "code_only"]
+    cpu_proxy_rationale_zh: str | None = Field(default=None, max_length=400)
+    cpu_proxy_rationale_en: str | None = Field(default=None, max_length=800)
+    invariants_zh: list[str] = Field(min_length=1, max_length=8)
+    invariants_en: list[str] = Field(min_length=1, max_length=8)
+    resources: list[PilotResource] = Field(min_length=1, max_length=12)
+    allowed_hosts: list[str] = Field(min_length=1, max_length=40)
+    environment_commands: list[str] = Field(min_length=1, max_length=12)
+    test_commands: list[str] = Field(min_length=1, max_length=8)
+    baseline_commands: list[str] = Field(min_length=1, max_length=8)
+    intervention_commands: list[str] = Field(min_length=1, max_length=8)
+    evaluation_commands: list[str] = Field(min_length=1, max_length=8)
+    metrics_output_path: str = Field(min_length=1, max_length=240)
+    metrics_json_schema: dict[str, Any]
+    metrics: list[PilotMetric] = Field(min_length=1, max_length=12)
+    primary_metric_key: str = Field(min_length=1, max_length=60)
+    evaluator_files: list[PilotEvaluatorFile] = Field(min_length=1, max_length=8)
+    evaluator_test_commands: list[str] = Field(min_length=1, max_length=8)
+    evaluator_cases: list[PilotEvaluatorCase] = Field(min_length=2, max_length=12)
+    artifacts: list[PilotArtifactRule] = Field(min_length=1, max_length=16)
+    requires_live_inference: bool = False
+    inference_contracts: list[PilotInferenceContract] = Field(
+        default_factory=list, max_length=4
+    )
+    estimated_minutes: int = Field(ge=1, le=60)
+    estimated_cpu_count: int = Field(default=4, ge=1, le=4)
+    estimated_memory_mib: int = Field(default=8192, ge=256, le=8192)
+    estimated_disk_mib: int = Field(default=10240, ge=256, le=10240)
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def validate_allowed_hosts(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            host = value.strip().lower().rstrip(".")
+            candidate = host[2:] if host.startswith("*.") else host
+            if (
+                not candidate
+                or "/" in candidate
+                or ":" in candidate
+                or candidate == "localhost"
+                or candidate.endswith(".local")
+                or "." not in candidate
+                or (host.startswith("*.") and candidate.count(".") < 1)
+            ):
+                raise ValueError("allowed_hosts must contain public DNS hostnames")
+            try:
+                address = ipaddress.ip_address(candidate)
+            except ValueError:
+                address = None
+            if address is not None:
+                raise ValueError("allowed_hosts must contain DNS names, not IP literals")
+            normalized.append(host)
+        return list(dict.fromkeys(normalized))
+
+    @field_validator(
+        "environment_commands",
+        "test_commands",
+        "baseline_commands",
+        "intervention_commands",
+        "evaluation_commands",
+        "evaluator_test_commands",
+    )
+    @classmethod
+    def validate_commands(cls, values: list[str]) -> list[str]:
+        forbidden = ("sudo ", "systemctl ", "service ", "docker ", "${", "`")
+        cleaned: list[str] = []
+        for value in values:
+            command = value.strip()
+            if not command or len(command) > 1000:
+                raise ValueError("Pilot commands must be non-empty and at most 1000 characters")
+            if any(marker in command.casefold() for marker in forbidden):
+                raise ValueError("Pilot commands contain a forbidden operation")
+            cleaned.append(command)
+        return cleaned
+
+    @field_validator("metrics_output_path")
+    @classmethod
+    def validate_metrics_path(cls, value: str) -> str:
+        return PilotArtifactRule.validate_relative_path(value)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> PilotSpecification:
+        metric_keys = {item.key for item in self.metrics}
+        if self.primary_metric_key not in metric_keys:
+            raise ValueError("primary_metric_key must reference a declared metric")
+        if self.execution_mode == "valid_cpu_proxy" and not (
+            self.cpu_proxy_rationale_zh and self.cpu_proxy_rationale_en
+        ):
+            raise ValueError("A valid CPU proxy requires a bilingual scientific rationale")
+        schema_type = self.metrics_json_schema.get("type")
+        if schema_type != "object" or not isinstance(
+            self.metrics_json_schema.get("properties"), dict
+        ):
+            raise ValueError("metrics_json_schema must describe a JSON object")
+        if len(self.invariants_zh) != len(self.invariants_en):
+            raise ValueError("Bilingual invariant lists must have matching lengths")
+        if self.requires_live_inference and not self.inference_contracts:
+            raise ValueError(
+                "Live managed inference requires at least one frozen inference contract"
+            )
+        if not self.requires_live_inference and self.inference_contracts:
+            raise ValueError(
+                "Inference contracts require requires_live_inference=true"
+            )
+        contract_keys = [item.key for item in self.inference_contracts]
+        if len(contract_keys) != len(set(contract_keys)):
+            raise ValueError("Inference contracts must use unique keys")
+        resource_hosts = {
+            (urlparse(item.url).hostname or "").casefold() for item in self.resources
+        }
+
+        def covered(host: str, rules: set[str]) -> bool:
+            return host in rules or any(
+                rule.startswith("*.") and host.endswith(rule[1:]) for rule in rules
+            )
+
+        allowed = set(self.allowed_hosts)
+        if not all(covered(host, allowed) for host in resource_hosts):
+            raise ValueError("Every resource hostname must be in allowed_hosts")
+        if any(
+            rule not in PILOT_PACKAGE_HOSTS
+            and not any(
+                rule == host
+                or (rule.startswith("*.") and host.endswith(rule[1:]))
+                for host in resource_hosts
+            )
+            for rule in allowed
+        ):
+            raise ValueError(
+                "allowed_hosts may contain only package hosts and declared resource hosts"
+            )
+        evaluator_paths = [item.path for item in self.evaluator_files]
+        if len(evaluator_paths) != len(set(evaluator_paths)):
+            raise ValueError("Frozen evaluator files must use unique paths")
+        frozen_prefix = ".research-atlas/evaluator/"
+        for command in self.evaluation_commands + self.evaluator_test_commands:
+            if any(marker in command for marker in (";", "&&", "||", "|", ">", "<", "`", "$")):
+                raise ValueError("Frozen evaluator commands cannot use shell composition")
+            try:
+                tokens = shlex.split(command)
+            except ValueError as error:
+                raise ValueError("Frozen evaluator command has invalid quoting") from error
+            executable = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+            frozen_tokens = [token for token in tokens[1:] if token.startswith(frozen_prefix)]
+            if executable not in {"python", "python3", "pytest"} or not frozen_tokens:
+                raise ValueError(
+                    "Evaluator commands must execute files from the frozen evaluator directory"
+                )
+            if len(tokens) != 2 or len(frozen_tokens) != 1:
+                raise ValueError(
+                    "Evaluator commands must invoke exactly one frozen Python file without flags"
+                )
+            for token in frozen_tokens:
+                referenced = token[len(frozen_prefix) :]
+                if referenced not in evaluator_paths:
+                    raise ValueError("Evaluator command references an undeclared frozen file")
+        return self
 
 
 class IdeaEvidence(BaseModel):
@@ -619,6 +1033,7 @@ class SubmissionIdea(BaseModel):
     change_from_input_zh: str = Field(min_length=20, max_length=500)
     change_from_input_en: str = Field(min_length=30, max_length=900)
     experiment: ExperimentPlan
+    pilot_specification: PilotSpecification | None = None
     closest_work_ids: list[str] = Field(min_length=2, max_length=10)
     supporting_work_ids: list[str] = Field(min_length=2, max_length=10)
     counterevidence_work_ids: list[str] = Field(default_factory=list, max_length=6)

@@ -402,6 +402,33 @@ claim of a strong conference submission if validated. Reject cosmetic combinatio
 swaps, vague evaluation suggestions, and 'add an LLM' proposals. Do not claim novelty. Use 6-10
 distinct supplied external paper_ids across closest/supporting/counterevidence lists whenever the
 evidence exists. Initial verdict must be 'needs_evidence'; rank must be 0. Scores are provisional.
+Compile a complete PilotSpecification for the exact proposed hypothesis. This is a frozen,
+machine-executable contract, not prose planning:
+- use only real public dataset/code/model URLs, with versions, licenses and hashes when known;
+- name an explicit environment, test, baseline, intervention and evaluation command sequence;
+- define a JSON-object metrics schema, JSON pointers, one primary metric, its direction and a
+  numeric success threshold, plus at least one passing and one failing evaluator fixture;
+- provide the complete deterministic evaluator source under evaluator_files and commands that run
+  only `.research-atlas/evaluator/...`; this Pro-authored evaluator must compute metrics from raw
+  baseline/intervention artifacts, never trust a final score produced by editable repository code;
+- for delta/ratio metrics provide both baseline_json_pointer and intervention_json_pointer; use
+  json_pointer alone for absolute metrics;
+- list the hypothesis-preserving invariants and every allowed network hostname;
+- classify execution as native_cpu, valid_cpu_proxy or code_only. A CPU proxy is valid only when
+  the same manipulated variable, metric and falsifiability are preserved, and requires a precise
+  bilingual rationale. Use code_only when CPU execution cannot scientifically test the claim;
+- never require the private input PDF, local user files, secrets, unpublished data or an
+  unauthenticated service. Do not place API keys or shell substitutions in commands.
+- if faithful subject execution requires runtime language-model inference, set
+  requires_live_inference=true and freeze 1-4 narrow inference_contracts. Each contract must define
+  a fixed instruction, bounded object request/response schemas and the smallest defensible call
+  count (maximum 8). Subject code may use only the managed Claude Code + V4 Flash proxy; never add
+  provider hosts or credentials, silently substitute a mock, or let the evaluator call inference.
+  If the live protocol cannot be expressed through those frozen schemas and limits, use code_only.
+- if runtime inference is unnecessary, set requires_live_inference=false and
+  inference_contracts=[].
+The PilotSpecification must freeze the same hypothesis and success criterion stated by the Idea;
+later code generation is not allowed to change either.
 The Idea must differ materially from these already generated titles:
 {json.dumps(avoid_titles or [], ensure_ascii=False)}
 
@@ -449,6 +476,15 @@ A publishable hypothesis should be unproven. Do not list the proposed experiment
 as missing literature evidence. Missing evidence should instead identify unavailable prior work,
 code/data prerequisites, or unresolved collision/feasibility facts needed before running the stated
 experiment.
+Treat PilotSpecification as a hard gate. Reject or mark needs_evidence when it has placeholder or
+private resources, unverifiable URLs, unspecified versions/licenses, missing command stages, a
+non-deterministic or non-frozen evaluator, evaluation commands outside
+`.research-atlas/evaluator/`, a primary metric not present in the JSON schema, no passing/failing
+evaluator cases, a subjective success rule, a CPU proxy that changes the research variable or
+metric, or estimated resources above 4 vCPU / 8192 MiB / 10240 MiB / 60 minutes. The specification
+may classify the proposal as code_only, but it must say why the stated hypothesis cannot be tested
+faithfully on CPU. Review the proposal and its executable contract together; never repair or
+silently reinterpret the contract in the review response.
 
 IDEAS:
 {json.dumps(ideas, ensure_ascii=False)}

@@ -21,6 +21,7 @@ from paper_research.models import (
     LiteratureLandscape,
     LiteratureThemeV4,
     PaperEvidenceProfile,
+    PilotSpecification,
     PresentationFinding,
     PresentationIdea,
     ProblemBrief,
@@ -36,6 +37,7 @@ from paper_research.models import (
     SubmissionIdea,
 )
 from paper_research.pipeline import (
+    IDEA_REVIEW_PROMPT_VERSION,
     PRO_LLM_STAGES,
     AnalysisPipeline,
     build_input_profile,
@@ -54,6 +56,7 @@ from paper_research.pipeline import (
     query_bundle_from_plan,
     rank_candidates,
     reconstruct_search_audit,
+    report_section_payloads,
     report_summary,
     should_stop,
     v4_remaining_seconds,
@@ -189,7 +192,10 @@ def test_v4_runtime_budget_and_full_text_target_resume_from_checkpoint() -> None
 def test_v4_old_review_checkpoint_is_reaudited_after_prompt_fix() -> None:
     assert not idea_review_checkpoint_is_current({"reviews": [{"idea_key": "old"}]})
     assert idea_review_checkpoint_is_current(
-        {"reviews": [{"idea_key": "new"}], "review_prompt_version": 2}
+        {
+            "reviews": [{"idea_key": "new"}],
+            "review_prompt_version": IDEA_REVIEW_PROMPT_VERSION,
+        }
     )
 
 
@@ -994,6 +1000,90 @@ def test_v4_high_collision_is_rejected_and_summary_stays_compact() -> None:
     csv_text = comparison_csv(report)
     assert "Evidence paper paper-0" in csv_text
     assert "output_or_evaluation_zh" in csv_text
+
+    executable_specification = PilotSpecification.model_validate(
+        {
+            "hypothesis_zh": "在固定数据和资源条件下，核心机制能够改善预先定义的确定性主要指标。",
+            "hypothesis_en": "Under fixed data and resource conditions, the mechanism improves the predefined deterministic primary metric.",
+            "execution_mode": "native_cpu",
+            "invariants_zh": ["数据划分保持不变"],
+            "invariants_en": ["The data split remains fixed"],
+            "resources": [
+                {
+                    "key": "repository",
+                    "kind": "code",
+                    "name": "Public baseline repository",
+                    "url": "https://github.com/example/research-code",
+                    "version": "commit-abc123",
+                    "license": "MIT",
+                    "purpose_zh": "提供公开且固定版本的基线实现。",
+                    "purpose_en": "Provides the public, version-pinned baseline implementation.",
+                }
+            ],
+            "allowed_hosts": ["github.com", "pypi.org", "files.pythonhosted.org"],
+            "environment_commands": ["python -m pip install -e ."],
+            "test_commands": ["python -m pytest -q"],
+            "baseline_commands": ["python scripts/baseline.py"],
+            "intervention_commands": ["python scripts/intervention.py"],
+            "evaluation_commands": ["python .research-atlas/evaluator/score.py"],
+            "metrics_output_path": "artifacts/metrics.json",
+            "metrics_json_schema": {
+                "type": "object",
+                "properties": {"effect": {"type": "number"}},
+                "required": ["effect"],
+                "additionalProperties": False,
+            },
+            "metrics": [
+                {
+                    "key": "effect",
+                    "name_zh": "效果增益",
+                    "name_en": "Effect gain",
+                    "definition_zh": "干预方法相对固定基线带来的确定性指标增益。",
+                    "definition_en": "The deterministic metric gain of the intervention over the fixed baseline.",
+                    "json_pointer": "/effect",
+                    "direction": "higher",
+                    "success_threshold": 0.2,
+                }
+            ],
+            "primary_metric_key": "effect",
+            "evaluator_files": [
+                {
+                    "path": "score.py",
+                    "content": "# frozen evaluator\n" + "x" * 59_000,
+                }
+            ],
+            "evaluator_test_commands": ["python .research-atlas/evaluator/score.py"],
+            "evaluator_cases": [
+                {"name": "passes", "metrics": {"effect": 0.3}, "expected_pass": True},
+                {"name": "fails", "metrics": {"effect": 0.1}, "expected_pass": False},
+            ],
+            "artifacts": [
+                {
+                    "path": "artifacts/metrics.json",
+                    "kind": "metrics",
+                    "public_safe": True,
+                    "description_zh": "冻结评价器产生的主要指标。",
+                    "description_en": "Primary metrics produced by the frozen evaluator.",
+                }
+            ],
+            "estimated_minutes": 10,
+        }
+    )
+    executable_idea = selected[0].model_copy(
+        update={"pilot_specification": executable_specification}
+    )
+    executable_report = report.model_copy(
+        update={
+            "presentation": presentation.model_copy(
+                update={"ideas": [executable_idea]}
+            )
+        }
+    )
+    executable_summary = report_summary(executable_report)
+    executable_sections = report_section_payloads(executable_report)
+    assert "pilot_specification" not in executable_summary["presentation"]["ideas"][0]
+    assert "pilot_specification" not in executable_sections["ideas"]["ideas"][0]
+    assert len(json.dumps(executable_summary, ensure_ascii=False).encode()) < 80_000
 
     no_idea_presentation = presentation.model_copy(
         update={"ideas": [], "comparison_boards": []}

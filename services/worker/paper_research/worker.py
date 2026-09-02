@@ -27,6 +27,7 @@ class Worker:
         self.pipeline = AnalysisPipeline(settings, self.repository)
         self._stopping = asyncio.Event()
         self._last_cleanup = 0.0
+        self._last_experiment_enqueue = 0.0
         self._failure_windows: dict[str, deque[float]] = defaultdict(deque)
         self._circuit_open_until: dict[str, float] = {}
 
@@ -143,6 +144,37 @@ class Worker:
         if counts["uploads"] or counts["reports"] or counts.get("orphans"):
             LOGGER.info("Expired data cleanup: %s", counts)
 
+    async def _maybe_enqueue_experiments(self, *, force: bool = False) -> None:
+        if not (
+            self.settings.E2B_PILOT_ENABLED
+            and self.settings.E2B_AUTO_EXPERIMENT_ENABLED
+        ):
+            return
+        if not force and time.monotonic() - self._last_experiment_enqueue < 300:
+            return
+        self._last_experiment_enqueue = time.monotonic()
+        for item in await self.repository.pending_primary_experiments():
+            try:
+                experiment = await self.repository.enqueue_primary_experiment(
+                    item["job_id"],
+                    item["user_id"],
+                    item["idea_key"],
+                    max_spend_usd=self.settings.E2B_MAX_SPEND_USD,
+                    llm_reservation_cny=self.settings.EXPERIMENT_LLM_MAX_CNY_PER_RUN,
+                    global_llm_max_cny=self.settings.EXPERIMENT_LLM_GLOBAL_MAX_CNY,
+                )
+                await self.repository.mark_primary_experiment_enqueued(
+                    item["job_id"], experiment.id
+                )
+            except Exception as error:
+                # The analysis is already complete. Keep the durable pending
+                # marker and retry independently without regressing job state.
+                LOGGER.warning(
+                    "Could not enqueue main Idea experiment for %s yet: %s",
+                    item["job_id"],
+                    redact(str(error)),
+                )
+
     async def _process_admin_deletion(self) -> None:
         request = await self.repository.claim_admin_deletion_request(
             self.settings.WORKER_ID, self.settings.JOB_LEASE_SECONDS
@@ -198,6 +230,7 @@ class Worker:
                 try:
                     await self._process_admin_deletion()
                     await self._maybe_cleanup()
+                    await self._maybe_enqueue_experiments()
                     job = await self.repository.claim_next_job(
                         self.settings.WORKER_ID, self.settings.JOB_LEASE_SECONDS
                     )
@@ -228,6 +261,7 @@ class Worker:
                             await self.repository.finish_job(job.id, JobStatus.FAILED, safe_error)
                     else:
                         await self.repository.finish_job(job.id, JobStatus.COMPLETED)
+                        await self._maybe_enqueue_experiments(force=True)
                         await self.repository.add_event(
                             job.id,
                             "source_retained",

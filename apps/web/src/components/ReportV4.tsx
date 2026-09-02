@@ -5,25 +5,31 @@ import {
   Download,
   ExternalLink,
   FileText,
+  FlaskConical,
   GitCompare,
   Info,
   Lightbulb,
+  LoaderCircle,
   Printer,
   Share2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createShare, downloadText, getFullReport, revokeShare } from "../lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { createShare, downloadText, getFullReport, getSharedExperimentArtifact, listReportExperiments, revokeShare, startIdeaExperiment, subscribeToReportExperiments } from "../lib/api";
 import { useLanguage } from "../lib/language";
 import { comparisonCsv, humanReportMarkdown, localized } from "../lib/report";
 import type {
   Evidence,
   EvidenceLocator,
+  ExperimentSummary,
   GroundedClaim,
   IdeaComparisonBoard,
   PaperEvidenceProfile,
   ProblemBrief,
   ReportPresentationV4,
   ReportRecord,
+  SharedExperimentArtifact,
+  SharedExperimentSummary,
   SubmissionIdea,
 } from "../lib/types";
 import { EvidenceCitations, PaperEvidenceCitation } from "./ReportCitations";
@@ -442,7 +448,148 @@ function IdeaPortfolio({ ideas, reviews, profiles, boards }: { ideas: Submission
   })}</div>;
 }
 
-export function ReportV4({ record, presentation, publicShare = false, hideShare = false, onSectionRequest }: { record: ReportRecord; presentation: ReportPresentationV4; publicShare?: boolean; hideShare?: boolean; onSectionRequest?: (section: ReportTab) => Promise<void> }) {
+function experimentSummary(experiment: ExperimentSummary, text: (zh: string, en: string) => string) {
+  if (experiment.status === "ready") {
+    const labels = {
+      pending: text("实验已完成，等待确定性评价", "Run complete; awaiting deterministic evaluation"),
+      initial_support: text("实验结果初步支持该 Idea", "The result initially supports this idea"),
+      not_support: text("当前实验暂不支持该 Idea", "The current result does not support this idea"),
+      inconclusive: text("当前实验暂无法判断", "The current experiment is inconclusive"),
+      environment_blocked: text("实验环境受阻", "The experiment was blocked by the environment"),
+      resource_limited: text("代码已生成，但当前资源不足以验证", "Code is ready, but resources cannot validate it"),
+      budget_blocked: text("实验已保留，等待预算恢复", "Progress is saved while waiting for budget"),
+      cancelled: text("实验已取消，已完成版本仍被保留", "The experiment was cancelled; completed revisions remain available"),
+    };
+    return labels[experiment.outcome];
+  }
+  if (experiment.status === "recovering") return text("正在从最近检查点自动恢复", "Automatically resuming from the latest checkpoint");
+  if (experiment.status === "waiting_resources") return text("正在等待可用资源", "Waiting for available resources");
+  if (experiment.status === "cancelled") return text("实验已取消，代码与结果仍可审阅", "The experiment is cancelled; code and results remain available");
+  return text(`代码与实验正在异步生成 · ${Math.round(experiment.progress)}%`, `Code and experiment are being generated · ${Math.round(experiment.progress)}%`);
+}
+
+function IdeaExperimentPanel({
+  ideas,
+  experiments,
+  adminMode,
+  launchingIdeaKey,
+  manualEnabled,
+  automaticEnabled,
+  onStart,
+}: {
+  ideas: SubmissionIdea[];
+  experiments: Map<string, ExperimentSummary>;
+  adminMode: boolean;
+  launchingIdeaKey: string;
+  manualEnabled: boolean;
+  automaticEnabled: boolean;
+  onStart: (idea: SubmissionIdea) => void;
+}) {
+  const { language, text } = useLanguage();
+  const visibleIdeas = manualEnabled ? ideas : ideas.filter((idea) => experiments.has(idea.key));
+  if (!visibleIdeas.length) return null;
+  return <section className="panel mt-6 overflow-hidden no-print" aria-label={text("Idea 实验验证", "Idea experiment validation")}>
+    <header className="border-b border-line px-5 py-4"><span className="report-rank">E2B</span><h3 className="!mb-0 !mt-2 !text-lg !text-content">{text("生成代码并验证 Idea", "Generate code and validate ideas")}</h3><p className="mt-1 text-sm leading-6 text-muted">{manualEnabled ? automaticEnabled ? text("新报告的主 Idea 会自动运行；历史报告和备选 Idea 可由你选择是否启动。", "Primary ideas in new reports run automatically; you may choose whether to start historical and alternative ideas.") : text("你可以选择为主 Idea 或备选 Idea 生成代码并运行验证。", "You can choose to generate code and validate a primary or alternative idea.") : text("已有实验仍可查看；当前暂不创建新的实验。", "Existing experiments remain available; new experiment creation is currently paused.")}</p></header>
+    <div className="divide-y divide-line">{[...visibleIdeas].sort((left, right) => left.rank - right.rank).map((idea) => {
+      const experiment = experiments.get(idea.key);
+      const route = experiment ? `${adminMode ? "/admin" : ""}/experiments/${experiment.id}` : "";
+      return <article className="experiment-launch" key={idea.key}>
+        <FlaskConical className="h-4 w-4 shrink-0 text-accent-strong"/>
+        <div className="experiment-launch-copy"><strong>{idea.rank === 1 ? text("主 Idea", "Primary idea") : text(`备选 Idea ${idea.rank}`, `Alternative idea ${idea.rank}`)} · {localized(idea, "title", language)}</strong><span>{experiment ? experimentSummary(experiment, text) : adminMode ? text("尚未启动；管理员不能代用户创建实验。", "Not started; administrators cannot create an experiment for the user.") : text("E2B CPU 沙箱将生成完整代码仓库并运行第一个可证伪实验。", "An E2B CPU sandbox will generate a complete repository and run the first falsifiable experiment.")}</span></div>
+        {experiment ? <Link className="button button-secondary" to={route}>{text("打开实验工作区", "Open workspace")}<ChevronRight/></Link> : !adminMode && manualEnabled && <button className="button button-secondary" disabled={launchingIdeaKey === idea.key} onClick={() => onStart(idea)}>{launchingIdeaKey === idea.key ? <LoaderCircle className="animate-spin"/> : <FlaskConical/>}{text("生成代码并验证", "Generate and validate")}</button>}
+      </article>;
+    })}</div>
+  </section>;
+}
+
+function publicOutcomeLabel(outcome: SharedExperimentSummary["outcome"], text: (zh: string, en: string) => string) {
+  return {
+    pending: text("等待评价", "Awaiting evaluation"),
+    initial_support: text("初步支持", "Initial support"),
+    not_support: text("暂不支持", "Not supported yet"),
+    inconclusive: text("暂无法判断", "Inconclusive"),
+    environment_blocked: text("环境受阻", "Environment blocked"),
+    resource_limited: text("资源受限", "Resource limited"),
+    budget_blocked: text("预算受限", "Budget limited"),
+    cancelled: text("已取消", "Cancelled"),
+  }[outcome];
+}
+
+function publicOutcomeExplanation(outcome: SharedExperimentSummary["outcome"], text: (zh: string, en: string) => string) {
+  return {
+    pending: text("实验已结束，正在等待冻结评价器给出结论。", "The run is complete and awaits its frozen evaluator."),
+    initial_support: text("冻结指标与成功阈值初步支持该 Idea。", "The frozen metric and success threshold initially support this idea."),
+    not_support: text("本次实验未达到冻结成功阈值；这是有效的科学结果。", "This run did not meet the frozen success threshold; it remains a valid scientific result."),
+    inconclusive: text("当前结果不足以判断研究假设，需要进一步实验。", "The current result is insufficient to judge the hypothesis."),
+    environment_blocked: text("环境条件阻止了有效评价，不能据此判断研究假设。", "The environment prevented a valid evaluation of the hypothesis."),
+    resource_limited: text("当前计算资源不足以完成有效评价。", "Available compute was insufficient for a valid evaluation."),
+    budget_blocked: text("实验进度已保留，等待预算恢复后继续。", "Progress is preserved until the experiment budget resumes."),
+    cancelled: text("实验已取消，未形成新的科学结论。", "The run was cancelled without a new scientific conclusion."),
+  }[outcome];
+}
+
+function formatPublicMetric(value: unknown, language: "zh" | "en") {
+  if (typeof value === "number") return new Intl.NumberFormat(language === "zh" ? "zh-CN" : "en-US", { maximumFractionDigits: 6 }).format(value);
+  if (typeof value === "boolean") return language === "zh" ? (value ? "是" : "否") : (value ? "Yes" : "No");
+  return typeof value === "string" && value.trim() ? value : "—";
+}
+
+function SharedArtifactButton({ artifact, shareToken, onPreview }: { artifact: SharedExperimentArtifact; shareToken: string; onPreview: (artifact: SharedExperimentArtifact, blob: Blob) => void }) {
+  const { text } = useLanguage();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const canPreview = artifact.kind === "plot" && /^(image\/png|image\/jpeg|image\/webp)$/i.test(artifact.mimeType);
+  async function open() {
+    setLoading(true); setError(false);
+    try {
+      const blob = await getSharedExperimentArtifact(shareToken, artifact.artifactId, !canPreview);
+      if (canPreview) onPreview(artifact, blob);
+      else {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url; link.download = artifact.fileName; link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+  const label = canPreview ? text("查看公开图表", "View public chart") : artifact.kind === "metrics" ? text("下载公开指标", "Download public metrics") : text("下载结果摘要", "Download result summary");
+  return <div className="shared-experiment-artifact"><button className="button button-secondary" type="button" disabled={loading} onClick={() => void open()}>{loading ? <LoaderCircle className="h-4 w-4 animate-spin"/> : artifact.kind === "plot" ? <FileText className="h-4 w-4"/> : <Download className="h-4 w-4"/>}{label}</button><small>{artifact.fileName}{artifact.byteSize ? ` · ${Math.max(1, Math.round(artifact.byteSize / 1024))} KB` : ""}</small>{error && <span role="status">{text("该公开产物暂时无法读取，请稍后重试。", "This public artifact is temporarily unavailable. Please retry later.")}</span>}</div>;
+}
+
+function PublicExperimentResults({ experiments, ideas, shareToken }: { experiments: SharedExperimentSummary[]; ideas: SubmissionIdea[]; shareToken: string }) {
+  const { language, text } = useLanguage();
+  const [previews, setPreviews] = useState<Record<string, { name: string; url: string }>>({});
+  const previewUrls = useRef<string[]>([]);
+  useEffect(() => () => previewUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
+  if (!experiments.length || !shareToken) return null;
+  function preview(artifact: SharedExperimentArtifact, blob: Blob) {
+    const url = URL.createObjectURL(blob);
+    previewUrls.current.push(url);
+    setPreviews((current) => ({ ...current, [artifact.artifactId]: { name: artifact.fileName, url } }));
+  }
+  return <section className="panel shared-experiment-results mt-6" aria-label={text("公开实验结果", "Public experiment results")}>
+    <header><div><span className="report-rank">E2B</span><h3>{text("Idea 初步验证结果", "Preliminary idea validation")}</h3></div><p>{text("仅展示脱敏结论、冻结指标和标记为可公开的产物；源码、日志与实验工作区保持私有。", "Only sanitized conclusions, frozen metrics, and public-safe artifacts are shown. Source code, logs, and the workspace remain private.")}</p></header>
+    <div className="divide-y divide-line">{[...experiments].sort((left, right) => left.ideaRank - right.ideaRank).map((experiment) => {
+      const idea = ideas.find((item) => item.key === experiment.ideaKey);
+      const summary = experiment.summary ?? {};
+      const summaryText = language === "zh" ? summary.summary_zh : summary.summary_en;
+      const metricAvailable = Boolean(summary.primary_metric) && summary.primary_value !== undefined && summary.primary_value !== null;
+      return <article className="shared-experiment-result" key={experiment.ideaKey}>
+        <div className="shared-experiment-result-heading"><div><span className="report-meta">{experiment.ideaRank === 1 ? text("主 Idea", "Primary idea") : text(`备选 Idea ${experiment.ideaRank}`, `Alternative idea ${experiment.ideaRank}`)}</span><h4>{idea ? localized(idea, "title", language) : text(`第 ${experiment.ideaRank} 个方案`, `Proposal ${experiment.ideaRank}`)}</h4></div><span className={`experiment-outcome is-${experiment.outcome}`}>{publicOutcomeLabel(experiment.outcome, text)}</span></div>
+        <p className="report-copy report-copy-wide mt-3">{summaryText || publicOutcomeExplanation(experiment.outcome, text)}</p>
+        {metricAvailable && <dl className="shared-experiment-metric"><div><dt>{text("主指标", "Primary metric")}</dt><dd>{summary.primary_metric}</dd></div><div><dt>{text("实验值", "Observed value")}</dt><dd>{formatPublicMetric(summary.primary_value, language)}</dd></div>{summary.threshold !== undefined && summary.threshold !== null && <div><dt>{text("成功阈值", "Success threshold")}</dt><dd>{summary.direction === "lower" ? "≤" : "≥"} {formatPublicMetric(summary.threshold, language)}</dd></div>}</dl>}
+        {experiment.artifacts.length > 0 && <div className="shared-experiment-artifacts">{experiment.artifacts.map((artifact) => <SharedArtifactButton key={artifact.artifactId} artifact={artifact} shareToken={shareToken} onPreview={preview}/>)}</div>}
+        {experiment.artifacts.filter((artifact) => previews[artifact.artifactId]).map((artifact) => <figure className="shared-experiment-preview" key={artifact.artifactId}><img src={previews[artifact.artifactId].url} alt={text(`公开实验图表：${previews[artifact.artifactId].name}`, `Public experiment chart: ${previews[artifact.artifactId].name}`)}/><figcaption>{previews[artifact.artifactId].name}</figcaption></figure>)}
+      </article>;
+    })}</div>
+  </section>;
+}
+
+export function ReportV4({ record, presentation, publicShare = false, hideShare = false, adminMode = false, publicExperiments = [], shareToken = "", onSectionRequest }: { record: ReportRecord; presentation: ReportPresentationV4; publicShare?: boolean; hideShare?: boolean; adminMode?: boolean; publicExperiments?: SharedExperimentSummary[]; shareToken?: string; onSectionRequest?: (section: ReportTab) => Promise<void> }) {
   const report = record.content;
   const { language, text, formatDate, formatNumber } = useLanguage();
   const [tab, setTab] = useState<ReportTab>("overview");
@@ -451,10 +598,33 @@ export function ReportV4({ record, presentation, publicShare = false, hideShare 
   const [sectionLoading, setSectionLoading] = useState<ReportTab | null>(null);
   const [sectionError, setSectionError] = useState("");
   const [overviewLandscapeLoading, setOverviewLandscapeLoading] = useState(false);
+  const [experiments, setExperiments] = useState<ExperimentSummary[]>([]);
+  const [manualExperimentsEnabled, setManualExperimentsEnabled] = useState(false);
+  const [automaticExperimentsEnabled, setAutomaticExperimentsEnabled] = useState(false);
+  const [launchingIdeaKey, setLaunchingIdeaKey] = useState("");
+  const [experimentMessage, setExperimentMessage] = useState("");
   const evidenceMap = useMemo(() => new Map(report.problem_statements.flatMap((problem) => problem.evidence.map((item) => [item.id, item] as const))), [report.problem_statements]);
   const paperTitles = useMemo(() => new Map(report.problem_statements.map((problem) => [problem.paper_id, problem.title])), [report.problem_statements]);
   const profileMap = useMemo(() => new Map(presentation.literature_landscape.profiles.map((item) => [item.paper_id, item])), [presentation.literature_landscape.profiles]);
   const ideaMap = useMemo(() => new Map(presentation.ideas.map((item) => [item.key, item])), [presentation.ideas]);
+  const experimentMap = useMemo(() => new Map(experiments.map((item) => [item.ideaKey, item])), [experiments]);
+  const refreshExperiments = useCallback(async () => {
+    if (publicShare) return;
+    try {
+      const listing = await listReportExperiments(record.id);
+      setExperiments(listing.experiments);
+      setManualExperimentsEnabled(listing.manualEnabled);
+      setAutomaticExperimentsEnabled(listing.automaticEnabled);
+      setExperimentMessage("");
+    } catch {
+      setExperimentMessage(text("实验服务正在准备，报告内容不受影响。", "The experiment service is being prepared; the report is unaffected."));
+    }
+  }, [publicShare, record.id, text]);
+  useEffect(() => {
+    if (publicShare) return;
+    void refreshExperiments();
+    return subscribeToReportExperiments(record.id, () => void refreshExperiments());
+  }, [publicShare, record.id, refreshExperiments]);
   useEffect(() => {
     if (tab === "overview" || !onSectionRequest) return;
     let active = true;
@@ -479,6 +649,19 @@ export function ReportV4({ record, presentation, publicShare = false, hideShare 
   }, [onSectionRequest, presentation.literature_landscape.profiles.length, tab]);
   async function share() { const result = await createShare(record.id); const url = `${location.origin}${location.pathname}#/share/${result.token}`; setShareId(result.shareId); setShareUrl(url); await navigator.clipboard?.writeText(url); }
   async function revoke() { await revokeShare(shareId); setShareId(""); setShareUrl(""); }
+  async function startExperiment(idea: SubmissionIdea) {
+    if (!manualExperimentsEnabled) return;
+    setLaunchingIdeaKey(idea.key);
+    setExperimentMessage("");
+    try {
+      const experiment = await startIdeaExperiment(record.id, idea.key);
+      setExperiments((items) => [...items.filter((item) => item.ideaKey !== idea.key), experiment]);
+    } catch {
+      setExperimentMessage(text("实验暂时无法启动；稍后重试不会丢失报告或重复创建。", "The experiment could not start yet. Retrying later will not lose the report or create a duplicate."));
+    } finally {
+      setLaunchingIdeaKey("");
+    }
+  }
   async function download(kind: "md" | "json" | "csv") { const full = publicShare ? record : await getFullReport(record.id); if (kind === "md") downloadText(`report-${language}.md`, full.markdown || humanReportMarkdown(full.content, language), "text/markdown"); else if (kind === "json") downloadText("report.json", JSON.stringify(full.content, null, 2), "application/json"); else downloadText("comparison.csv", comparisonCsv(full.content), "text/csv"); }
   const tabLabel = (id: ReportTab, label: string) => `${label}${sectionLoading === id ? "…" : sectionError && tab === id ? " !" : ""}`;
   const tabs = [
@@ -505,8 +688,10 @@ export function ReportV4({ record, presentation, publicShare = false, hideShare 
     );
   return <article className="report-shell mx-auto max-w-6xl"><header className="flex flex-col justify-between gap-5 md:flex-row md:items-start"><div className="min-w-0"><p className="report-kicker">{text("全文证据驱动调研", "Full-text evidence review")}</p><h1 className="mt-3 max-w-4xl text-3xl font-semibold tracking-tight text-content sm:text-4xl">{presentation.problem_briefs.map((item) => item.title).join(" + ")}</h1><p className="mt-3 text-sm text-muted">{formatDate(report.generated_at)} · {text(`${formatNumber(presentation.literature_landscape.candidate_count)} 篇候选 · ${presentation.literature_landscape.full_text_count} 篇全文`, `${formatNumber(presentation.literature_landscape.candidate_count)} candidates · ${presentation.literature_landscape.full_text_count} full texts`)}</p></div><div className="no-print flex flex-wrap gap-2"><button className="button button-secondary" onClick={() => window.print()}><Printer className="h-4 w-4"/>PDF</button><button className="button button-secondary" onClick={() => void download("md")}><Download className="h-4 w-4"/>Markdown</button><button className="button button-secondary" onClick={() => void download("json")}><Download className="h-4 w-4"/>JSON</button><button className="button button-secondary" onClick={() => void download("csv")}><Download className="h-4 w-4"/>CSV</button>{!publicShare && !hideShare && <button className="button button-primary" onClick={() => void share()}><Share2 className="h-4 w-4"/>{text("分享", "Share")}</button>}</div></header>{shareUrl && <div className="no-print mt-5 rounded-xl border border-info/25 bg-info/[.07] p-4 text-sm"><div className="flex items-center justify-between gap-3"><strong className="text-content">{text("只读链接已复制，有效期 30 天", "Read-only link copied; valid for 30 days")}</strong><button className="button button-danger" onClick={() => void revoke()}>{text("撤销", "Revoke")}</button></div></div>}<nav className="report-tabs no-print mt-8" role="tablist">{tabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><item.icon className="h-4 w-4"/>{item.label}</button>)}</nav>
     {tab === "overview" && <section className="report-section mt-7"><div className="report-hero"><span className="report-rank">{text("调研结论", "Research conclusion")}</span><p className="mt-4 max-w-5xl text-lg font-medium leading-8 text-content sm:text-xl">{overviewConclusion}</p></div>{presentation.problem_briefs[0] && <OverviewBriefSummary brief={presentation.problem_briefs[0]} onOpen={() => setTab("problem")}/>}<OverviewLandscapeSummary presentation={presentation} idea={firstIdea} loading={overviewLandscapeLoading} onOpen={() => setTab("landscape")}/><div className="panel mt-6 p-5 sm:p-6">{firstIdea ? <><div className="flex flex-wrap items-center gap-3"><span className="report-rank">{text("主 Idea", "Primary idea")}</span><span className={`idea-status ${firstIdea.qualification_tier === "relaxed" ? "idea-status-conditional" : "idea-status-viable"}`}>{firstIdea.qualification_tier === "relaxed" ? text("条件通过", "Conditional pass") : text("严格审查通过", "Strict review passed")}</span></div><h3 className="!mt-3 !text-xl !text-content">{localized(firstIdea, "title", language)}</h3><p className="mt-2 text-sm leading-6 text-content">{localized(firstIdea, "one_sentence", language)}</p><div className="mt-4 grid gap-3 md:grid-cols-2"><div className="rounded-xl bg-subtle p-4"><span className="text-xs font-semibold text-muted">{text("首个实验", "First experiment")}</span><p className="mt-1 text-sm leading-6 text-content">{localized(firstIdea.experiment, "intervention", language)}</p></div><div className="rounded-xl bg-subtle p-4"><span className="text-xs font-semibold text-muted">{text("成功条件", "Success criterion")}</span><p className="mt-1 text-sm leading-6 text-content">{localized(firstIdea.experiment, "success_criterion", language)}</p></div></div><div className="mt-4 flex flex-wrap items-center gap-3"><button className="button button-secondary no-print" onClick={() => setTab("ideas")}>{text("查看完整方案", "View full proposal")}<ChevronRight className="h-4 w-4"/></button>{presentation.ideas.length > 1 && <span className="text-xs text-muted">{text(`另有 ${presentation.ideas.length - 1} 个备选方案`, `${presentation.ideas.length - 1} additional alternatives`)}</span>}</div></> : <><div className="flex items-center gap-2"><Info className="h-4 w-4 text-warning"/><strong className="text-content">{text("尚未形成通过审查的论文级 Idea", "No paper-level idea has passed review")}</strong></div>{bestUnverifiedReview && <div className="mt-4 rounded-xl border border-warning/25 bg-warning/[.06] p-4"><span className="text-xs font-semibold text-muted">{text("最接近门槛的方向", "Closest direction to the gate")}</span><h3 className="!mb-0 !mt-2 !text-base !text-content">{localized(bestUnverifiedReview, "idea_title", language) || text("仍需补证的候选方向", "Candidate direction requiring more evidence")}</h3><p className="mt-2 text-sm leading-6 text-muted">{localized(bestUnverifiedReview, "rationale", language)}</p></div>}<button className="button button-secondary no-print mt-4" onClick={() => setTab("ideas")}>{text("查看审查结果", "View review results")}<ChevronRight className="h-4 w-4"/></button></>}</div></section>}
+    {tab === "overview" && firstIdea && !publicShare && <IdeaExperimentPanel ideas={[firstIdea]} experiments={experimentMap} adminMode={adminMode} launchingIdeaKey={launchingIdeaKey} manualEnabled={manualExperimentsEnabled} automaticEnabled={automaticExperimentsEnabled} onStart={startExperiment}/>}
+    {tab === "overview" && publicShare && <PublicExperimentResults experiments={publicExperiments} ideas={presentation.ideas} shareToken={shareToken}/>}
     {tab === "problem" && <section className="report-section mt-7"><SectionTitle kicker="01" title={text("输入论文", "Input paper")} description={text("研究问题、输入、输出、算法和约束均来自输入论文；点击证据可查看对应页面与高亮片段。", "The research question, inputs, outputs, algorithm, and constraints all come from the input paper. Open evidence to view the cited page and highlighted passage.")}/><InputPaperView briefs={presentation.problem_briefs} headline={localized(presentation, "headline", language)} evidenceMap={evidenceMap} paperTitles={paperTitles}/></section>}
     {tab === "landscape" && <section className="report-section mt-7"><SectionTitle kicker="02" title={text("完整研究现状", "Research landscape")} description={text("先完成多平台检索和全文证据档案，再据此提出 Idea。按主题阅读研究脉络，或切换到 Idea 差异查看论文级对比。", "Ideas are proposed only after multi-source retrieval and full-text profiling. Read one research theme at a time or switch to paper-level Idea comparisons.")}/><div className="panel p-5 sm:p-6"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><div><span className="text-xs text-muted">{text("去重候选", "Deduplicated candidates")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(presentation.literature_landscape.candidate_count)}</strong></div><div><span className="text-xs text-muted">{text("摘要筛选", "Abstract screened")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(presentation.literature_landscape.screened_count)}</strong></div><div><span className="text-xs text-muted">{text("开放全文深读", "Open full texts reviewed")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(presentation.literature_landscape.full_text_count)}</strong></div><div><span className="text-xs text-muted">{text("覆盖平台", "Sources covered")}</span><strong className="mt-1 block text-2xl text-content">{formatNumber(Object.values(presentation.literature_landscape.source_counts).filter((count) => count > 0).length)}</strong></div></div><p className="mt-5 border-t border-line pt-5 text-sm leading-7 text-muted">{localized(presentation.literature_landscape, "overview", language)}</p></div><div className="mt-6"><LandscapeExplorer presentation={presentation} ideaMap={ideaMap}/></div></section>}
-    {tab === "ideas" && <section className="report-section mt-7"><SectionTitle kicker="03" title={text("论文级 Idea", "Paper-level ideas")} description={text("这些方案在完整研究现状之后生成，并经过撞车、可行性、证据和投稿价值审查。沙箱实验仍为可选功能，当前不会自动运行。", "These proposals are generated after the literature landscape and reviewed for collision, feasibility, evidence, and submission value. Sandbox experiments remain optional and never run automatically.")}/><IdeaPortfolio ideas={presentation.ideas} reviews={presentation.reviews} profiles={presentation.literature_landscape.profiles} boards={presentation.comparison_boards}/>{presentation.ideas.length === 0 && <div className="panel p-8 text-center"><strong className="text-content">{text("本轮没有达到正式推荐门槛的 Idea", "No idea reached the recommendation gate")}</strong><p className="mt-2 text-sm leading-6 text-muted">{text("这不是空结果：下方保留了候选方向的审查结论、关键反证和下一步补证要求。", "This is not an empty result: the reviews, counterevidence, and next evidence requirements remain available below.")}</p></div>}{presentation.reviews.some((item) => !ideaMap.has(item.idea_key)) && <details className="panel mt-8 p-5" open={presentation.ideas.length === 0}><summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-semibold text-content"><span>{text("查看未通过审查的方向", "View directions that did not pass review")}</span><ChevronRight className="h-4 w-4"/></summary><div className="mt-4 divide-y divide-line">{presentation.reviews.filter((item) => !ideaMap.has(item.idea_key)).map((review, index) => { const missing = language === "zh" ? review.missing_evidence_zh : review.missing_evidence_en; return <article className="py-5" key={review.idea_key}><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm text-content">{localized(review, "idea_title", language) || text(`待补证方向 ${index + 1}`, `Direction ${index + 1} requiring evidence`)}</strong><span className="idea-status">{review.decision === "rejected" ? text("已淘汰", "Rejected") : text("尚未验证", "Not yet validated")}</span></div><p className="mt-2 text-sm leading-6 text-muted">{localized(review, "rationale", language)}</p>{missing.length > 0 && <div className="mt-3 rounded-lg bg-subtle p-3"><span className="text-xs font-semibold text-muted">{text("下一步必须补充的证据", "Evidence required next")}</span><ul className="mt-2 space-y-1 text-sm leading-6 text-content">{missing.map((item) => <li key={item}>· {item}</li>)}</ul></div>}</article>; })}</div></details>}</section>}
+    {tab === "ideas" && <section className="report-section mt-7"><SectionTitle kicker="03" title={text("论文级 Idea", "Paper-level ideas")} description={text("这些方案在完整研究现状之后生成，并经过撞车、可行性、证据和投稿价值审查。", "These proposals are generated after the literature landscape and reviewed for collision, feasibility, evidence, and submission value.")}/><IdeaPortfolio ideas={presentation.ideas} reviews={presentation.reviews} profiles={presentation.literature_landscape.profiles} boards={presentation.comparison_boards}/>{presentation.ideas.length === 0 && <div className="panel p-8 text-center"><strong className="text-content">{text("本轮没有达到正式推荐门槛的 Idea", "No idea reached the recommendation gate")}</strong><p className="mt-2 text-sm leading-6 text-muted">{text("这不是空结果：下方保留了候选方向的审查结论、关键反证和下一步补证要求。", "This is not an empty result: the reviews, counterevidence, and next evidence requirements remain available below.")}</p></div>}{presentation.reviews.some((item) => !ideaMap.has(item.idea_key)) && <details className="panel mt-8 p-5" open={presentation.ideas.length === 0}><summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-semibold text-content"><span>{text("查看未通过审查的方向", "View directions that did not pass review")}</span><ChevronRight className="h-4 w-4"/></summary><div className="mt-4 divide-y divide-line">{presentation.reviews.filter((item) => !ideaMap.has(item.idea_key)).map((review, index) => { const missing = language === "zh" ? review.missing_evidence_zh : review.missing_evidence_en; return <article className="py-5" key={review.idea_key}><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm text-content">{localized(review, "idea_title", language) || text(`待补证方向 ${index + 1}`, `Direction ${index + 1} requiring evidence`)}</strong><span className="idea-status">{review.decision === "rejected" ? text("已淘汰", "Rejected") : text("尚未验证", "Not yet validated")}</span></div><p className="mt-2 text-sm leading-6 text-muted">{localized(review, "rationale", language)}</p>{missing.length > 0 && <div className="mt-3 rounded-lg bg-subtle p-3"><span className="text-xs font-semibold text-muted">{text("下一步必须补充的证据", "Evidence required next")}</span><ul className="mt-2 space-y-1 text-sm leading-6 text-content">{missing.map((item) => <li key={item}>· {item}</li>)}</ul></div>}</article>; })}</div></details>}{!publicShare && <IdeaExperimentPanel ideas={presentation.ideas} experiments={experimentMap} adminMode={adminMode} launchingIdeaKey={launchingIdeaKey} manualEnabled={manualExperimentsEnabled} automaticEnabled={automaticExperimentsEnabled} onStart={startExperiment}/>} {experimentMessage && <p className="mt-3 text-sm text-muted no-print">{experimentMessage}</p>}</section>}
   </article>;
 }

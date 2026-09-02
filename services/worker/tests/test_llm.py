@@ -2,7 +2,11 @@ import asyncio
 import json
 
 import pytest
-from paper_research.clients.llm import ClaudeCodeClient, ClaudeCodeError
+from paper_research.clients.llm import (
+    ClaudeCodeAccountingError,
+    ClaudeCodeClient,
+    ClaudeCodeError,
+)
 from paper_research.models import ProviderUsage
 from pydantic import BaseModel
 
@@ -34,7 +38,7 @@ def test_analysis_command_uses_supported_permission_mode_and_disables_tools() ->
 
     permission_index = command.index("--permission-mode")
     tools_index = command.index("--tools")
-    assert command[permission_index + 1] == "default"
+    assert command[permission_index + 1] == "dontAsk"
     assert command[tools_index + 1] == ""
     assert "--allowedTools" not in command
     assert "--safe-mode" in command
@@ -64,6 +68,22 @@ def test_max_turns_can_be_tuned_for_long_structured_calls() -> None:
 
     assert analysis[analysis.index("--max-turns") + 1] == "10"
     assert web[web.index("--max-turns") + 1] == "14"
+
+
+def test_experiment_command_has_process_budget_and_output_cap() -> None:
+    client = ClaudeCodeClient("test", max_output_tokens=16_384)
+
+    command = client._command(
+        "{}",
+        client.cli_model,
+        allow_web_search=False,
+        max_turns=4,
+        max_budget_usd=0.25,
+    )
+
+    assert command[command.index("--max-turns") + 1] == "4"
+    assert command[command.index("--max-budget-usd") + 1] == "0.250000"
+    assert client._environment()["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16384"
 
 
 async def test_failed_cli_result_still_records_token_usage(monkeypatch) -> None:
@@ -107,3 +127,36 @@ async def test_failed_cli_result_still_records_token_usage(monkeypatch) -> None:
     assert records[0].metadata["transport"] == "claude_code"
     assert records[0].metadata["stage"] == "v4_idea_review"
     assert records[0].metadata["claude_cli_model"] == "claude-opus-4-5"
+
+
+async def test_experiment_usage_accounting_fails_closed() -> None:
+    async def unavailable(_usage: ProviderUsage) -> None:
+        raise RuntimeError("database temporarily unavailable")
+
+    client = ClaudeCodeClient(
+        "test",
+        usage_callback=unavailable,
+        strict_usage_callback=True,
+    )
+
+    with pytest.raises(ClaudeCodeError, match="durably accounted"):
+        await client._emit_usage(
+            {"usage": {"input_tokens": 100, "output_tokens": 20}},
+            "deepseek-v4-flash",
+            "claude-sonnet-4-5",
+            "experiment_repository_design",
+            failed=False,
+        )
+
+
+async def test_experiment_missing_usage_fails_closed() -> None:
+    client = ClaudeCodeClient("test", strict_usage_callback=True)
+
+    with pytest.raises(ClaudeCodeAccountingError, match="no auditable provider usage"):
+        await client._emit_usage(
+            {},
+            "deepseek-v4-flash",
+            "claude-sonnet-4-5",
+            "experiment_repository_design",
+            failed=False,
+        )

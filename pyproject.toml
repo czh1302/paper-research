@@ -13,7 +13,11 @@ dependencies = [
   "pydantic-settings>=2.4,<3",
   "python-dotenv>=1.0,<2",
   "tenacity>=8.5,<10",
-  "pypdf>=5,<6"
+  "pypdf>=5,<6",
+  "jsonschema>=4.23,<5",
+  # Python 2.46.1 is not published yet; keep the worker on the latest
+  # published compatible release. The Edge terminal relay uses JS 2.46.1.
+  "e2b==2.46.0"
 ]
 
 [project.optional-dependencies]

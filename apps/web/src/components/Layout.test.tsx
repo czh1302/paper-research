@@ -28,4 +28,15 @@ describe("Layout", () => {
     expect(theme.compareDocumentPosition(github) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(github.compareDocumentPosition(signOutButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
+
+  it("uses a full-height shell without the footer for experiment routes", () => {
+    render(<LanguageProvider><ThemeProvider><MemoryRouter initialEntries={["/experiments/experiment-1"]}><Layout email="shared@example.com" isAdmin><div>workspace</div></Layout></MemoryRouter></ThemeProvider></LanguageProvider>);
+    expect(screen.getByText("workspace").closest("main")).toHaveClass("min-w-0");
+    expect(screen.queryByText(/PDF parsing powered by/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "任务" })).toHaveClass("workspace-secondary-nav");
+    expect(screen.getByRole("link", { name: "管理" })).toHaveClass("workspace-secondary-nav");
+    expect(screen.getByRole("link", { name: "查看 GitHub 项目仓库" })).toHaveClass("workspace-secondary-nav");
+    expect(screen.getByRole("button", { name: "切换到暗色主题" })).not.toHaveClass("workspace-secondary-nav");
+    expect(screen.getByRole("button", { name: "退出登录" })).not.toHaveClass("workspace-secondary-nav");
+  });
 });

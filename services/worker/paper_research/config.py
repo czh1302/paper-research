@@ -49,6 +49,68 @@ class Settings(BaseSettings):
     PDF_EVIDENCE_PREVIEW_ENABLED: bool = True
     REPORT_SECTIONS_ENABLED: bool = True
 
+    E2B_API_KEY: SecretStr | None = None
+    V4_PILOT_SPEC_REQUIRED: bool = True
+    E2B_PILOT_ENABLED: bool = False
+    # Creation is staged independently from the master runtime kill switch.
+    # Existing experiments remain inspectable when either creation path is off.
+    E2B_MANUAL_EXPERIMENT_ENABLED: bool = False
+    E2B_AUTO_EXPERIMENT_ENABLED: bool = False
+    E2B_TEMPLATE_ID: str = "base"
+    E2B_CPU_COUNT: int = Field(default=4, ge=1, le=4)
+    E2B_MEMORY_MIB: int = Field(default=8192, ge=256, le=8192)
+    E2B_DISK_MIB: int = Field(default=10240, ge=1024, le=10240)
+    E2B_RUN_TIMEOUT_SECONDS: int = Field(default=3600, ge=60, le=3600)
+    E2B_IDLE_PAUSE_SECONDS: int = Field(default=600, ge=60, le=3600)
+    E2B_DESTROY_AFTER_SECONDS: int = Field(default=604800, ge=3600)
+    E2B_GLOBAL_CONCURRENCY: int = Field(default=1, ge=1, le=1)
+    E2B_MAX_SPEND_USD: float = Field(default=90, gt=0, le=90)
+    E2B_ESTIMATED_COST_PER_SECOND_USD: float = Field(default=0.000092, gt=0)
+    EXPERIMENT_MAX_REPAIRS: int = Field(default=2, ge=0, le=2)
+    EXPERIMENT_MAX_USER_VALIDATIONS: int = Field(default=3, ge=0, le=3)
+    EXPERIMENT_LLM_MAX_CNY_PER_RUN: float = Field(default=5, gt=0, le=5)
+    # Experiment calls are additionally bounded at the Claude Code process.
+    # These limits make the database's per-invocation reservation a provable
+    # upper bound even when a model consumes its full context on every turn.
+    EXPERIMENT_LLM_CONTEXT_TOKENS: int = Field(default=200_000, ge=128_000, le=200_000)
+    EXPERIMENT_LLM_MAX_OUTPUT_TOKENS: int = Field(default=16_384, ge=1_024, le=16_384)
+    EXPERIMENT_FLASH_MAX_TURNS: int = Field(default=4, ge=2, le=4)
+    EXPERIMENT_PRO_MAX_TURNS: int = Field(default=2, ge=2, le=2)
+    # Subject-code inference is intentionally much smaller than repository
+    # generation and always uses the Flash/Sonnet Claude Code route.
+    EXPERIMENT_SANDBOX_INFERENCE_CONTEXT_TOKENS: int = Field(
+        default=32_768, ge=8_192, le=32_768
+    )
+    EXPERIMENT_SANDBOX_INFERENCE_MAX_OUTPUT_TOKENS: int = Field(
+        default=4_096, ge=256, le=4_096
+    )
+    EXPERIMENT_SANDBOX_INFERENCE_MAX_TURNS: int = Field(default=2, ge=2, le=2)
+    EXPERIMENT_SANDBOX_INFERENCE_TIMEOUT_SECONDS: int = Field(
+        default=300, ge=30, le=600
+    )
+    EXPERIMENT_ASSISTANT_MAX_CNY: float = Field(default=20, gt=0, le=100)
+    EXPERIMENT_LLM_MAX_CNY: float = Field(default=40, gt=0, le=200)
+    EXPERIMENT_LLM_GLOBAL_MAX_CNY: float = Field(default=200, gt=0, le=10000)
+    EXPERIMENT_REPOSITORY_MAX_FILES: int = Field(default=500, ge=48, le=1000)
+    EXPERIMENT_REPOSITORY_MAX_FILE_BYTES: int = Field(
+        default=2 * 1024 * 1024, ge=64 * 1024, le=16 * 1024 * 1024
+    )
+    EXPERIMENT_REPOSITORY_MAX_TOTAL_BYTES: int = Field(
+        default=64 * 1024 * 1024, ge=1024 * 1024, le=512 * 1024 * 1024
+    )
+    EXPERIMENT_ARCHIVE_MAX_BYTES: int = Field(
+        default=64 * 1024 * 1024, ge=1024 * 1024, le=512 * 1024 * 1024
+    )
+    EXPERIMENT_ARTIFACT_MAX_BYTES: int = Field(
+        default=16 * 1024 * 1024, ge=1024 * 1024, le=128 * 1024 * 1024
+    )
+    EXPERIMENT_PUBLIC_ARTIFACT_MAX_BYTES: int = Field(
+        default=8 * 1024 * 1024, ge=256 * 1024, le=32 * 1024 * 1024
+    )
+    EXPERIMENT_WORKER_ID: str = "paper-experiment-worker-1"
+    EXPERIMENT_POLL_INTERVAL_SECONDS: float = Field(default=5, ge=1, le=60)
+    EXPERIMENT_LEASE_SECONDS: int = Field(default=300, ge=60, le=1800)
+
     CLAUDE_BIN: str = "claude"
     CLAUDE_TIMEOUT_SECONDS: int = Field(default=900, ge=30)
     CLAUDE_ANALYSIS_MAX_TURNS: int = Field(default=8, ge=4, le=16)
@@ -84,6 +146,19 @@ class Settings(BaseSettings):
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise RuntimeError(f"Missing required worker settings: {', '.join(missing)}")
+
+    def require_experiment_secrets(self) -> None:
+        required = {
+            "DEEPSEEK_API_KEY": self.DEEPSEEK_API_KEY,
+            "SUPABASE_URL": self.SUPABASE_URL,
+            "SUPABASE_SERVICE_ROLE_KEY": self.SUPABASE_SERVICE_ROLE_KEY,
+            "E2B_API_KEY": self.E2B_API_KEY,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise RuntimeError(
+                f"Missing required experiment-worker settings: {', '.join(missing)}"
+            )
 
     @staticmethod
     def reveal(value: SecretStr | None) -> str | None:

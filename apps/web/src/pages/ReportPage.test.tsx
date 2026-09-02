@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { LanguageProvider } from "../lib/language";
 import { ThemeProvider } from "../lib/theme";
-import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfile, PresentationIdea, ReportPresentationV4, ReportRecord } from "../lib/types";
+import type { AnalysisReport, GroundedClaim, IdeaAssessment, PaperEvidenceProfile, PresentationIdea, ReportPresentationV4, ReportRecord, SharedExperimentSummary } from "../lib/types";
 import { ReportPage, SharedReportView } from "./ReportPage";
 
-const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), getReportSection: vi.fn().mockResolvedValue({ content: null }), prefetchSourcePdf: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn() }));
+const api = vi.hoisted(() => ({ getReport: vi.fn(), getFullReport: vi.fn(), getReportSection: vi.fn().mockResolvedValue({ content: null }), prefetchSourcePdf: vi.fn(), createShare: vi.fn(), revokeShare: vi.fn(), downloadText: vi.fn(), getSharedExperimentArtifact: vi.fn(), listReportExperiments: vi.fn().mockResolvedValue({ experiments: [], manualEnabled: true, automaticEnabled: false }), startIdeaExperiment: vi.fn(), subscribeToReportExperiments: vi.fn(() => () => undefined) }));
 const scrollIntoView = vi.fn();
 let intersectionObserverCallback: IntersectionObserverCallback | undefined;
 vi.mock("../lib/api", () => api);
@@ -163,6 +163,10 @@ describe("ReportPage", () => {
     api.getReport.mockReset();
     api.getReport.mockResolvedValue(fixture());
     api.getFullReport.mockResolvedValue(fixture());
+    api.listReportExperiments.mockReset();
+    api.listReportExperiments.mockResolvedValue({ experiments: [], manualEnabled: true, automaticEnabled: false });
+    api.subscribeToReportExperiments.mockReset();
+    api.subscribeToReportExperiments.mockReturnValue(() => undefined);
   });
 
   it("renders a concise legacy-compatible report without ids, raw audit, or mixed languages", async () => {
@@ -521,5 +525,79 @@ describe("ReportPage", () => {
     await user.click(screen.getAllByRole("button", { name: /Evidence Paper.*第 2 页/ })[0]);
     expect(screen.getByText("外部论文证据")).toBeInTheDocument();
     expect(await screen.findByText("secure-pdf-viewer")).toBeInTheDocument();
+  });
+
+  it("starts an Idea experiment from a private V4 report and links to its workspace", async () => {
+    const user = userEvent.setup();
+    const record = v4Fixture();
+    api.getReport.mockResolvedValue(record);
+    api.startIdeaExperiment.mockResolvedValue({
+      id: "experiment-1", reportId: record.id, jobId: record.job_id, ideaKey: "idea-v4", ideaRank: 1,
+      ideaTitleZh: "证据契约驱动的网络实验忠实度验证", ideaTitleEn: "Evidence-contract fidelity validation",
+      status: "queued", stage: "spec_freeze", outcome: "pending", progress: 0, runCount: 0,
+      maxUserValidations: 3, e2bCostUsd: 0, llmCostCny: 0, createdAt: record.created_at, updatedAt: record.created_at,
+    });
+    renderReport();
+
+    await user.click(await screen.findByRole("tab", { name: "论文级 Idea" }));
+    await user.click(screen.getByRole("button", { name: "生成代码并验证" }));
+    expect(api.startIdeaExperiment).toHaveBeenCalledWith("report", "idea-v4");
+    const workspaceLink = await screen.findByRole("link", { name: /打开实验工作区/ });
+    expect(workspaceLink).toHaveAttribute("href", "/experiments/experiment-1");
+    expect(workspaceLink).toHaveClass("button", "button-secondary");
+  });
+
+  it("hides manual experiment creation while the staged feature is disabled", async () => {
+    const user = userEvent.setup();
+    api.listReportExperiments.mockResolvedValue({
+      experiments: [], manualEnabled: false, automaticEnabled: false,
+    });
+    api.getReport.mockResolvedValue(v4Fixture());
+    renderReport();
+
+    await user.click(await screen.findByRole("tab", { name: "论文级 Idea" }));
+    await waitFor(() => expect(api.listReportExperiments).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "生成代码并验证" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Idea 实验验证" })).not.toBeInTheDocument();
+  });
+
+  it("does not expose experiment controls on a public V4 share", async () => {
+    const user = userEvent.setup();
+    render(<LanguageProvider><ThemeProvider><MemoryRouter><SharedReportView record={v4Fixture()}/></MemoryRouter></ThemeProvider></LanguageProvider>);
+    await user.click(await screen.findByRole("tab", { name: "论文级 Idea" }));
+    expect(screen.queryByRole("button", { name: "生成代码并验证" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /实验工作区/ })).not.toBeInTheDocument();
+    expect(api.listReportExperiments).not.toHaveBeenCalled();
+  });
+
+  it("shows only sanitized public experiment outcomes and public-safe artifact actions on a shared report", async () => {
+    const experiments: SharedExperimentSummary[] = [{
+      ideaKey: "idea-v4",
+      ideaRank: 1,
+      outcome: "initial_support",
+      summary: {
+        outcome: "initial_support",
+        summary_zh: "冻结评价器显示主指标达到预设成功阈值。",
+        summary_en: "The frozen evaluator reports that the primary metric meets its threshold.",
+        primary_metric: "fidelity_gain",
+        primary_value: 0.18,
+        threshold: 0.1,
+        direction: "higher",
+      },
+      artifacts: [
+        { artifactId: "11111111-1111-4111-8111-111111111111", kind: "plot", fileName: "fidelity.png", mimeType: "image/png", byteSize: 2048 },
+        { artifactId: "22222222-2222-4222-8222-222222222222", kind: "metrics", fileName: "metrics.json", mimeType: "application/json", byteSize: 512 },
+      ],
+    }];
+    render(<LanguageProvider><ThemeProvider><MemoryRouter><SharedReportView record={v4Fixture()} publicExperiments={experiments} shareToken={"s".repeat(40)}/></MemoryRouter></ThemeProvider></LanguageProvider>);
+
+    expect(await screen.findByRole("region", { name: "公开实验结果" })).toBeInTheDocument();
+    expect(screen.getByText("冻结评价器显示主指标达到预设成功阈值。")).toBeInTheDocument();
+    expect(screen.getByText("fidelity_gain")).toBeInTheDocument();
+    expect(screen.getByText("0.18")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看公开图表" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "下载公开指标" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /实验工作区/ })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("11111111-1111-4111-8111-111111111111");
   });
 });

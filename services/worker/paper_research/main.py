@@ -15,6 +15,7 @@ from .clients.llm import ClaudeCodeClient
 from .clients.local import LocalCheckpointRepository
 from .config import DEFAULT_SECRETS_FILE, Settings
 from .document import validate_pdf
+from .experiment_worker import run_experiment_worker
 from .idea_replay import IdeaReplayRunner
 from .models import AnalysisMode, AnalysisReport, Job, JobFile, JobStatus
 from .pipeline import AnalysisPipeline, estimate_usage_cny
@@ -48,6 +49,7 @@ def doctor(settings: Settings) -> int:
         "openalex": bool(settings.OPENALEX_API_KEY),
         "serper": bool(settings.SERPER_API_KEY),
         "tavily": bool(settings.TAVILY_API_KEY),
+        "e2b_key": bool(settings.E2B_API_KEY),
     }
     if checks["claude_binary"]:
         import subprocess
@@ -75,6 +77,19 @@ def doctor(settings: Settings) -> int:
                 "pro_cli_alias": ClaudeCodeClient._claude_cli_model(
                     settings.CLAUDE_PRO_MODEL
                 ),
+                "e2b_pilot_enabled": settings.E2B_PILOT_ENABLED,
+                "e2b_manual_experiment_enabled": settings.E2B_MANUAL_EXPERIMENT_ENABLED,
+                "e2b_auto_experiment_enabled": settings.E2B_AUTO_EXPERIMENT_ENABLED,
+                "e2b_template_id": settings.E2B_TEMPLATE_ID,
+                "experiment_worker_id": settings.EXPERIMENT_WORKER_ID,
+                "experiment_limits": {
+                    "cpu": settings.E2B_CPU_COUNT,
+                    "memory_mib": settings.E2B_MEMORY_MIB,
+                    "disk_mib": settings.E2B_DISK_MIB,
+                    "timeout_seconds": settings.E2B_RUN_TIMEOUT_SECONDS,
+                    "global_concurrency": settings.E2B_GLOBAL_CONCURRENCY,
+                    "spend_cap_usd": settings.E2B_MAX_SPEND_USD,
+                },
             },
             indent=2,
         )
@@ -215,6 +230,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("worker", help="Poll Supabase and process jobs")
+    subparsers.add_parser(
+        "experiment-worker", help="Run isolated E2B Idea experiments and workspace actions"
+    )
     subparsers.add_parser("doctor", help="Check local configuration without network calls")
     local = subparsers.add_parser("analyze-local", help="Run the cloud pipeline without Supabase")
     local.add_argument("files", nargs="+", type=Path)
@@ -252,6 +270,10 @@ def main() -> None:
             settings.require_worker_secrets()
             code = 0
             asyncio.run(run_worker(settings))
+        elif args.command == "experiment-worker":
+            settings.require_experiment_secrets()
+            code = 0
+            asyncio.run(run_experiment_worker(settings))
         elif args.command == "analyze-local":
             if not settings.DEEPSEEK_API_KEY or not settings.MINERU_API_TOKEN:
                 raise RuntimeError("Rotated DEEPSEEK_API_KEY and MINERU_API_TOKEN are required")

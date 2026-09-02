@@ -14,6 +14,7 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) =
 const JobPage = lazy(() => import("./pages/JobPage").then((module) => ({ default: module.JobPage })));
 const NewAnalysisPage = lazy(() => import("./pages/NewAnalysisPage").then((module) => ({ default: module.NewAnalysisPage })));
 const ReportPage = lazy(() => import("./pages/ReportPage").then((module) => ({ default: module.ReportPage })));
+const ExperimentWorkspacePage = lazy(() => import("./pages/ExperimentWorkspacePage").then((module) => ({ default: module.ExperimentWorkspacePage })));
 const SharedReportPage = lazy(() => import("./pages/SharedReportPage").then((module) => ({ default: module.SharedReportPage })));
 
 function Loading() {
@@ -59,7 +60,7 @@ function SetupRequired() {
 }
 
 function PrivateApp({ session, isAdmin }: { session: Session; isAdmin: boolean }) {
-  return <Layout email={session.user.email} isAdmin={isAdmin}><Suspense fallback={<Loading/>}><Routes><Route path="/" element={<DashboardPage/>}/><Route path="/new" element={<NewAnalysisPage/>}/><Route path="/jobs/:id" element={<JobPage/>}/><Route path="/reports/:id" element={<ReportPage/>}/>{isAdmin && <Route path="/admin" element={<AdminPage/>}/>} {isAdmin && <Route path="/admin/jobs/:id" element={<JobPage adminMode/>}/>} {isAdmin && <Route path="/admin/reports/:id" element={<ReportPage readOnly/>}/>}<Route path="*" element={<Navigate to={isAdmin && window.location.hash.startsWith("#/admin") ? "/admin" : "/"} replace/>}/></Routes></Suspense></Layout>;
+  return <Layout email={session.user.email} isAdmin={isAdmin}><Suspense fallback={<Loading/>}><Routes><Route path="/" element={<DashboardPage/>}/><Route path="/new" element={<NewAnalysisPage/>}/><Route path="/jobs/:id" element={<JobPage/>}/><Route path="/reports/:id" element={<ReportPage/>}/><Route path="/experiments/:id" element={<ExperimentWorkspacePage/>}/>{isAdmin && <Route path="/admin" element={<AdminPage/>}/>} {isAdmin && <Route path="/admin/jobs/:id" element={<JobPage adminMode/>}/>} {isAdmin && <Route path="/admin/reports/:id" element={<ReportPage readOnly/>}/>} {isAdmin && <Route path="/admin/experiments/:id" element={<ExperimentWorkspacePage adminMode/>}/>}<Route path="*" element={<Navigate to={isAdmin && window.location.hash.startsWith("#/admin") ? "/admin" : "/"} replace/>}/></Routes></Suspense></Layout>;
 }
 
 export default function App() {

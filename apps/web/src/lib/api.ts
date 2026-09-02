@@ -1,5 +1,22 @@
-import { requireSupabase } from "./supabase";
-import type { AdminDeletionRequest, AdminJobRow, AdminUserRow, JobRecord, ReportRecord, ReportSectionName, ReportSectionResponse, SourcePdfResponse } from "./types";
+import { requireSupabase, supabaseAnonKey, supabaseUrl } from "./supabase";
+import type {
+  AdminDeletionRequest,
+  AdminJobRow,
+  AdminUserRow,
+  ExperimentAction,
+  ExperimentArtifact,
+  ExperimentFileContent,
+  ExperimentFileEntry,
+  ExperimentSummary,
+  ExperimentWorkspace,
+  JobRecord,
+  ReportRecord,
+  ReportExperimentListing,
+  ReportSectionName,
+  ReportSectionResponse,
+  SharedExperimentSummary,
+  SourcePdfResponse,
+} from "./types";
 
 export async function checkIsAdmin(): Promise<boolean> {
   const { data, error } = await requireSupabase().rpc("is_admin");
@@ -154,10 +171,26 @@ export async function revokeShare(shareId: string) {
   if (error) throw error;
 }
 
-export async function getSharedReport(token: string): Promise<{ report: ReportRecord; expiresAt: string }> {
+export async function getSharedReport(token: string): Promise<{ report: ReportRecord; experiments: SharedExperimentSummary[]; expiresAt: string }> {
   const { data, error } = await requireSupabase().functions.invoke("get-share", { body: { token } });
   if (error) throw error;
-  return data;
+  const response = data as { report: ReportRecord; experiments?: SharedExperimentSummary[]; expiresAt: string };
+  return { ...response, experiments: response.experiments ?? [] };
+}
+
+export async function getSharedExperimentArtifact(token: string, artifactId: string, download = false): Promise<Blob> {
+  if (!supabaseUrl || !supabaseAnonKey) throw new Error("Supabase frontend environment is not configured");
+  const response = await fetch(`${supabaseUrl}/functions/v1/get-shared-experiment-artifact`, {
+    method: "POST",
+    headers: {
+      apikey: supabaseAnonKey,
+      Authorization: `Bearer ${supabaseAnonKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ token, artifactId, download }),
+  });
+  if (!response.ok) throw new Error("Shared experiment artifact is unavailable");
+  return response.blob();
 }
 
 export function downloadText(name: string, text: string, type: string) {
@@ -166,4 +199,109 @@ export function downloadText(name: string, text: string, type: string) {
   link.download = name;
   link.click();
   URL.revokeObjectURL(link.href);
+}
+
+async function invokeExperiment<T>(name: string, body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await requireSupabase().functions.invoke(name, { body });
+  if (error) throw error;
+  return data as T;
+}
+
+export async function listReportExperiments(reportId: string): Promise<ReportExperimentListing> {
+  const data = await invokeExperiment<{
+    experiments?: ExperimentSummary[];
+    manualEnabled?: boolean;
+    automaticEnabled?: boolean;
+  } | ExperimentSummary[]>("list-report-experiments", { reportId });
+  if (Array.isArray(data)) {
+    return { experiments: data, manualEnabled: false, automaticEnabled: false };
+  }
+  return {
+    experiments: data.experiments ?? [],
+    manualEnabled: data.manualEnabled === true,
+    automaticEnabled: data.automaticEnabled === true,
+  };
+}
+
+export async function startIdeaExperiment(reportId: string, ideaKey: string): Promise<ExperimentSummary> {
+  const data = await invokeExperiment<{ experiment: ExperimentSummary }>("start-idea-experiment", { reportId, ideaKey });
+  return data.experiment;
+}
+
+export async function getExperimentWorkspace(experimentId: string): Promise<ExperimentWorkspace> {
+  return invokeExperiment<ExperimentWorkspace>("get-experiment-workspace", { experimentId });
+}
+
+export async function readExperimentFile(experimentId: string, path: string): Promise<ExperimentFileContent> {
+  return invokeExperiment<ExperimentFileContent>("read-experiment-file", { experimentId, path });
+}
+
+export async function saveExperimentFile(
+  experimentId: string,
+  path: string,
+  content: string,
+  options: { expectedSha256?: string; baseRevisionId?: string | null } = {},
+): Promise<{ file: ExperimentFileEntry & { sha256: string }; revision?: { id: string } }> {
+  return invokeExperiment("save-experiment-file", { experimentId, path, content, ...options });
+}
+
+export async function moveExperimentFile(experimentId: string, fromPath: string, toPath: string): Promise<{ files: ExperimentFileEntry[]; revision?: { id: string } }> {
+  return invokeExperiment("move-experiment-file", { experimentId, fromPath, toPath });
+}
+
+export async function deleteExperimentFile(experimentId: string, path: string): Promise<{ files: ExperimentFileEntry[]; revision?: { id: string } }> {
+  return invokeExperiment("delete-experiment-file", { experimentId, path });
+}
+
+export async function submitExperimentAction(
+  experimentId: string,
+  input: {
+    kind: "assistant" | "command" | "validation" | "rollback";
+    prompt?: string;
+    command?: string;
+    revisionId?: string;
+  },
+): Promise<ExperimentAction> {
+  const data = await invokeExperiment<{ action: ExperimentAction }>("submit-experiment-action", { experimentId, ...input });
+  return data.action;
+}
+
+export async function createTerminalTicket(experimentId: string, cols: number, rows: number, writable = false): Promise<{ websocketUrl: string; expiresAt: string }> {
+  return invokeExperiment("create-terminal-ticket", { experimentId, cols, rows, mode: writable ? "write" : "read" });
+}
+
+export async function cancelExperiment(experimentId: string): Promise<{ experiment: ExperimentSummary }> {
+  return invokeExperiment("cancel-experiment", { experimentId });
+}
+
+export async function deleteExperiment(experimentId: string): Promise<{ state: "pending" | "deleted" }> {
+  return invokeExperiment("delete-experiment", { experimentId });
+}
+
+export async function downloadExperimentRepository(experimentId: string): Promise<{ signedUrl: string; expiresAt: string }> {
+  return invokeExperiment("download-experiment-repository", { experimentId });
+}
+
+export async function getExperimentArtifact(experimentId: string, artifactId: string): Promise<{ signedUrl: string; expiresAt: string; artifact?: ExperimentArtifact }> {
+  return invokeExperiment("get-experiment-artifact", { experimentId, artifactId });
+}
+
+export function subscribeToExperiment(experimentId: string, onChange: () => void): () => void {
+  const client = requireSupabase();
+  const channel = client
+    .channel(`experiment:${experimentId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "idea_experiments", filter: `id=eq.${experimentId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "experiment_actions", filter: `experiment_id=eq.${experimentId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "experiment_runs", filter: `experiment_id=eq.${experimentId}` }, onChange)
+    .subscribe();
+  return () => { void client.removeChannel(channel); };
+}
+
+export function subscribeToReportExperiments(reportId: string, onChange: () => void): () => void {
+  const client = requireSupabase();
+  const channel = client
+    .channel(`report-experiments:${reportId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "idea_experiments", filter: `report_id=eq.${reportId}` }, onChange)
+    .subscribe();
+  return () => { void client.removeChannel(channel); };
 }

@@ -6,7 +6,7 @@ import { ReportV3 } from "../components/ReportV3";
 import { createShare, downloadText, getReport, getReportSection, revokeShare } from "../lib/api";
 import { useLanguage } from "../lib/language";
 import { axisLabel, comparisonCsv, displayPresentation, humanReportMarkdown, isV3Presentation, isV4Presentation, localized, reportWarnings, scoreLevel } from "../lib/report";
-import type { CandidatePaper, Evidence, PresentationIdea, ProblemElement, ProblemStatement, ReportRecord, ReportSectionName, ResearchTheme } from "../lib/types";
+import type { CandidatePaper, Evidence, PresentationIdea, ProblemElement, ProblemStatement, ReportRecord, ReportSectionName, ResearchTheme, SharedExperimentSummary } from "../lib/types";
 
 type ReportTab = "overview" | "problem" | "landscape" | "ideas";
 
@@ -176,7 +176,7 @@ export function mergeReportSection(record: ReportRecord, section: ReportSectionN
   return { ...record, content };
 }
 
-function ReportView({ record, publicShare = false, hideShare = false, onSectionRequest }: { record: ReportRecord; publicShare?: boolean; hideShare?: boolean; onSectionRequest?: (section: ReportSectionName) => Promise<void> }) {
+function ReportView({ record, publicShare = false, hideShare = false, adminMode = false, publicExperiments = [], shareToken = "", onSectionRequest }: { record: ReportRecord; publicShare?: boolean; hideShare?: boolean; adminMode?: boolean; publicExperiments?: SharedExperimentSummary[]; shareToken?: string; onSectionRequest?: (section: ReportSectionName) => Promise<void> }) {
   const evidence = record.content.problem_statements.flatMap((problem) => problem.evidence);
   if (isV4Presentation(record.content.presentation)) {
     for (const profile of record.content.presentation.literature_landscape.profiles) {
@@ -190,7 +190,7 @@ function ReportView({ record, publicShare = false, hideShare = false, onSectionR
     <ReportCitationProvider evidence={evidence} papers={record.content.related_papers} reportId={record.id} pdfEnabled={!publicShare}>
       {isV4Presentation(record.content.presentation) ? (
         <Suspense fallback={<div className="report-loading mx-auto max-w-6xl"><div className="h-56 animate-pulse rounded-2xl bg-subtle" /></div>}>
-          <ReportV4 record={record} presentation={record.content.presentation} publicShare={publicShare} hideShare={hideShare} onSectionRequest={onSectionRequest} />
+          <ReportV4 record={record} presentation={record.content.presentation} publicShare={publicShare} hideShare={hideShare} adminMode={adminMode} publicExperiments={publicExperiments} shareToken={shareToken} onSectionRequest={onSectionRequest} />
         </Suspense>
       ) : isV3Presentation(record.content.presentation) ? (
         <ReportV3 record={record} presentation={record.content.presentation} shared={sharedUi} />
@@ -217,7 +217,7 @@ export function ReportPage({ readOnly = false }: { readOnly?: boolean }) {
   }, [id]);
   if (error) return <div className="panel p-6 text-danger">{error}</div>;
   if (!record) return <div className="report-loading mx-auto max-w-6xl" aria-label={text("加载报告", "Loading report")}><div className="h-5 w-36 animate-pulse rounded bg-subtle"/><div className="mt-4 h-10 max-w-3xl animate-pulse rounded-lg bg-subtle"/><div className="mt-8 grid gap-4 lg:grid-cols-3"><div className="h-48 animate-pulse rounded-2xl bg-subtle"/><div className="h-48 animate-pulse rounded-2xl bg-subtle"/><div className="h-48 animate-pulse rounded-2xl bg-subtle"/></div><p className="mt-6 text-sm text-muted">{text("正在整理报告内容…", "Preparing the report…")}</p></div>;
-  return <><Link className="button button-secondary no-print mb-6 inline-flex" to={readOnly ? `/admin/jobs/${record.job_id}` : `/jobs/${record.job_id}`}><ArrowLeft className="h-4 w-4"/>{text("返回任务详情", "Back to job")}</Link><ReportView record={record} hideShare={readOnly} onSectionRequest={loadSection}/></>;
+  return <><Link className="button button-secondary no-print mb-6 inline-flex" to={readOnly ? `/admin/jobs/${record.job_id}` : `/jobs/${record.job_id}`}><ArrowLeft className="h-4 w-4"/>{text("返回任务详情", "Back to job")}</Link><ReportView record={record} hideShare={readOnly} adminMode={readOnly} onSectionRequest={loadSection}/></>;
 }
 
-export function SharedReportView({ record, onSectionRequest }: { record: ReportRecord; onSectionRequest?: (section: ReportSectionName) => Promise<void> }) { return <ReportView record={record} publicShare onSectionRequest={onSectionRequest}/>; }
+export function SharedReportView({ record, publicExperiments = [], shareToken = "", onSectionRequest }: { record: ReportRecord; publicExperiments?: SharedExperimentSummary[]; shareToken?: string; onSectionRequest?: (section: ReportSectionName) => Promise<void> }) { return <ReportView record={record} publicShare publicExperiments={publicExperiments} shareToken={shareToken} onSectionRequest={onSectionRequest}/>; }
