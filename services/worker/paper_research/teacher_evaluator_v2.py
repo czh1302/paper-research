@@ -949,3 +949,7 @@ __all__ = [
     "load_frozen_v1_assets",
     "main",
 ]
+
+
+if __name__ == "__main__":
+    main()

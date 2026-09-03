@@ -319,9 +319,12 @@ class TeacherBenchmarkV2Supervisor:
                 tail = "\n".join(
                     log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]
                 )
+            next_status = "retrying" if process.returncode != 2 else "invalid_input"
+            if int(entry.get("attempts") or 0) >= 4 and next_status == "retrying":
+                next_status = "paused_error"
             entry.update(
                 {
-                    "status": "retrying" if process.returncode != 2 else "invalid_input",
+                    "status": next_status,
                     "pid": None,
                     "last_return_code": process.returncode,
                     "safe_error": redact(tail)[-1500:],
@@ -384,9 +387,12 @@ class TeacherBenchmarkV2Supervisor:
             await self.reap()
             if not self.canary_passed():
                 self.state["effective_concurrency"] = 1
-                if canary_case.id not in self.children and self.state["cases"][canary_case.id][
-                    "status"
-                ] not in {"completed", "invalid_input"}:
+                if (
+                    canary_case.id not in self.children
+                    and self.state["cases"][canary_case.id]["status"]
+                    not in {"completed", "invalid_input", "paused_error"}
+                    and self.ready(self.state["cases"][canary_case.id])
+                ):
                     await self.launch(canary_case)
             else:
                 if self.state["canary"].get("status") != "passed":
@@ -407,6 +413,7 @@ class TeacherBenchmarkV2Supervisor:
                         "completed",
                         "running",
                         "invalid_input",
+                        "paused_error",
                     } or not self.ready(entry):
                         continue
                     await self.launch(case)
@@ -427,6 +434,10 @@ class TeacherBenchmarkV2Supervisor:
                 return 0
             if "invalid_input" in statuses:
                 self.state["status"] = "invalid_input"
+                self.save()
+                return 2
+            if "paused_error" in statuses and not self.children:
+                self.state["status"] = "paused_error"
                 self.save()
                 return 2
             self.save()
