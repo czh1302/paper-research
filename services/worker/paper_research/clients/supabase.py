@@ -772,6 +772,18 @@ class SupabaseRepository:
             },
         )
         report_id = str(response.json())
+        for name, content in (sections or {}).items():
+            await self._request(
+                "POST",
+                "/rest/v1/report_sections?on_conflict=report_id,section",
+                headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+                timeout=180,
+                json={
+                    "report_id": report_id,
+                    "section": name,
+                    "content": _postgres_json(content),
+                },
+            )
         await self._request(
             "PATCH",
             f"/rest/v1/report_evidence_assets?job_id=eq.{quote(job_id)}",
