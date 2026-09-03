@@ -636,7 +636,7 @@ class SupabaseRepository:
             "GET",
             "/rest/v1/jobs"
             f"?benchmark_run_id=eq.{quote(benchmark_run_id)}"
-            "&select=id,status,benchmark_paper_id,benchmark_case_id,report:reports(id)"
+            "&select=id,status,benchmark_paper_id,report:reports(id)"
             "&order=created_at.asc",
         )
         return list(response.json() or [])
