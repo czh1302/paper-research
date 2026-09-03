@@ -103,6 +103,25 @@ class Settings(BaseSettings):
         default=300, ge=30, le=600
     )
     EXPERIMENT_ASSISTANT_MAX_CNY: float = Field(default=20, gt=0, le=100)
+    # Repository generation may bypass Claude Code when its wrapper cannot
+    # return auditable token receipts. The direct transport is Worker-only and
+    # remains subject to the same per-call and per-experiment database budgets.
+    EXPERIMENT_REPOSITORY_TRANSPORT: Literal["claude_code", "deepseek_api"] = (
+        "deepseek_api"
+    )
+    EXPERIMENT_REPOSITORY_API_MAX_OUTPUT_TOKENS: int = Field(
+        default=32_768, ge=8_192, le=65_536
+    )
+    EXPERIMENT_REPOSITORY_TIMEOUT_SECONDS: int = Field(
+        default=300, ge=60, le=900
+    )
+    EXPERIMENT_REPOSITORY_MIN_FILES: int = Field(default=24, ge=18, le=40)
+    EXPERIMENT_REPOSITORY_MIN_TOTAL_BYTES: int = Field(
+        default=60_000, ge=30_000, le=300_000
+    )
+    EXPERIMENT_REPOSITORY_MIN_CODE_LINES: int = Field(
+        default=800, ge=350, le=4_000
+    )
     CLAUDE_VISION_MODEL: str = "deepseek-v4-flash-vision-exp"
     EXPERIMENT_LLM_MAX_CNY: float = Field(default=40, gt=0, le=200)
     EXPERIMENT_LLM_GLOBAL_MAX_CNY: float = Field(default=200, gt=0, le=10000)

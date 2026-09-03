@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
+import httpx
 from pydantic import BaseModel
 
 from ..models import ProviderUsage
@@ -31,6 +32,177 @@ class ClaudeCodeStructuredOutputError(ClaudeCodeError):
     def __init__(self, message: str, structured_output: Any) -> None:
         super().__init__(message)
         self.structured_output = structured_output
+
+
+class DeepSeekAPIError(ClaudeCodeError):
+    """A server-side DeepSeek API request failed.
+
+    This deliberately subclasses the existing provider error so experiment
+    recovery and budget settlement keep the same fail-closed behavior.
+    """
+
+
+class DeepSeekAPIClient:
+    """Small structured-output client used only by repository generation.
+
+    Claude Code remains the default model transport. Repository generation can
+    opt into this client when the CLI cannot return an auditable usage receipt.
+    The API key never leaves the Worker, and every accepted result is journaled
+    and charged through the same callbacks as Claude Code results.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "deepseek-v4-flash",
+        base_url: str = "https://api.deepseek.com",
+        timeout_seconds: int = 300,
+        max_output_tokens: int = 32_768,
+        reasoning_effort: str = "high",
+        usage_callback: Callable[[ProviderUsage], Any] | None = None,
+        strict_usage_callback: bool = False,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.max_output_tokens = max_output_tokens
+        self.reasoning_effort = reasoning_effort
+        self.usage_callback = usage_callback
+        self.strict_usage_callback = strict_usage_callback
+
+    async def structured(
+        self,
+        prompt: str,
+        response_model: type[SchemaModel],
+        *,
+        model: str | None = None,
+        stage: str = "unspecified",
+        usage_id: str | None = None,
+        before_usage_callback: (
+            Callable[[ProviderUsage | None, SchemaModel | None], Any] | None
+        ) = None,
+        timeout_seconds: int | None = None,
+        usage_metadata: dict[str, Any] | None = None,
+        **_unsupported: Any,
+    ) -> SchemaModel:
+        provider_model = model or self.model
+        schema = json.dumps(
+            response_model.model_json_schema(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        request = {
+            "model": provider_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return exactly one JSON object matching the supplied JSON Schema. "
+                        "Do not wrap JSON in Markdown and do not omit required fields.\n"
+                        f"JSON SCHEMA:\n{schema}"
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": self.reasoning_effort,
+            "max_tokens": self.max_output_tokens,
+            "stream": False,
+        }
+        effective_timeout = timeout_seconds or self.timeout_seconds
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(effective_timeout, connect=30.0),
+            ) as client:
+                response = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request,
+                )
+        except httpx.HTTPError as error:
+            raise DeepSeekAPIError(f"DeepSeek API request failed: {error}") from error
+
+        if response.status_code < 200 or response.status_code >= 300:
+            diagnostic = redact(response.text or "no diagnostic output")[-2000:]
+            raise DeepSeekAPIError(
+                f"DeepSeek API exited with HTTP {response.status_code}: {diagnostic}"
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise DeepSeekAPIError("DeepSeek API returned invalid JSON") from error
+        if not isinstance(payload, dict):
+            raise DeepSeekAPIError("DeepSeek API returned an invalid response object")
+
+        structured: Any = None
+        parsed: SchemaModel | None = None
+        parse_error: ClaudeCodeStructuredOutputError | None = None
+        try:
+            choices = payload.get("choices") or []
+            content = choices[0]["message"]["content"]
+            structured = json.loads(content) if isinstance(content, str) else content
+            parsed = response_model.model_validate(structured)
+        except (IndexError, KeyError, json.JSONDecodeError, TypeError, ValueError) as error:
+            parse_error = ClaudeCodeStructuredOutputError(
+                f"DeepSeek API returned invalid structured output: {error}",
+                structured,
+            )
+
+        usage = payload.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        output_tokens = int(usage.get("completion_tokens", 0) or 0)
+        if not input_tokens and not output_tokens:
+            if before_usage_callback:
+                callback_result = before_usage_callback(None, parsed)
+                if asyncio.iscoroutine(callback_result):
+                    await callback_result
+            if self.strict_usage_callback:
+                raise ClaudeCodeAccountingError(
+                    "DeepSeek API returned no auditable provider usage"
+                )
+        else:
+            usage_record = ProviderUsage(
+                provider="deepseek",
+                model=provider_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                metadata={
+                    "failed": parse_error is not None,
+                    "transport": "deepseek_api",
+                    "stage": stage,
+                    "provider_request_id": payload.get("id"),
+                    **(usage_metadata or {}),
+                    **({"experiment_usage_id": usage_id} if usage_id else {}),
+                },
+            )
+            if before_usage_callback:
+                callback_result = before_usage_callback(usage_record, parsed)
+                if asyncio.iscoroutine(callback_result):
+                    await callback_result
+            if self.usage_callback:
+                try:
+                    callback_result = self.usage_callback(usage_record)
+                    if asyncio.iscoroutine(callback_result):
+                        await callback_result
+                except Exception as error:
+                    LOGGER.warning("Provider usage callback failed: %s", error)
+                    if self.strict_usage_callback:
+                        raise ClaudeCodeAccountingError(
+                            "Provider usage could not be durably accounted"
+                        ) from error
+
+        if parse_error is not None:
+            raise parse_error
+        if parsed is None:  # pragma: no cover - guarded above
+            raise DeepSeekAPIError("DeepSeek API returned no structured output")
+        return parsed
 
 
 class ClaudeCodeClient:

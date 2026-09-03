@@ -21,6 +21,7 @@ from paper_research.experiment_models import (
     AssistantWorkspaceChange,
     CommandExecution,
     ExperimentRecord,
+    GeneratedRepositoryFile,
     safe_repository_path,
     specification_hash,
 )
@@ -30,9 +31,11 @@ from paper_research.experiment_worker import (
     ExperimentRunDeadlineExceeded,
     ExperimentWorker,
     LeaseLost,
+    RichRepositoryManifest,
     WorkspaceResourceLimitExceeded,
     _deterministic_exploratory_repository,
     _exploratory_fallback_specification,
+    _validate_generated_repository_quality,
     evaluate_metrics,
     validate_pilot_specification,
 )
@@ -293,6 +296,89 @@ def test_exploratory_fallback_repository_runs_without_model_or_network(tmp_path)
     assert json.loads(baseline.stdout)["baseline"] == pytest.approx(raw["baseline"])
     assert json.loads(intervention.stdout) == raw
     assert raw["intervention"] - raw["baseline"] > 0.01
+
+    with pytest.raises(ValueError, match="at least 24"):
+        _validate_generated_repository_quality(
+            manifest,
+            files,
+            min_files=24,
+            min_total_bytes=60_000,
+            min_code_lines=800,
+        )
+
+
+def test_substantive_repository_quality_gate_accepts_layered_code() -> None:
+    paths = [
+        "README.md",
+        "docs/architecture.md",
+        "pyproject.toml",
+        "config/default.yaml",
+        "src/pilot/__init__.py",
+        "src/pilot/config.py",
+        "src/pilot/data.py",
+        "src/pilot/models.py",
+        "src/pilot/baseline.py",
+        "src/pilot/intervention.py",
+        "src/pilot/evaluation.py",
+        "src/pilot/artifacts.py",
+        "src/pilot/orchestration.py",
+        "scripts/run_baseline.py",
+        "scripts/run_intervention.py",
+        "scripts/run_evaluation.py",
+        "scripts/run_full_pilot.py",
+        "tests/test_data.py",
+        "tests/test_baseline.py",
+        "tests/test_intervention.py",
+        "tests/test_evaluation.py",
+        "tests/test_orchestration.py",
+        "experiments/compare_variants.py",
+        "requirements-dev.txt",
+        "LICENSE",
+    ]
+    manifest = RichRepositoryManifest.model_validate(
+        {
+            "architecture_zh": "分层实现数据、基线、干预、评价、命令入口和可复现实验配置。",
+            "architecture_en": "A layered implementation of data, baseline, intervention, evaluation, commands, and reproducibility configuration.",
+            "files": [
+                {
+                    "path": path,
+                    "purpose": "Provide a substantive reproducible experiment component.",
+                    "language": "Python" if path.endswith(".py") else "text",
+                    "batch": index // 6 + 1,
+                }
+                for index, path in enumerate(paths)
+            ],
+        }
+    )
+    code = "\n".join(
+        f"def operation_{index}(value: int) -> int:\n    return value + {index}"
+        for index in range(55)
+    )
+    test_code = "\n".join(
+        f"def test_case_{index}():\n    assert {index} + 1 == {index + 1}"
+        for index in range(36)
+    )
+    files = [
+        GeneratedRepositoryFile(
+            path=path,
+            content=(
+                test_code
+                if "test" in path
+                else code
+                if path.endswith(".py")
+                else ("Reproducible research repository.\n" * 90)
+            ),
+        )
+        for path in paths
+    ]
+
+    _validate_generated_repository_quality(
+        manifest,
+        files,
+        min_files=24,
+        min_total_bytes=60_000,
+        min_code_lines=800,
+    )
 
 
 def test_new_reports_require_an_executable_cpu_or_exploratory_proxy() -> None:
@@ -917,6 +1003,39 @@ async def test_experiment_model_routes_flash_and_pro_explicitly(tmp_path) -> Non
     assert llm.calls[2]["model"] == settings.CLAUDE_VISION_MODEL
     assert llm.calls[2]["image_paths"] == [image_path]
     assert llm.calls[2]["usage_metadata"] == {"attachment_count": 1, "attachment_bytes": 8}
+
+
+async def test_repository_generation_can_use_server_side_direct_transport(tmp_path) -> None:
+    from pydantic import BaseModel
+
+    class Response(BaseModel):
+        value: str
+
+    repository = FakeRepository()
+    claude = RecordingLlm()
+    direct = RecordingLlm()
+    settings = Settings(_env_file=None, ARTIFACT_ROOT=tmp_path)
+    worker = ExperimentWorker(
+        settings,
+        repository=repository,
+        sandbox_provider=FakeProvider(),
+        llm=claude,
+        repository_llm=direct,
+    )
+    worker._active_experiment = experiment(pilot_spec())
+
+    result = await worker._structured(
+        "repository",
+        Response,
+        stage="experiment_repository_manifest",
+        transport="deepseek_api",
+    )
+
+    assert result.value == "ok"
+    assert claude.calls == []
+    assert len(direct.calls) == 1
+    assert direct.calls[0]["model"] == settings.CLAUDE_MODEL
+    assert direct.calls[0]["stage"] == "experiment_repository_manifest"
 
 
 async def test_experiment_reuses_journaled_result_after_usage_callback_failure(

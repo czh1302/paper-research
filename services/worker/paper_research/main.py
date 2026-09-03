@@ -397,6 +397,17 @@ def build_parser() -> argparse.ArgumentParser:
     previews.add_argument(
         "--output", type=Path, default=Path(".artifacts/evidence-preview-backfill")
     )
+    rebuild_repository = subparsers.add_parser(
+        "experiment-rebuild-repository",
+        help="Supersede a generated repository that failed the substantive quality gate",
+    )
+    rebuild_repository.add_argument(
+        "--experiment-id", action="append", required=True
+    )
+    rebuild_repository.add_argument(
+        "--reason", default="generated_repository_failed_quality_gate"
+    )
+    rebuild_repository.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -518,6 +529,22 @@ def main() -> None:
                     output=args.output,
                 )
             )
+        elif args.command == "experiment-rebuild-repository":
+            from .experiment_rebuild import (
+                format_rebuild_result,
+                rebuild_experiment_repositories,
+            )
+
+            values = asyncio.run(
+                rebuild_experiment_repositories(
+                    settings,
+                    args.experiment_id,
+                    reason=args.reason,
+                    dry_run=args.dry_run,
+                )
+            )
+            print(format_rebuild_result(values))
+            code = 0
         else:
             if not settings.DEEPSEEK_API_KEY:
                 raise RuntimeError("A rotated DEEPSEEK_API_KEY is required")

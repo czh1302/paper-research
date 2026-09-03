@@ -985,6 +985,22 @@ class SupabaseRepository:
             json=values,
         )
 
+    async def requeue_experiment_repository_rebuild(
+        self,
+        experiment_id: str,
+        *,
+        reason: str = "generated_repository_failed_quality_gate",
+    ) -> ExperimentRecord:
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/requeue_experiment_repository_rebuild",
+            json={
+                "p_experiment_id": experiment_id,
+                "p_reason": reason[:300],
+            },
+        )
+        return ExperimentRecord.model_validate(response.json())
+
     async def renew_experiment_lease(
         self, experiment_id: str, worker_id: str, lease_seconds: int
     ) -> bool:

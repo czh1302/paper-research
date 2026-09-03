@@ -383,6 +383,27 @@ def test_actual_usage_is_idempotently_settled_even_after_cancellation() -> None:
     assert "E2B usage must be settled by a fenced runtime meter" in settlement
 
 
+def test_repository_quality_rebuild_is_service_only_and_budget_bounded() -> None:
+    migration = (
+        Path(__file__).resolve().parents[3]
+        / "supabase/migrations/20260903033000_rebuild_experiment_repository.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "active experiment runtime must be destroyed first" in migration
+    assert "greatest(5 - v_experiment.llm_cost_cny, 0)" in migration
+    assert "baseline_revision_id = null, current_revision_id = null" in migration
+    assert "superseded_repository_fallback" in migration
+    assert (
+        "revoke all on function public.requeue_experiment_repository_rebuild(uuid, text)"
+        in migration
+    )
+    assert (
+        "grant execute on function public.requeue_experiment_repository_rebuild(uuid, text)\n"
+        "  to service_role"
+        in migration
+    )
+
+
 def test_every_provider_retry_requires_a_durable_remaining_reservation() -> None:
     sql = MIGRATION.read_text(encoding="utf-8")
     start = sql.index("create or replace function public.authorize_experiment_llm_call")

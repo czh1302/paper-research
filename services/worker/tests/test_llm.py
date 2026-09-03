@@ -1,12 +1,15 @@
 import asyncio
 import json
 
+import httpx
 import pytest
+import respx
 from paper_research.clients.llm import (
     ClaudeCodeAccountingError,
     ClaudeCodeClient,
     ClaudeCodeError,
     ClaudeCodeStructuredOutputError,
+    DeepSeekAPIClient,
 )
 from paper_research.models import ProviderUsage
 from pydantic import BaseModel
@@ -14,6 +17,61 @@ from pydantic import BaseModel
 
 class ExampleOutput(BaseModel):
     value: str
+
+
+@respx.mock
+async def test_direct_deepseek_structured_output_records_exact_usage() -> None:
+    records: list[ProviderUsage] = []
+    route = respx.post("https://api.deepseek.com/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "request-1",
+                "choices": [{"message": {"content": '{"value":"complete"}'}}],
+                "usage": {"prompt_tokens": 321, "completion_tokens": 123},
+            },
+        )
+    )
+    client = DeepSeekAPIClient(
+        "test",
+        usage_callback=records.append,
+        strict_usage_callback=True,
+    )
+
+    result = await client.structured(
+        "Return JSON for a repository plan.",
+        ExampleOutput,
+        stage="experiment_repository_manifest",
+        usage_id="usage-1",
+    )
+
+    assert result.value == "complete"
+    assert route.called
+    request = json.loads(route.calls[0].request.content)
+    assert request["model"] == "deepseek-v4-flash"
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["thinking"] == {"type": "enabled"}
+    assert len(records) == 1
+    assert records[0].input_tokens == 321
+    assert records[0].output_tokens == 123
+    assert records[0].metadata["transport"] == "deepseek_api"
+    assert records[0].metadata["experiment_usage_id"] == "usage-1"
+
+
+@respx.mock
+async def test_direct_deepseek_missing_usage_fails_closed() -> None:
+    respx.post("https://api.deepseek.com/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"value":"complete"}'}}],
+            },
+        )
+    )
+    client = DeepSeekAPIClient("test", strict_usage_callback=True)
+
+    with pytest.raises(ClaudeCodeAccountingError, match="no auditable provider usage"):
+        await client.structured("Return JSON.", ExampleOutput)
 
 
 def test_deepseek_models_use_claude_aliases() -> None:
