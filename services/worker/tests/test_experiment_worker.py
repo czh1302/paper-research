@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,7 @@ from paper_research.experiment_worker import (
     ExperimentWorker,
     LeaseLost,
     WorkspaceResourceLimitExceeded,
+    _deterministic_exploratory_repository,
     _exploratory_fallback_specification,
     evaluate_metrics,
     validate_pilot_specification,
@@ -253,6 +255,44 @@ def test_exploratory_fallback_is_immediately_executable_and_does_not_overclaim()
     assert specification.evaluation_commands == [
         "python .research-atlas/evaluator/score.py"
     ]
+
+
+def test_exploratory_fallback_repository_runs_without_model_or_network(tmp_path) -> None:
+    specification = _exploratory_fallback_specification(
+        {
+            "title_zh": "可执行探索性代理",
+            "hypothesis_zh": "在相同资源预算下，结构化机制能够改善目标任务上的主要评价指标。",
+            "hypothesis_en": "Under the same resource budget, the structured mechanism improves the primary task metric.",
+        }
+    )
+    manifest, files = _deterministic_exploratory_repository(
+        {"title_zh": "可执行探索性代理"}, specification
+    )
+    assert len(manifest.files) >= 6
+    assert {item.path for item in manifest.files} == {item.path for item in files}
+    for item in files:
+        destination = tmp_path / item.path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(item.content, encoding="utf-8")
+
+    baseline = subprocess.run(
+        [sys.executable, "scripts/run_baseline.py"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    intervention = subprocess.run(
+        [sys.executable, "scripts/run_intervention.py"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    raw = json.loads((tmp_path / "artifacts/raw_results.json").read_text())
+    assert json.loads(baseline.stdout)["baseline"] == pytest.approx(raw["baseline"])
+    assert json.loads(intervention.stdout) == raw
+    assert raw["intervention"] - raw["baseline"] > 0.01
 
 
 def test_new_reports_require_an_executable_cpu_or_exploratory_proxy() -> None:
