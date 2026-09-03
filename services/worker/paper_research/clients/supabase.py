@@ -760,6 +760,7 @@ class SupabaseRepository:
         response = await self._request(
             "POST",
             "/rest/v1/rpc/save_v4_report_generation",
+            timeout=180,
             json={
                 "p_job_id": job_id,
                 "p_generation_id": generation_id,
