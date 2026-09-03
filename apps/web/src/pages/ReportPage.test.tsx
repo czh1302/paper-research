@@ -507,6 +507,7 @@ describe("ReportPage", () => {
     expect(primaryButton).toHaveAttribute("aria-expanded", "false");
     expect(alternativeButton).toHaveAttribute("aria-expanded", "true");
     expect(alternativePanel).toHaveAttribute("aria-hidden", "false");
+    expect(document.body.textContent).not.toContain("第 4 次审查");
     expect(alternativePanel?.textContent).not.toContain("当前研究痛点");
     expect(alternativePanel?.textContent).toContain("补充跨论文运行轨迹验证");
 

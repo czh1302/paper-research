@@ -1,5 +1,6 @@
 import json
 import math
+from pathlib import Path
 
 import httpx
 import pytest
@@ -103,6 +104,45 @@ async def test_load_external_profiles_ignores_assets_without_profile() -> None:
         ]
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_evidence_previews_skip_pages_already_in_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/rest/v1/report_evidence_assets":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "asset-1",
+                        "storage_path": "evidence/paper.pdf",
+                        "metadata": {
+                            "evidence_locators": [{"page": 1}, {"page": 2}]
+                        },
+                    }
+                ],
+            )
+        if request.url.path == "/rest/v1/report_evidence_previews":
+            return httpx.Response(200, json=[{"page": 1}, {"page": 2}])
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr("paper_research.clients.supabase.shutil.which", lambda _: "pdftoppm")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    repository = SupabaseRepository("https://example.test", "service-key", client=client)
+    try:
+        assert await repository.generate_evidence_previews("job-1", tmp_path) == 0
+    finally:
+        await client.aclose()
+
+    assert [request.url.path for request in requests] == [
+        "/rest/v1/report_evidence_assets",
+        "/rest/v1/report_evidence_previews",
+    ]
 
 
 @pytest.mark.asyncio

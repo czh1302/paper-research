@@ -387,6 +387,16 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_status_parser.add_argument(
         "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
     )
+    previews = subparsers.add_parser(
+        "evidence-preview-backfill",
+        help="Render missing cited-page previews for a completed benchmark run",
+    )
+    previews.add_argument("--benchmark-run", required=True)
+    previews.add_argument("--concurrency", type=int, default=2)
+    previews.add_argument("--resume", action="store_true")
+    previews.add_argument(
+        "--output", type=Path, default=Path(".artifacts/evidence-preview-backfill")
+    )
     return parser
 
 
@@ -496,6 +506,18 @@ def main() -> None:
 
             print(json.dumps(benchmark_status(args.output), ensure_ascii=False, indent=2))
             code = 0
+        elif args.command == "evidence-preview-backfill":
+            from .evidence_previews import backfill_benchmark_evidence_previews
+
+            code = asyncio.run(
+                backfill_benchmark_evidence_previews(
+                    settings,
+                    benchmark_run_id=args.benchmark_run,
+                    concurrency=args.concurrency,
+                    resume=args.resume,
+                    output=args.output,
+                )
+            )
         else:
             if not settings.DEEPSEEK_API_KEY:
                 raise RuntimeError("A rotated DEEPSEEK_API_KEY is required")

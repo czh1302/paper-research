@@ -270,7 +270,6 @@ button, input, select { font: inherit; }
 .v4-idea-row.is-open > .v4-idea-summary { background: rgb(var(--report-blue-soft) / .42); }
 .v4-idea-summary-meta { grid-area: meta; display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: .45rem; }
 .v4-idea-summary-meta .report-rank, .v4-idea-summary-meta .idea-status { white-space: nowrap; }
-.v4-idea-attempt { color: rgb(var(--faint)); font-size: .66rem; font-weight: 650; }
 .v4-idea-summary-copy { grid-area: copy; display: block; min-width: 0; overflow-wrap: anywhere; }
 .v4-idea-summary-copy > strong { display: block; color: rgb(var(--content)); font-size: 1rem; font-weight: 680; line-height: 1.55rem; }
 .v4-idea-summary-copy > span { display: block; margin-top: .35rem; color: rgb(var(--content)); font-size: 1rem; line-height: 1.65rem; }

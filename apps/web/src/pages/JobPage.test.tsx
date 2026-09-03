@@ -76,6 +76,8 @@ describe("JobPage", () => {
     expect(screen.getByRole("link", { name: /返回任务列表/ })).toHaveAttribute("href", "/");
     expect(screen.getAllByText(/^步骤 [1-7]$/)).toHaveLength(7);
     expect(screen.getAllByText("生成报告和导出文件").length).toBeGreaterThan(0);
+    expect(screen.getByText("单论文")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("1 轮");
   });
 
   it("shows automatic recovery without exposing a failed label or technical log", async () => {
@@ -109,7 +111,7 @@ describe("JobPage", () => {
     expect(document.body.textContent).not.toContain("失败");
   });
 
-  it("shows the Idea round and the candidate-within-round progress separately", async () => {
+  it("shows candidate progress without exposing the review round", async () => {
     api.getJob.mockResolvedValue({
       id: "job-idea-progress",
       mode: "single",
@@ -137,8 +139,10 @@ describe("JobPage", () => {
       </LanguageProvider>,
     );
 
-    expect(await screen.findByText("第 1/8 轮 · 正在生成候选 Idea 4/8")).toBeInTheDocument();
+    expect(await screen.findByText("正在生成候选 Idea 4/8")).toBeInTheDocument();
     expect(screen.getByText("正在生成第 4/8 个候选 Idea")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("审查 1/8 轮");
+    expect(document.body.textContent).not.toContain("第 1/8 轮");
   });
 
   it("keeps the highest Idea milestone when a later event reports full-text work", async () => {
@@ -170,7 +174,8 @@ describe("JobPage", () => {
     );
 
     expect((await screen.findAllByText("Idea 与实验规范")).length).toBeGreaterThan(0);
-    expect(screen.getByText("正在审查第 1/3 轮候选")).toBeInTheDocument();
+    expect(screen.getByText("正在评估候选 Idea")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("1/3 轮");
     expect(screen.getByText("74", { exact: true })).toBeInTheDocument();
     expect(screen.queryByText("筛选全文并建立研究现状", { selector: ".text-xl" })).not.toBeInTheDocument();
   });
@@ -205,7 +210,8 @@ describe("JobPage", () => {
       </LanguageProvider>,
     );
 
-    expect(await screen.findByText("第 1/3 轮未达门槛，正在定向补充证据")).toBeInTheDocument();
+    expect((await screen.findAllByText("正在定向补充证据")).length).toBeGreaterThan(0);
+    expect(document.body.textContent).not.toContain("1/3 轮");
     expect((screen.getAllByText("Idea 与实验规范")).length).toBeGreaterThan(0);
   });
 

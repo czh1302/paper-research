@@ -40,6 +40,7 @@ describe("DashboardPage", () => {
     renderPage();
     expect(await screen.findByText("network-paper.pdf")).toBeInTheDocument();
     expect(screen.getByText("+1")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("1 轮");
     await user.click(screen.getByRole("button", { name: "管理 network-paper.pdf" }));
     await user.click(screen.getByRole("button", { name: "永久删除" }));
     expect(screen.getByRole("dialog", { name: "永久删除这个任务？" })).toBeInTheDocument();

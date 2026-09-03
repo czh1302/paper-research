@@ -27,6 +27,7 @@ describe("AdminPage", () => {
     const user = userEvent.setup();
     render(<LanguageProvider><ThemeProvider><MemoryRouter><AdminPage/></MemoryRouter></ThemeProvider></LanguageProvider>);
     expect(await screen.findByText("管理员账号受保护")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "轮次" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "删除" }));
     await waitFor(() => expect(api.adminDeleteJob).toHaveBeenCalledWith("job-1"));
     await user.click(screen.getByRole("button", { name: "删除用户" }));

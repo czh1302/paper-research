@@ -143,12 +143,11 @@ export function AdminPage() {
         <div className="flex flex-col justify-between gap-3 border-b border-line px-6 py-5 sm:flex-row sm:items-center"><h2 className="font-semibold text-content">{text("全部任务", "All jobs")}</h2><Pager offset={jobOffset} total={totalJobs} onChange={setJobOffset}/></div>
         <div className="overflow-x-auto">
           <table className="report-table min-w-[1200px]">
-            <thead><tr><th>{text("任务 / 文件", "Job / Files")}</th><th>{text("用户", "User")}</th><th>{text("状态", "Status")}</th><th>{text("轮次", "Rounds")}</th><th>{text("时间", "Time")}</th><th>{text("操作", "Actions")}</th></tr></thead>
+            <thead><tr><th>{text("任务 / 文件", "Job / Files")}</th><th>{text("用户", "User")}</th><th>{text("状态", "Status")}</th><th>{text("时间", "Time")}</th><th>{text("操作", "Actions")}</th></tr></thead>
             <tbody>{visibleJobs.map((job) => <tr key={job.job_id}>
               <td><div className="font-mono text-xs text-accent-strong">{job.job_id}</div><div className="mt-1 max-w-xs truncate text-xs text-muted" title={job.file_names.join(", ")}>{job.file_names.join(", ") || "—"}</div></td>
               <td><div className="text-content">{job.user_email}</div><div className="mt-1 font-mono text-[10px] text-faint">{job.user_id}</div></td>
               <td><WorkflowStatusBadge status={job.status} step={deriveWorkflowState(job).step}/><div className="mt-2 text-xs text-muted">{workflowStageName(deriveWorkflowState(job).step, language)} · {deriveWorkflowState(job).progress}%</div>{job.error && <div className="mt-1 max-w-xs truncate text-xs text-danger" title={job.error}>{job.error}</div>}</td>
-              <td>{job.current_round}/{job.max_rounds} {text("轮", "round(s)")}</td>
               <td>{formatDate(job.created_at)}<div className="mt-1 text-xs text-muted">{text("更新：", "Updated: ")}{formatDate(job.updated_at)}</div></td>
               <td><div className="flex flex-wrap gap-2"><Link className="button button-secondary !px-3 !py-2" to={`/admin/jobs/${job.job_id}`}>{text("详情", "Details")}<ExternalLink className="h-3.5 w-3.5" /></Link><button className="button button-danger !px-3 !py-2" disabled={deleting === `job:${job.job_id}`} onClick={() => void deleteAdminJob(job)}><Trash2 className="h-3.5 w-3.5"/>{text("删除", "Delete")}</button></div>{job.report_id && <Link className="mt-2 block text-xs text-accent-strong hover:underline" to={`/admin/reports/${job.report_id}`}>{text("查看报告", "View report")}</Link>}</td>
             </tr>)}</tbody>

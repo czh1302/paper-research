@@ -628,6 +628,19 @@ class SupabaseRepository:
         counts = await asyncio.gather(*(render_asset(asset) for asset in assets))
         return sum(counts)
 
+    async def list_benchmark_report_jobs(
+        self, benchmark_run_id: str
+    ) -> list[dict[str, Any]]:
+        """Return the report-bearing jobs reserved for one benchmark run."""
+        response = await self._request(
+            "GET",
+            "/rest/v1/jobs"
+            f"?benchmark_run_id=eq.{quote(benchmark_run_id)}"
+            "&select=id,status,benchmark_paper_id,benchmark_case_id,report:reports(id)"
+            "&order=created_at.asc",
+        )
+        return list(response.json() or [])
+
     async def load_external_profiles(self, job_id: str) -> list[dict[str, Any]]:
         response = await self._request(
             "GET",
