@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS: bool = True
     # Compile every delivered Idea once during analysis, but never hold the
     # research report hostage to an engineering-contract formatting failure.
-    V4_PILOT_FOREGROUND_ATTEMPTS: int = Field(default=1, ge=0, le=1)
+    V4_PILOT_FOREGROUND_ATTEMPTS: int = Field(default=0, ge=0, le=1)
     V4_PILOT_BLOCKS_REPORT: bool = False
     V4_DELIVER_EXPLORATORY_IDEA: bool = True
     EXPERIMENT_FORCE_CPU_PROXY: bool = True
