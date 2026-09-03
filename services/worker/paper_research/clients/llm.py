@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -40,6 +41,240 @@ class DeepSeekAPIError(ClaudeCodeError):
     This deliberately subclasses the existing provider error so experiment
     recovery and budget settlement keep the same fail-closed behavior.
     """
+
+
+class OpenAICompatibleError(RuntimeError):
+    """A redacted failure from a benchmark-only OpenAI-compatible endpoint."""
+
+
+class OpenAICompatibleClient:
+    """Strict structured-output transport for the isolated teacher benchmark.
+
+    The request uses only OpenAI-compatible fields.  In particular it does not
+    carry DeepSeek- or Claude-Code-specific tool, thinking, or routing options.
+    Provider usage is mandatory so every successful paid call is auditable.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str,
+        base_url: str,
+        timeout_seconds: int = 300,
+        max_output_tokens: int = 16_384,
+        usage_callback: Callable[[ProviderUsage], Any] | None = None,
+        retry_callback: Callable[[int, int, float], Any] | None = None,
+        max_attempts: int = 3,
+    ) -> None:
+        if not api_key:
+            raise ValueError("OpenAI-compatible API key is required")
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.max_output_tokens = max_output_tokens
+        self.usage_callback = usage_callback
+        self.retry_callback = retry_callback
+        self.max_attempts = max_attempts
+
+    def _safe_diagnostic(self, value: str) -> str:
+        return redact(value.replace(self.api_key, "[REDACTED]"))[-2000:]
+
+    @staticmethod
+    def _retry_delay(response: httpx.Response) -> float:
+        value = response.headers.get("retry-after", "").strip()
+        if value:
+            try:
+                return max(0.0, min(float(value), 600.0))
+            except ValueError:
+                try:
+                    target = parsedate_to_datetime(value)
+                    now = parsedate_to_datetime(response.headers.get("date", value))
+                    return max(0.0, min((target - now).total_seconds(), 600.0))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return 30.0
+
+    async def list_models(self) -> set[str]:
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout_seconds, connect=30.0)
+            ) as client:
+                response = await client.get(
+                    f"{self.base_url}/v1/models",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+        except httpx.HTTPError as error:
+            raise OpenAICompatibleError(
+                f"model preflight failed: {self._safe_diagnostic(str(error))}"
+            ) from error
+        if response.status_code != 200:
+            raise OpenAICompatibleError(
+                "model preflight failed with HTTP "
+                f"{response.status_code}: {self._safe_diagnostic(response.text)}"
+            )
+        try:
+            rows = response.json().get("data", [])
+            return {
+                str(row["id"])
+                for row in rows
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+            }
+        except (AttributeError, KeyError, ValueError, TypeError) as error:
+            raise OpenAICompatibleError("model preflight returned invalid JSON") from error
+
+    async def structured(
+        self,
+        prompt: str,
+        response_model: type[SchemaModel],
+        *,
+        model: str | None = None,
+        stage: str = "unspecified",
+        usage_id: str | None = None,
+        before_usage_callback: (
+            Callable[[ProviderUsage | None, SchemaModel | None], Any] | None
+        ) = None,
+        timeout_seconds: int | None = None,
+        usage_metadata: dict[str, Any] | None = None,
+        **_unsupported: Any,
+    ) -> SchemaModel:
+        provider_model = model or self.model
+        schema = json.dumps(
+            response_model.model_json_schema(), ensure_ascii=False, separators=(",", ":")
+        )
+        request = {
+            "model": provider_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return exactly one JSON object matching this JSON Schema. "
+                        "Do not use Markdown and do not omit requested IDs.\n"
+                        f"JSON SCHEMA:\n{schema}"
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": self.max_output_tokens,
+            "stream": False,
+        }
+        effective_timeout = timeout_seconds or self.timeout_seconds
+        response: httpx.Response | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(effective_timeout, connect=30.0)
+                ) as client:
+                    response = await client.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=request,
+                    )
+            except httpx.HTTPError as error:
+                if attempt == self.max_attempts:
+                    raise OpenAICompatibleError(
+                        f"provider request failed: {self._safe_diagnostic(str(error))}"
+                    ) from error
+                delay = 30.0
+                if self.retry_callback:
+                    result = self.retry_callback(attempt, 0, delay)
+                    if asyncio.iscoroutine(result):
+                        await result
+                await asyncio.sleep(delay)
+                continue
+            if response.status_code == 429 or 500 <= response.status_code < 600:
+                if attempt < self.max_attempts:
+                    delay = self._retry_delay(response)
+                    if self.retry_callback:
+                        result = self.retry_callback(attempt, response.status_code, delay)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    await asyncio.sleep(delay)
+                    continue
+            break
+        if response is None:  # pragma: no cover - guarded by loop
+            raise OpenAICompatibleError("provider returned no response")
+        if response.status_code < 200 or response.status_code >= 300:
+            raise OpenAICompatibleError(
+                f"provider HTTP {response.status_code}: "
+                f"{self._safe_diagnostic(response.text or 'no diagnostic output')}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise OpenAICompatibleError("provider returned invalid response JSON") from error
+        parsed: SchemaModel | None = None
+        parse_error: Exception | None = None
+        try:
+            choices = payload.get("choices") or []
+            content = choices[0]["message"]["content"]
+            structured = json.loads(content) if isinstance(content, str) else content
+            parsed = response_model.model_validate(structured)
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            parse_error = error
+        actual_model = str(payload.get("model") or "")
+        model_mismatch = actual_model != provider_model
+        usage = payload.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        output_tokens = int(usage.get("completion_tokens", 0) or 0)
+        if input_tokens <= 0 or output_tokens <= 0:
+            if before_usage_callback:
+                result = before_usage_callback(None, parsed)
+                if asyncio.iscoroutine(result):
+                    await result
+            raise OpenAICompatibleError("provider returned no auditable token usage")
+        request_id = (
+            response.headers.get("x-request-id")
+            or response.headers.get("request-id")
+            or payload.get("id")
+        )
+        usage_record = ProviderUsage(
+            provider="rcouyi",
+            model=actual_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            metadata={
+                "failed": parse_error is not None or model_mismatch,
+                "transport": "openai_compatible",
+                "stage": stage,
+                "endpoint_host": httpx.URL(self.base_url).host,
+                "provider_request_id": request_id,
+                **(usage_metadata or {}),
+                **({"benchmark_usage_id": usage_id} if usage_id else {}),
+            },
+        )
+        if before_usage_callback:
+            result = before_usage_callback(usage_record, parsed)
+            if asyncio.iscoroutine(result):
+                await result
+        if self.usage_callback:
+            result = self.usage_callback(usage_record)
+            if asyncio.iscoroutine(result):
+                await result
+        if model_mismatch:
+            raise OpenAICompatibleError(
+                f"provider model mismatch: expected {provider_model}, got {actual_model or 'missing'}"
+            )
+        if parse_error is not None:
+            raise OpenAICompatibleError(
+                "provider returned invalid structured output: "
+                f"{self._safe_diagnostic(str(parse_error))}"
+            ) from parse_error
+        if parsed is None:  # pragma: no cover - guarded above
+            raise OpenAICompatibleError("provider returned no structured output")
+        return parsed
 
 
 class DeepSeekAPIClient:
@@ -164,9 +399,7 @@ class DeepSeekAPIClient:
                 if asyncio.iscoroutine(callback_result):
                     await callback_result
             if self.strict_usage_callback:
-                raise ClaudeCodeAccountingError(
-                    "DeepSeek API returned no auditable provider usage"
-                )
+                raise ClaudeCodeAccountingError("DeepSeek API returned no auditable provider usage")
         else:
             usage_record = ProviderUsage(
                 provider="deepseek",
@@ -274,9 +507,7 @@ class ClaudeCodeClient:
             }
         )
         if self.max_output_tokens is not None:
-            environment["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
-                max(1, self.max_output_tokens)
-            )
+            environment["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max(1, self.max_output_tokens))
         return environment
 
     def _command(
@@ -531,9 +762,7 @@ class ClaudeCodeClient:
                 if asyncio.iscoroutine(callback_result):
                     await callback_result
             if self.strict_usage_callback:
-                raise ClaudeCodeAccountingError(
-                    "Claude Code returned no auditable provider usage"
-                )
+                raise ClaudeCodeAccountingError("Claude Code returned no auditable provider usage")
             return
         usage_record = ProviderUsage(
             provider="deepseek",

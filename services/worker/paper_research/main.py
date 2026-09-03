@@ -44,8 +44,7 @@ def doctor(settings: Settings) -> int:
         "supabase": bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY),
         "turnstile_secret": bool(settings.TURNSTILE_SECRET_KEY),
         "crossref_mailto": bool(
-            settings.CROSSREF_MAILTO
-            and settings.CROSSREF_MAILTO != "research@example.invalid"
+            settings.CROSSREF_MAILTO and settings.CROSSREF_MAILTO != "research@example.invalid"
         ),
         "openalex": bool(settings.OPENALEX_API_KEY),
         "serper": bool(settings.SERPER_API_KEY),
@@ -72,12 +71,8 @@ def doctor(settings: Settings) -> int:
                 "llm_transport": "claude_code",
                 "flash_model": settings.CLAUDE_MODEL,
                 "pro_model": settings.CLAUDE_PRO_MODEL,
-                "flash_cli_alias": ClaudeCodeClient._claude_cli_model(
-                    settings.CLAUDE_MODEL
-                ),
-                "pro_cli_alias": ClaudeCodeClient._claude_cli_model(
-                    settings.CLAUDE_PRO_MODEL
-                ),
+                "flash_cli_alias": ClaudeCodeClient._claude_cli_model(settings.CLAUDE_MODEL),
+                "pro_cli_alias": ClaudeCodeClient._claude_cli_model(settings.CLAUDE_PRO_MODEL),
                 "e2b_pilot_enabled": settings.E2B_PILOT_ENABLED,
                 "e2b_manual_experiment_enabled": settings.E2B_MANUAL_EXPERIMENT_ENABLED,
                 "e2b_auto_experiment_enabled": settings.E2B_AUTO_EXPERIMENT_ENABLED,
@@ -166,9 +161,7 @@ async def run_worker(settings: Settings) -> None:
             loop.remove_signal_handler(signum)
 
 
-async def analyze_baseline_local(
-    settings: Settings, files: list[Path] | Path, output: Path
-) -> int:
+async def analyze_baseline_local(settings: Settings, files: list[Path] | Path, output: Path) -> int:
     file_paths = [files] if isinstance(files, Path) else list(files)
     if not 1 <= len(file_paths) <= 5:
         raise ValueError("The baseline accepts one to five PDFs")
@@ -199,11 +192,7 @@ async def analyze_baseline_local(
     )
     repository = LocalCheckpointRepository(
         output / ".checkpoint.json",
-        (
-            f"baseline-v2:{digests[0]}"
-            if len(digests) == 1
-            else f"baseline-v3:{fingerprint}"
-        ),
+        (f"baseline-v2:{digests[0]}" if len(digests) == 1 else f"baseline-v3:{fingerprint}"),
         settings.ARTIFACT_ROOT / "provider-usage.jsonl",
     )
     pipeline = AnalysisPipeline(settings, repository)
@@ -215,9 +204,7 @@ async def analyze_baseline_local(
     return 0
 
 
-async def replay_ideas_local(
-    settings: Settings, checkpoint: Path, output: Path
-) -> int:
+async def replay_ideas_local(settings: Settings, checkpoint: Path, output: Path) -> int:
     if not checkpoint.is_file():
         raise ValueError(f"Idea replay checkpoint does not exist: {checkpoint}")
     output.mkdir(parents=True, exist_ok=True)
@@ -273,11 +260,7 @@ async def resume_job_from_v4_ideas(
         # database transaction, otherwise a completed pre-replay checkpoint
         # could resurrect the retired Idea generation on the next claim.
         remote_checkpoint = await repository.load_pipeline_checkpoint(job_id)
-        checkpoint_path = (
-            settings.ARTIFACT_ROOT
-            / "pipeline-checkpoints"
-            / f"{job_id}.json"
-        )
+        checkpoint_path = settings.ARTIFACT_ROOT / "pipeline-checkpoints" / f"{job_id}.json"
         if checkpoint_path.is_file():
             backup_directory = checkpoint_path.parent / "backups"
             backup_directory.mkdir(parents=True, exist_ok=True)
@@ -335,9 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
         "idea-replay", help="Re-run only gap, Idea, and review stages from a V4 checkpoint"
     )
     replay.add_argument("--checkpoint", type=Path, required=True)
-    replay.add_argument(
-        "--output", type=Path, default=Path(".artifacts/idea-quality-replay")
-    )
+    replay.add_argument("--output", type=Path, default=Path(".artifacts/idea-quality-replay"))
     resume = subparsers.add_parser(
         "resume-job", help="Resume a completed production job from a guarded checkpoint"
     )
@@ -361,9 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--judge-concurrency", type=int, default=2)
     benchmark.add_argument("--judge-repetitions", type=int, choices=(1, 2, 3), default=1)
     benchmark.add_argument("--resume", action="store_true")
-    benchmark.add_argument(
-        "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
-    )
+    benchmark.add_argument("--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1"))
     benchmark.add_argument("--poll-seconds", type=float, default=15.0)
     benchmark.add_argument(
         "--wait-for-benchmark-output",
@@ -387,6 +366,16 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_status_parser.add_argument(
         "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
     )
+    benchmark_v2 = subparsers.add_parser(
+        "benchmark-evaluate-v2",
+        help="Resume only the compact V2 quality evaluation for completed reports",
+    )
+    benchmark_v2.add_argument("--manifest", type=Path, required=True)
+    benchmark_v2.add_argument(
+        "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
+    )
+    benchmark_v2.add_argument("--concurrency", type=int, choices=(1, 2, 3, 4), default=4)
+    benchmark_v2.add_argument("--preflight-only", action="store_true")
     previews = subparsers.add_parser(
         "evidence-preview-backfill",
         help="Render missing cited-page previews for a completed benchmark run",
@@ -401,12 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
         "experiment-rebuild-repository",
         help="Supersede a generated repository that failed the substantive quality gate",
     )
-    rebuild_repository.add_argument(
-        "--experiment-id", action="append", required=True
-    )
-    rebuild_repository.add_argument(
-        "--reason", default="generated_repository_failed_quality_gate"
-    )
+    rebuild_repository.add_argument("--experiment-id", action="append", required=True)
+    rebuild_repository.add_argument("--reason", default="generated_repository_failed_quality_gate")
     rebuild_repository.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -446,8 +431,7 @@ def main() -> None:
             if not expected_sha256:
                 raise ValueError("--expected-sha256 is required for this job")
             if len(expected_sha256) != 64 or any(
-                character not in "0123456789abcdefABCDEF"
-                for character in expected_sha256
+                character not in "0123456789abcdefABCDEF" for character in expected_sha256
             ):
                 raise ValueError("--expected-sha256 must be a SHA-256 hex digest")
             code = asyncio.run(
@@ -517,6 +501,18 @@ def main() -> None:
 
             print(json.dumps(benchmark_status(args.output), ensure_ascii=False, indent=2))
             code = 0
+        elif args.command == "benchmark-evaluate-v2":
+            from .teacher_benchmark_v2_runner import run_teacher_benchmark_v2
+
+            code = asyncio.run(
+                run_teacher_benchmark_v2(
+                    settings,
+                    manifest_path=args.manifest,
+                    output=args.output,
+                    concurrency=args.concurrency,
+                    preflight_only=args.preflight_only,
+                )
+            )
         elif args.command == "evidence-preview-backfill":
             from .evidence_previews import backfill_benchmark_evidence_previews
 

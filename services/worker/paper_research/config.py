@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     OPENALEX_API_KEY: SecretStr | None = None
     SERPER_API_KEY: SecretStr | None = None
     TAVILY_API_KEY: SecretStr | None = None
+    RCOUYI_API_KEY: SecretStr | None = None
 
     SUPABASE_URL: str | None = None
     SUPABASE_SERVICE_ROLE_KEY: SecretStr | None = None
@@ -152,6 +153,18 @@ class Settings(BaseSettings):
     CLAUDE_MODEL: str = "deepseek-v4-flash"
     CLAUDE_PRO_MODEL: str = "deepseek-v4-pro"
     CLAUDE_EFFORT: str = "high"
+
+    # The teacher benchmark is intentionally isolated from production model
+    # routing.  It uses a standard OpenAI-compatible request and never starts
+    # Claude Code, analysis workers, or experiment workers.
+    TEACHER_BENCHMARK_TRANSPORT: Literal["openai_compatible"] = "openai_compatible"
+    TEACHER_BENCHMARK_API_BASE: str = "https://api.rcouyi.com"
+    TEACHER_BENCHMARK_MODEL: str = "deepseek-v4-pro"
+    TEACHER_BENCHMARK_MAX_PROVIDER_USD: float = Field(default=15, gt=0, le=15)
+    TEACHER_BENCHMARK_TIMEOUT_SECONDS: int = Field(default=300, ge=30, le=900)
+    TEACHER_BENCHMARK_MAX_OUTPUT_TOKENS: int = Field(
+        default=16_384, ge=2_048, le=32_768
+    )
 
     MINERU_BASE_URL: str = "https://mineru.net"
     MINERU_MODEL: str = "vlm"

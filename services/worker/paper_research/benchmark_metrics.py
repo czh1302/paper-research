@@ -144,9 +144,7 @@ class MetricBundleProxy(BaseModel):
 
     @field_validator("counts_auto_proxy")
     @classmethod
-    def validate_counts(
-        cls, counts: dict[str, MetricCountProxy]
-    ) -> dict[str, MetricCountProxy]:
+    def validate_counts(cls, counts: dict[str, MetricCountProxy]) -> dict[str, MetricCountProxy]:
         for name in counts:
             _validate_metric_name(name)
         return counts
@@ -240,15 +238,11 @@ def problem_statement_metrics_auto(
         present += any(_has_content(fields.get(alias)) for alias in aliases[canonical_name])
     structure_count = MetricCountProxy(numerator=present, denominator=len(PROBLEM_FIELDS))
 
-    correctness, correctness_count = _mean_bundle(
-        "problem_correctness_auto", correctness_scores
-    )
+    correctness, correctness_count = _mean_bundle("problem_correctness_auto", correctness_scores)
     completeness, completeness_count = _mean_bundle(
         "problem_completeness_auto", completeness_scores
     )
-    conciseness, conciseness_count = _mean_bundle(
-        "problem_conciseness_auto", conciseness_scores
-    )
+    conciseness, conciseness_count = _mean_bundle("problem_conciseness_auto", conciseness_scores)
     claims = [
         item
         if isinstance(item, ClaimSupportAssessmentProxy)
@@ -286,9 +280,7 @@ def _valid_http_url(value: str | None) -> bool:
 
 def _dcg(grades: Sequence[int], k: int) -> float:
     return sum(
-        (2**grade - 1) / math.log2(rank + 2)
-        for rank, grade in enumerate(grades[:k])
-        if grade > 0
+        (2**grade - 1) / math.log2(rank + 2) for rank, grade in enumerate(grades[:k]) if grade > 0
     )
 
 
@@ -352,16 +344,10 @@ def retrieval_metrics_auto(
             key: {_clean_id(alias) for alias in aliases if alias.strip()}
             for key, aliases in known_reference_aliases.items()
         }
-        matched_known = sum(
-            bool(aliases & retrieved_aliases) for aliases in alias_groups.values()
-        )
+        matched_known = sum(bool(aliases & retrieved_aliases) for aliases in alias_groups.values())
         known_denominator = len(alias_groups)
-    known_count = MetricCountProxy(
-        numerator=matched_known, denominator=known_denominator
-    )
-    duplicate_rate_count = MetricCountProxy(
-        numerator=duplicate_count, denominator=len(results)
-    )
+    known_count = MetricCountProxy(numerator=matched_known, denominator=known_denominator)
+    duplicate_rate_count = MetricCountProxy(numerator=duplicate_count, denominator=len(results))
     invalid_link_count = MetricCountProxy(
         numerator=sum(not _valid_http_url(result.url) for result in results),
         denominator=len(results),
@@ -439,9 +425,7 @@ def comparison_metrics_auto(
         numerator=sum(item.supported for item in citations), denominator=len(citations)
     )
     worthy_claims = {_clean_id(value) for value in citation_worthy_claim_ids if value.strip()}
-    supported_claims = {
-        _clean_id(item.claim_id) for item in citations if item.supported
-    }
+    supported_claims = {_clean_id(item.claim_id) for item in citations if item.supported}
     citation_recall_count = MetricCountProxy(
         numerator=len(worthy_claims & supported_claims), denominator=len(worthy_claims)
     )
@@ -453,9 +437,7 @@ def comparison_metrics_auto(
         pair = (_clean_id(item.claim_id), _clean_id(item.source_id))
         unique_pairs[pair] = unique_pairs.get(pair, False) or item.supported
     supported_pair_count = sum(unique_pairs.values())
-    fact_count = MetricCountProxy(
-        numerator=supported_pair_count, denominator=len(unique_pairs)
-    )
+    fact_count = MetricCountProxy(numerator=supported_pair_count, denominator=len(unique_pairs))
     effective_count = MetricCountProxy(
         numerator=supported_pair_count,
         denominator=report_word_count,
@@ -481,6 +463,50 @@ def comparison_metrics_auto(
         "comparison_fact_citation_accuracy_auto": fact_count,
         "comparison_effective_citations_per_1000_words_auto": effective_count,
     }
+    return MetricBundleProxy(scores_auto_proxy=scores, counts_auto_proxy=counts)
+
+
+def comparison_primary_metrics_auto(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    cell_assessments: Iterable[CellFidelityAssessmentProxy | Mapping[str, Any]],
+    relational_assessments: Iterable[RelationalAssessmentProxy | Mapping[str, Any]],
+    primary_citation_assessments: Iterable[CitationAssessmentProxy | Mapping[str, Any]],
+    citation_worthy_claim_ids: Iterable[str],
+    report_word_count: int,
+    fulltext_profile_count: int,
+    external_profile_count: int,
+    schema_fields: Sequence[str] = COMPARISON_FIELDS,
+) -> MetricBundleProxy:
+    """V2 comparison metrics based on one frozen primary citation per claim.
+
+    Keeping this separate from :func:`comparison_metrics_auto` preserves the
+    invalid V1 audit artifacts while preventing an accidental comparison of
+    occurrence-level and claim-level citation measurements.
+    """
+
+    legacy = comparison_metrics_auto(
+        rows,
+        cell_assessments=cell_assessments,
+        relational_assessments=relational_assessments,
+        citation_assessments=primary_citation_assessments,
+        citation_worthy_claim_ids=citation_worthy_claim_ids,
+        report_word_count=report_word_count,
+        schema_fields=schema_fields,
+    )
+    rename = {
+        "comparison_citation_precision_auto": ("comparison_primary_citation_precision_auto"),
+        "comparison_citation_recall_auto": "comparison_claim_citation_recall_auto",
+        "comparison_citation_f1_auto": "comparison_primary_citation_f1_auto",
+    }
+    scores = {rename.get(name, name): value for name, value in legacy.scores_auto_proxy.items()}
+    counts = {rename.get(name, name): value for name, value in legacy.counts_auto_proxy.items()}
+    fulltext = MetricCountProxy(
+        numerator=fulltext_profile_count,
+        denominator=external_profile_count,
+    )
+    scores["comparison_fulltext_evidence_rate_auto"] = fulltext.value
+    counts["comparison_fulltext_evidence_rate_auto"] = fulltext
     return MetricBundleProxy(scores_auto_proxy=scores, counts_auto_proxy=counts)
 
 
@@ -731,6 +757,9 @@ class PaperMetricRecordProxy(BaseModel):
         default_factory=PairwiseOutcomeCountsProxy
     )
     warnings_proxy: list[str] = Field(default_factory=list)
+    protocol_version: Literal["teacher-benchmark-metrics-v1", "teacher-benchmark-metrics-v2"] = (
+        "teacher-benchmark-metrics-v1"
+    )
 
     @field_validator("scores_auto_proxy")
     @classmethod
@@ -762,8 +791,7 @@ class PaperMetricRecordProxy(BaseModel):
             held_out=held_out,
             scores_auto_proxy=combined.scores_auto_proxy,
             counts_auto_proxy=combined.counts_auto_proxy,
-            pairwise_outcomes_proxy=pairwise_outcomes_proxy
-            or PairwiseOutcomeCountsProxy(),
+            pairwise_outcomes_proxy=pairwise_outcomes_proxy or PairwiseOutcomeCountsProxy(),
             warnings_proxy=warnings_proxy or [],
         )
 
@@ -790,7 +818,9 @@ class AggregateMetricProxy(BaseModel):
 class BenchmarkSummaryProxy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["teacher-benchmark-metrics-v1"] = "teacher-benchmark-metrics-v1"
+    schema_version: Literal["teacher-benchmark-metrics-v1", "teacher-benchmark-metrics-v2"] = (
+        "teacher-benchmark-metrics-v1"
+    )
     generated_at: str
     paper_count: int = Field(ge=0)
     held_out_paper_count: int = Field(ge=0)
@@ -819,6 +849,10 @@ _DERIVED_MICRO_HARMONIC = {
         "comparison_citation_precision_auto",
         "comparison_citation_recall_auto",
     ),
+    "comparison_primary_citation_f1_auto": (
+        "comparison_primary_citation_precision_auto",
+        "comparison_claim_citation_recall_auto",
+    ),
 }
 
 
@@ -830,9 +864,7 @@ def summarize_paper_metrics_proxy(
 ) -> BenchmarkSummaryProxy:
     """Summarize papers without constructing a composite/overall score."""
 
-    metric_names = sorted(
-        {metric for record in records for metric in record.scores_auto_proxy}
-    )
+    metric_names = sorted({metric for record in records for metric in record.scores_auto_proxy})
     aggregates: dict[str, AggregateMetricProxy] = {}
     for metric in metric_names:
         values = [
@@ -883,7 +915,14 @@ def summarize_paper_metrics_proxy(
             sum(agreement_values) / len(agreement_values) if agreement_values else None
         ),
     )
+    protocol_versions = {record.protocol_version for record in records}
+    schema_version = (
+        "teacher-benchmark-metrics-v2"
+        if protocol_versions == {"teacher-benchmark-metrics-v2"}
+        else "teacher-benchmark-metrics-v1"
+    )
     return BenchmarkSummaryProxy(
+        schema_version=schema_version,
         generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
         paper_count=len(records),
         held_out_paper_count=sum(record.held_out for record in records),
@@ -970,9 +1009,7 @@ def _markdown_escape(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
 
-def _summary_csv(
-    records: Sequence[PaperMetricRecordProxy], summary: BenchmarkSummaryProxy
-) -> str:
+def _summary_csv(records: Sequence[PaperMetricRecordProxy], summary: BenchmarkSummaryProxy) -> str:
     output = io.StringIO(newline="")
     fieldnames = [
         "scope",
@@ -1120,6 +1157,7 @@ def write_benchmark_metric_outputs(
     *,
     generated_at: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    metrics_dir_name: str = "metrics",
 ) -> BenchmarkSummaryProxy:
     """Atomically write raw per-paper metrics, CSV, Markdown, and final summary JSON.
 
@@ -1128,11 +1166,11 @@ def write_benchmark_metric_outputs(
     """
 
     output_dir = Path(output_dir)
-    metrics_dir = output_dir / "metrics"
+    if not metrics_dir_name or Path(metrics_dir_name).name != metrics_dir_name:
+        raise ValueError("metrics_dir_name must be one safe path component")
+    metrics_dir = output_dir / metrics_dir_name
     metrics_dir.mkdir(parents=True, exist_ok=True)
-    summary = summarize_paper_metrics_proxy(
-        records, generated_at=generated_at, metadata=metadata
-    )
+    summary = summarize_paper_metrics_proxy(records, generated_at=generated_at, metadata=metadata)
     for record in records:
         atomic_write_json(metrics_dir / f"{_safe_paper_filename(record.paper_id)}.json", record)
     atomic_write_text(output_dir / "summary.csv", _summary_csv(records, summary))
@@ -1169,6 +1207,7 @@ __all__ = [
     "atomic_write_text",
     "build_counterbalanced_blind_pairs",
     "comparison_metrics_auto",
+    "comparison_primary_metrics_auto",
     "harmonic_mean",
     "load_json_checkpoint",
     "perturbation_sensitivity_proxy",

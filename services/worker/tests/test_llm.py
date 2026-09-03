@@ -10,6 +10,8 @@ from paper_research.clients.llm import (
     ClaudeCodeError,
     ClaudeCodeStructuredOutputError,
     DeepSeekAPIClient,
+    OpenAICompatibleClient,
+    OpenAICompatibleError,
 )
 from paper_research.models import ProviderUsage
 from pydantic import BaseModel
@@ -17,6 +19,65 @@ from pydantic import BaseModel
 
 class ExampleOutput(BaseModel):
     value: str
+
+
+@respx.mock
+async def test_benchmark_openai_transport_is_standard_and_audited() -> None:
+    records: list[ProviderUsage] = []
+    route = respx.post("https://api.rcouyi.com/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"x-request-id": "rc-request-1"},
+            json={
+                "id": "chat-1",
+                "model": "deepseek-v4-pro",
+                "choices": [{"message": {"content": '{"value":"ok"}'}}],
+                "usage": {"prompt_tokens": 200, "completion_tokens": 20},
+            },
+        )
+    )
+    client = OpenAICompatibleClient(
+        "private-test-key",
+        model="deepseek-v4-pro",
+        base_url="https://api.rcouyi.com",
+        usage_callback=records.append,
+    )
+
+    result = await client.structured("judge", ExampleOutput, stage="teacher_benchmark_v2.canary")
+
+    assert result.value == "ok"
+    request = json.loads(route.calls[0].request.content)
+    assert request["model"] == "deepseek-v4-pro"
+    assert request["response_format"] == {"type": "json_object"}
+    assert "thinking" not in request
+    assert "reasoning_effort" not in request
+    assert records[0].provider == "rcouyi"
+    assert records[0].metadata["transport"] == "openai_compatible"
+    assert records[0].metadata["endpoint_host"] == "api.rcouyi.com"
+    assert records[0].metadata["provider_request_id"] == "rc-request-1"
+
+
+@respx.mock
+async def test_benchmark_transport_rejects_model_substitution_and_redacts_key() -> None:
+    respx.post("https://api.rcouyi.com/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "model": "some-other-model",
+                "choices": [{"message": {"content": '{"value":"ok"}'}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    client = OpenAICompatibleClient(
+        "private-test-key",
+        model="deepseek-v4-pro",
+        base_url="https://api.rcouyi.com",
+    )
+
+    with pytest.raises(OpenAICompatibleError, match="model mismatch") as caught:
+        await client.structured("judge", ExampleOutput)
+    assert "private-test-key" not in str(caught.value)
 
 
 @respx.mock
