@@ -66,7 +66,7 @@ function workflowCounters(events: JobEvent[], workflow: WorkflowState, language:
   if (attempt?.attempt && attempt?.max_attempts) counters.push(language === "zh" ? `审查 ${attempt.attempt}/${attempt.max_attempts} 轮` : `Review ${attempt.attempt}/${attempt.max_attempts}`);
   const ideaPart = [...events].reverse().find((item) => item.kind === "idea_generation_part")?.data;
   if (workflow.substage === "idea_generation" && ideaPart?.part && ideaPart?.parts) counters.push(language === "zh" ? `候选 ${ideaPart.part}/${ideaPart.parts}` : `Candidate ${ideaPart.part}/${ideaPart.parts}`);
-  if (workflow.substage === "pilot_specification" && latestData.idea_index && latestData.idea_total) counters.push(language === "zh" ? `规范 ${latestData.idea_index}/${latestData.idea_total}` : `Specification ${latestData.idea_index}/${latestData.idea_total}`);
+  if (workflow.substage === "pilot_specification" && latestData.idea_index && latestData.idea_total) counters.push(language === "zh" ? `方案 ${latestData.idea_index}/${latestData.idea_total}` : `Idea ${latestData.idea_index}/${latestData.idea_total}`);
   return counters;
 }
 
@@ -90,6 +90,11 @@ function subprogress(job: JobRecord, events: JobEvent[], workflow: WorkflowState
     return language === "zh"
       ? `正在为第 ${stageData.idea_index ?? "—"}/${stageData.idea_total ?? "—"} 个方案编译实验规范`
       : `Compiling experiment specification ${stageData.idea_index ?? "—"}/${stageData.idea_total ?? "—"}`;
+  }
+  if (workflow.substage === "pilot_specification_deferred") {
+    return language === "zh"
+      ? "报告将先生成；实验规范由主实验在后台补全"
+      : "The report will be published first; the primary experiment will complete its specification in the background";
   }
   if (workflow.substage === "idea_review") {
     return language === "zh"
@@ -116,6 +121,7 @@ function eventLabel(event: JobEvent, language: Language) {
   const substage = typeof event.data.substage === "string" ? event.data.substage : "";
   if (substage === "idea_evidence_followup") return language === "zh" ? "当前轮未达门槛，正在定向补充证据" : "Gathering targeted evidence after review";
   if (substage === "pilot_specification") return language === "zh" ? `正在为第 ${event.data.idea_index}/${event.data.idea_total} 个方案编译实验规范` : `Compiling experiment specification ${event.data.idea_index}/${event.data.idea_total}`;
+  if (substage === "pilot_specification_deferred") return language === "zh" ? "报告将先生成，实验规范转入后台补全" : "Publishing the report while the experiment specification continues in the background";
   if (substage === "idea_review") return language === "zh" ? `正在审查第 ${event.data.attempt}/${event.data.max_attempts} 轮候选` : `Reviewing candidate round ${event.data.attempt}/${event.data.max_attempts}`;
   if (event.kind === "idea_generation_part") {
     return language === "zh"

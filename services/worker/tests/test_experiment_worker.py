@@ -30,6 +30,7 @@ from paper_research.experiment_worker import (
     ExperimentWorker,
     LeaseLost,
     WorkspaceResourceLimitExceeded,
+    _exploratory_fallback_specification,
     evaluate_metrics,
     validate_pilot_specification,
 )
@@ -236,6 +237,22 @@ def test_worker_level_pilot_validation_checks_metric_schema() -> None:
     )
     with pytest.raises(Exception, match="numeric JSON schema"):
         validate_pilot_specification(invalid)
+
+
+def test_exploratory_fallback_is_immediately_executable_and_does_not_overclaim() -> None:
+    specification = _exploratory_fallback_specification(
+        {
+            "hypothesis_zh": "在相同资源预算下，结构化机制能够改善目标任务上的主要评价指标。",
+            "hypothesis_en": "Under the same resource budget, the structured mechanism improves the primary task metric.",
+        }
+    )
+
+    validate_pilot_specification(specification)
+    assert specification.execution_mode == "exploratory_cpu_proxy"
+    assert specification.estimated_minutes == 10
+    assert specification.evaluation_commands == [
+        "python .research-atlas/evaluator/score.py"
+    ]
 
 
 def test_new_reports_require_an_executable_cpu_or_exploratory_proxy() -> None:

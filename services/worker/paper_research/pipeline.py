@@ -91,7 +91,6 @@ from .prompts import (
     paper_profile_prompt,
     paper_ranking_prompt,
     pilot_specification_prompt,
-    pilot_specification_repair_prompt,
     problem_brief_prompt,
     problem_brief_review_prompt,
     problem_statement_prompt,
@@ -137,8 +136,6 @@ PRO_LLM_STAGES = frozenset(
         "v3_idea_generation",
         "v4_idea_generation",
         "v4_idea_review",
-        "v4_pilot_specification",
-        "v4_pilot_specification_repair",
     }
 )
 
@@ -2071,6 +2068,7 @@ class AnalysisPipeline:
         stage: str,
         route: Literal["flash", "pro"] = "flash",
         web: bool = False,
+        timeout_seconds: int | None = None,
     ) -> Any:
         await self._check_budget()
         expected_route = "pro" if stage in PRO_LLM_STAGES else "flash"
@@ -2089,6 +2087,7 @@ class AnalysisPipeline:
             allow_web_search=web,
             model=provider_model,
             stage=stage,
+            timeout_seconds=timeout_seconds,
         )
 
     async def _event(
@@ -3881,77 +3880,60 @@ class AnalysisPipeline:
                         validate_pilot_specification(specification)
                     except (ValueError, PilotSpecificationValidationError):
                         specification = None
-                prior = dict(entry.get("last_compilation") or {})
                 validation_error = str(entry.get("validation_error") or "")
-                # Each invalid result is journaled before requesting a repair.
-                # Recovery reuses the first validated contract and resumes only
-                # the Idea whose contract is still incomplete.
-                for _ in range(3):
-                    if specification is not None:
-                        break
-                    prompt = (
-                        pilot_specification_repair_prompt(
-                            idea.model_dump(mode="json", exclude={"pilot_specification"}),
-                            prior,
-                            validation_error,
-                            force_cpu_proxy=self.settings.EXPERIMENT_FORCE_CPU_PROXY,
-                            joint=joint,
-                        )
-                        if prior
-                        else pilot_specification_prompt(
-                            idea.model_dump(mode="json", exclude={"pilot_specification"}),
-                            profiles,
-                            force_cpu_proxy=self.settings.EXPERIMENT_FORCE_CPU_PROXY,
-                            joint=joint,
-                        )
-                    )
+                prior = dict(entry.get("last_compilation") or {})
+                attempts = int(entry.get("attempts", 0))
+                # The analysis path is deliberately one-shot.  A persisted
+                # failed attempt is final for this report generation so a job
+                # recovery cannot turn one attempt into an unbounded loop.
+                if (
+                    specification is None
+                    and idea_index == 1
+                    and attempts < self.settings.V4_PILOT_FOREGROUND_ATTEMPTS
+                    and not entry.get("foreground_complete")
+                ):
                     try:
                         compilation = await self._call_llm(
-                            prompt,
-                            PilotCompilation,
-                            stage=(
-                                "v4_pilot_specification_repair"
-                                if prior
-                                else "v4_pilot_specification"
+                            pilot_specification_prompt(
+                                idea.model_dump(
+                                    mode="json", exclude={"pilot_specification"}
+                                ),
+                                profiles,
+                                force_cpu_proxy=self.settings.EXPERIMENT_FORCE_CPU_PROXY,
+                                joint=joint,
                             ),
-                            route="pro",
+                            PilotCompilation,
+                            stage="v4_pilot_specification",
+                            route="flash",
+                            timeout_seconds=self.settings.EXPERIMENT_PILOT_TIMEOUT_SECONDS,
                         )
                     except ClaudeCodeStructuredOutputError as error:
                         raw_compilation = error.structured_output
-                        if not isinstance(raw_compilation, dict):
-                            raise
-                        # Preserve the rejected payload and its exact validation
-                        # defect so the next in-process call can repair it. This
-                        # avoids restarting the whole job and asking for the same
-                        # invalid contract again.
-                        prior = raw_compilation
-                        validation_error = str(error)
-                        entry = {
-                            "last_compilation": prior,
-                            "validation_error": validation_error,
-                            "attempts": int(entry.get("attempts", 0)) + 1,
-                            "specification": None,
-                        }
-                        pilot_checkpoints[idea.key] = entry
-                        await save_v4_checkpoint(
-                            pilot_specifications=pilot_checkpoints
-                        )
-                        continue
-                    prior = compilation.model_dump(mode="json")
-                    try:
-                        if not compilation.accepted or compilation.specification is None:
-                            raise PilotSpecificationValidationError(
-                                compilation.rationale_zh or compilation.rationale_en
-                            )
-                        validate_pilot_specification(compilation.specification)
-                        specification = compilation.specification
-                        validation_error = ""
-                    except PilotSpecificationValidationError as error:
-                        validation_error = str(error)
+                        prior = raw_compilation if isinstance(raw_compilation, dict) else {}
+                        validation_error = type(error).__name__
+                    except ClaudeCodeError as error:
+                        validation_error = type(error).__name__
+                    else:
+                        prior = compilation.model_dump(mode="json")
+                        try:
+                            if (
+                                not compilation.accepted
+                                or compilation.specification is None
+                            ):
+                                raise PilotSpecificationValidationError(
+                                    compilation.rationale_zh
+                                    or compilation.rationale_en
+                                )
+                            validate_pilot_specification(compilation.specification)
+                            specification = compilation.specification
+                            validation_error = ""
+                        except PilotSpecificationValidationError as error:
+                            validation_error = str(error)
                     entry = {
                         "last_compilation": prior,
                         "validation_error": validation_error,
-                        "attempts": int(entry.get("attempts", 0)) + 1,
+                        "attempts": attempts + 1,
+                        "foreground_complete": True,
                         "specification": (
                             specification.model_dump(mode="json")
                             if specification is not None
@@ -3961,10 +3943,19 @@ class AnalysisPipeline:
                     pilot_checkpoints[idea.key] = entry
                     await save_v4_checkpoint(pilot_specifications=pilot_checkpoints)
                 if specification is None:
-                    raise ValueError(
-                        f"PilotSpecification for Idea {idea.key!r} needs automatic recovery: "
-                        f"{validation_error or 'no executable contract returned'}"
+                    await self._workflow_event(
+                        job.id,
+                        f"Deferred PilotSpecification for Idea {idea_index}/{len(selected)}",
+                        workflow_stage="v4_pilot_specification",
+                        substage="pilot_specification_deferred",
+                        progress=91,
+                        idea_index=idea_index,
+                        idea_total=len(selected),
                     )
+                    if self.settings.V4_PILOT_BLOCKS_REPORT:
+                        raise ValueError(
+                            f"PilotSpecification for Idea {idea.key!r} needs automatic recovery"
+                        )
                 compiled.append(
                     idea.model_copy(update={"pilot_specification": specification})
                 )
@@ -4623,7 +4614,6 @@ class AnalysisPipeline:
                         self.settings.E2B_PILOT_ENABLED
                         and self.settings.E2B_AUTO_EXPERIMENT_ENABLED
                         and presentation_v4.ideas
-                        and presentation_v4.ideas[0].pilot_specification is not None
                     )
                     if auto_experiment:
                         pipeline_checkpoint["experiment_auto_enqueue"] = {

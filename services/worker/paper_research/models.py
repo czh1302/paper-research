@@ -396,7 +396,7 @@ class PilotEvaluatorCase(BaseModel):
 
 
 class PilotEvaluatorFile(BaseModel):
-    """A Pro-authored deterministic evaluator file frozen with the contract."""
+    """A deterministic evaluator file frozen with the contract."""
 
     model_config = ConfigDict(extra="forbid")
 

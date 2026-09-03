@@ -436,6 +436,152 @@ IDEA SNAPSHOT:
 """
 
 
+def _exploratory_fallback_specification(
+    idea: dict[str, Any],
+) -> PilotSpecification:
+    """Create an immediate, executable proxy contract when model compilation stalls.
+
+    The fallback deliberately makes only a repository-level operational claim.  It
+    gets the user into a real code workspace without pretending that a generic CPU
+    smoke experiment validates the paper-level hypothesis.
+    """
+
+    hypothesis_zh = str(
+        idea.get("hypothesis_zh")
+        or idea.get("one_sentence_zh")
+        or "在固定输入与资源条件下，实现该方案的最小代理机制并产生可重复的数值结果。"
+    ).strip()[:420]
+    hypothesis_en = str(
+        idea.get("hypothesis_en")
+        or idea.get("one_sentence_en")
+        or "Under fixed inputs and resources, implement the smallest proxy mechanism and produce a reproducible numeric result."
+    ).strip()[:800]
+    if len(hypothesis_zh) < 20:
+        hypothesis_zh += "；本次仅验证最小代理实现是否可以稳定执行。"
+    if len(hypothesis_en) < 30:
+        hypothesis_en += "; this run tests only whether the minimal proxy executes reproducibly."
+
+    evaluator_source = '''import json
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[2]
+raw = json.loads((root / "artifacts/raw_results.json").read_text(encoding="utf-8"))
+baseline = float(raw["baseline"])
+intervention = float(raw["intervention"])
+payload = {
+    "baseline": baseline,
+    "intervention": intervention,
+    "effect": intervention - baseline,
+}
+output = root / "artifacts/metrics.json"
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+print(json.dumps(payload, sort_keys=True))
+'''
+    evaluator_test_source = '''from pathlib import Path
+
+
+def test_frozen_evaluator_is_present() -> None:
+    assert Path(__file__).with_name("score.py").is_file()
+'''
+    specification = PilotSpecification.model_validate(
+        {
+            "version": 1,
+            "hypothesis_zh": hypothesis_zh,
+            "hypothesis_en": hypothesis_en,
+            "execution_mode": "exploratory_cpu_proxy",
+            "cpu_proxy_rationale_zh": "该执行契约仅验证代码路径、可重复运行和干预信号，不宣称验证完整研究假设；后续可在工作区中补充真实数据与评价协议。",
+            "cpu_proxy_rationale_en": "This contract tests only the code path, reproducibility, and an intervention signal; it does not claim to validate the full research hypothesis. Real data and evaluation can be added in the workspace.",
+            "invariants_zh": ["固定随机种子与输入规模", "基线和干预使用相同评价器"],
+            "invariants_en": ["Fixed random seed and input size", "Baseline and intervention use the same evaluator"],
+            "resources": [
+                {
+                    "key": "pytest",
+                    "kind": "code",
+                    "name": "pytest",
+                    "url": "https://github.com/pytest-dev/pytest",
+                    "version": "8.3.5",
+                    "license": "MIT",
+                    "purpose_zh": "运行仓库自测并确认代理实现可重复执行。",
+                    "purpose_en": "Runs repository tests and confirms that the proxy implementation is reproducible.",
+                }
+            ],
+            "allowed_hosts": [
+                "github.com",
+                "pypi.org",
+                "files.pythonhosted.org",
+            ],
+            "environment_commands": ["python -m pip install pytest==8.3.5"],
+            "test_commands": ["python -m pytest -q"],
+            "baseline_commands": ["python scripts/run_baseline.py"],
+            "intervention_commands": ["python scripts/run_intervention.py"],
+            "evaluation_commands": ["python .research-atlas/evaluator/score.py"],
+            "metrics_output_path": "artifacts/metrics.json",
+            "metrics_json_schema": {
+                "type": "object",
+                "properties": {
+                    "baseline": {"type": "number"},
+                    "intervention": {"type": "number"},
+                    "effect": {"type": "number"},
+                },
+                "required": ["baseline", "intervention", "effect"],
+                "additionalProperties": False,
+            },
+            "metrics": [
+                {
+                    "key": "effect",
+                    "name_zh": "代理干预信号",
+                    "name_en": "Proxy intervention signal",
+                    "definition_zh": "冻结评价器计算的干预值与基线值之差，仅用于验证执行链路。",
+                    "definition_en": "Difference between intervention and baseline computed by the frozen evaluator; used only to validate the execution path.",
+                    "json_pointer": "/effect",
+                    "direction": "higher",
+                    "comparison": "delta",
+                    "baseline_json_pointer": "/baseline",
+                    "intervention_json_pointer": "/intervention",
+                    "success_threshold": 0.01,
+                }
+            ],
+            "primary_metric_key": "effect",
+            "evaluator_files": [
+                {"path": "score.py", "content": evaluator_source},
+                {"path": "test_score.py", "content": evaluator_test_source},
+            ],
+            "evaluator_test_commands": [
+                "pytest .research-atlas/evaluator/test_score.py"
+            ],
+            "evaluator_cases": [
+                {"name": "positive signal", "metrics": {"effect": 0.02}, "expected_pass": True},
+                {"name": "no signal", "metrics": {"effect": 0.0}, "expected_pass": False},
+            ],
+            "artifacts": [
+                {
+                    "path": "artifacts/raw_results.json",
+                    "kind": "table",
+                    "public_safe": False,
+                    "description_zh": "基线和干预产生的原始代理观测。",
+                    "description_en": "Raw proxy observations produced by baseline and intervention runs.",
+                },
+                {
+                    "path": "artifacts/metrics.json",
+                    "kind": "metrics",
+                    "public_safe": True,
+                    "description_zh": "冻结评价器计算的代理指标。",
+                    "description_en": "Proxy metrics computed by the frozen evaluator.",
+                },
+            ],
+            "requires_live_inference": False,
+            "inference_contracts": [],
+            "estimated_minutes": 10,
+            "estimated_cpu_count": 2,
+            "estimated_memory_mib": 2048,
+            "estimated_disk_mib": 2048,
+        }
+    )
+    validate_pilot_specification(specification)
+    return specification
+
+
 def _repository_manifest_prompt(
     idea: dict[str, Any], specification: PilotSpecification
 ) -> str:
@@ -663,6 +809,7 @@ class ExperimentWorker:
         progress_callback: Any | None = None,
         image_paths: list[Path] | None = None,
         image_audit: list[dict[str, Any]] | None = None,
+        timeout_seconds: int | None = None,
     ) -> Any:
         self._ensure_active_lease()
         active = self._active_experiment
@@ -781,6 +928,7 @@ class ExperimentWorker:
                 before_usage_callback=journal_result,
                 max_turns=max_turns,
                 max_budget_usd=max_budget_usd,
+                timeout_seconds=timeout_seconds,
                 image_paths=image_paths,
                 usage_metadata={
                     "attachment_count": len(image_audit or []),
@@ -1497,17 +1645,95 @@ class ExperimentWorker:
         elif experiment.pilot_specification and not experiment.pilot_compilation_required:
             specification = experiment.validated_specification()
         else:
-            compilation = await self._structured(
-                _pilot_compilation_prompt(experiment.idea_snapshot),
-                PilotCompilation,
-                stage="experiment_pilot_compilation",
-                pro=True,
+            prior_attempts = list(checkpoint.get("pilot_compilation_attempts") or [])
+            specification = None
+            last_reason = "The Idea could not be compiled into an executable contract"
+            # Attempt 1 is a short Flash compilation. Attempt 2 is a local,
+            # deterministic exploratory contract, so provider latency can
+            # never keep the workspace empty indefinitely.
+            model_attempt_limit = max(
+                0, self.settings.EXPERIMENT_PILOT_MAX_ATTEMPTS - 1
             )
-            if not compilation.accepted or not compilation.specification:
-                raise PilotSpecificationBlocked(
-                    compilation.rationale_zh or compilation.rationale_en
+            for attempt in range(len(prior_attempts) + 1, model_attempt_limit + 1):
+                prompt = _pilot_compilation_prompt(experiment.idea_snapshot)
+                if prior_attempts:
+                    prompt += (
+                        "\n\nThe prior compilation was rejected by deterministic "
+                        "validation. Repair every listed issue without changing the "
+                        "Idea or weakening its metric:\n"
+                        + json.dumps(prior_attempts[-1], ensure_ascii=False)
+                    )
+                # Provider, timeout, or budget failures immediately fall back
+                # to the local exploratory contract instead of leaving an
+                # empty workspace in a recovery loop.
+                try:
+                    compilation = await self._structured(
+                        prompt,
+                        PilotCompilation,
+                        stage=f"experiment_pilot_compilation_{attempt}",
+                        pro=False,
+                        timeout_seconds=self.settings.EXPERIMENT_PILOT_TIMEOUT_SECONDS,
+                    )
+                except (ClaudeCodeError, ExperimentBudgetBlocked) as error:
+                    prior_attempts.append(
+                        {
+                            "attempt": attempt,
+                            "accepted": False,
+                            "error_type": type(error).__name__,
+                        }
+                    )
+                    checkpoint["pilot_compilation_attempts"] = prior_attempts
+                    await self._save_checkpoint(
+                        experiment, checkpoint, ExperimentStage.SPEC_FREEZE, 6
+                    )
+                    break
+                last_reason = (
+                    compilation.rationale_zh
+                    or compilation.rationale_en
+                    or last_reason
                 )
-            specification = compilation.specification
+                validation_error = ""
+                if compilation.accepted and compilation.specification:
+                    try:
+                        validate_pilot_specification(compilation.specification)
+                    except PilotSpecificationBlocked as error:
+                        validation_error = str(error)
+                    else:
+                        specification = compilation.specification
+                else:
+                    validation_error = last_reason
+                prior_attempts.append(
+                    {
+                        "attempt": attempt,
+                        "accepted": bool(compilation.accepted),
+                        "rationale_zh": compilation.rationale_zh,
+                        "rationale_en": compilation.rationale_en,
+                        "validation_error": validation_error,
+                    }
+                )
+                checkpoint["pilot_compilation_attempts"] = prior_attempts
+                await self._save_checkpoint(
+                    experiment, checkpoint, ExperimentStage.SPEC_FREEZE, 6
+                )
+                if specification is not None:
+                    break
+            if specification is None:
+                specification = _exploratory_fallback_specification(
+                    experiment.idea_snapshot
+                )
+                prior_attempts.append(
+                    {
+                        "attempt": len(prior_attempts) + 1,
+                        "accepted": True,
+                        "source": "deterministic_exploratory_fallback",
+                        "rationale_zh": "模型规范未及时通过校验，已生成不夸大结论的可执行探索性代理。",
+                        "rationale_en": "Model compilation did not pass in time; an executable exploratory proxy that does not overclaim was generated.",
+                    }
+                )
+                checkpoint["pilot_compilation_attempts"] = prior_attempts
+                await self._save_checkpoint(
+                    experiment, checkpoint, ExperimentStage.SPEC_FREEZE, 7
+                )
         validate_pilot_specification(specification)
         digest = specification_hash(specification)
         checkpoint["pilot_specification"] = specification.model_dump(mode="json")

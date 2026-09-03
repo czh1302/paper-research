@@ -11,7 +11,7 @@ Type=simple
 WorkingDirectory=/home/czh/SJTU_Task_final
 EnvironmentFile=/home/czh/.config/paper-research/secrets.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/czh/SJTU_Task_final/.venv/bin/python -m paper_research.main benchmark-run --manifest benchmark/teacher_benchmark_v1.json --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 --cold --include-baseline --analysis-concurrency 6 --baseline-concurrency 2 --judge-concurrency 4 --resume --output .artifacts/benchmark/teacher-v1
+ExecStart=/home/czh/SJTU_Task_final/.venv/bin/python -m paper_research.main benchmark-run --manifest benchmark/teacher_benchmark_v1.json --owner-from-job 08f0ca6d-abcf-42a4-9b58-6ed07996d135 --cold --include-baseline --analysis-concurrency 6 --baseline-concurrency 2 --judge-concurrency 4 --judge-repetitions 1 --resume --output .artifacts/benchmark/teacher-v1
 Restart=on-failure
 RestartSec=30
 RestartPreventExitStatus=2

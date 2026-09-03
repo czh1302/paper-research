@@ -227,6 +227,7 @@ async def test_pipeline_routes_problem_and_idea_to_pro_and_retrieval_to_flash(
     assert PRO_LLM_STAGES.issuperset(
         {"problem_statement_fragment", "v4_idea_generation", "v4_idea_review"}
     )
+    assert "v4_pilot_specification" not in PRO_LLM_STAGES
     assert [item["model"] for item in calls] == [
         "deepseek-v4-pro",
         "deepseek-v4-pro",

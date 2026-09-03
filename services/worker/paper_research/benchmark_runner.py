@@ -442,6 +442,7 @@ class BenchmarkSupervisor:
         analysis_concurrency: int = 2,
         baseline_concurrency: int = 2,
         judge_concurrency: int = 2,
+        judge_repetitions: int = 1,
         poll_seconds: float = 15,
         site_url: str = DEFAULT_SITE_URL,
         project_root: Path = PROJECT_ROOT,
@@ -452,6 +453,8 @@ class BenchmarkSupervisor:
             raise ValueError("Analysis concurrency must be between 1 and 6")
         if not 1 <= baseline_concurrency <= 4 or not 1 <= judge_concurrency <= 4:
             raise ValueError("Baseline and judge concurrency must be between 1 and 4")
+        if not 1 <= judge_repetitions <= 3:
+            raise ValueError("Judge repetitions must be between 1 and 3")
         if poll_seconds <= 0:
             raise ValueError("poll_seconds must be positive")
         self.settings = settings
@@ -464,6 +467,7 @@ class BenchmarkSupervisor:
         self.analysis_concurrency = analysis_concurrency
         self.baseline_concurrency = baseline_concurrency
         self.judge_concurrency = judge_concurrency
+        self.judge_repetitions = judge_repetitions
         self.poll_seconds = poll_seconds
         self.site_url = site_url.rstrip("/") + "/"
         self.project_root = project_root.resolve()
@@ -504,6 +508,7 @@ class BenchmarkSupervisor:
                 "analysis_concurrency": self.analysis_concurrency,
                 "baseline_concurrency": self.baseline_concurrency,
                 "judge_concurrency": self.judge_concurrency,
+                "judge_repetitions": self.judge_repetitions,
                 "include_baseline": self.include_baseline,
                 "wait_for_benchmark_output": (
                     str(self.wait_for_benchmark_output)
@@ -590,6 +595,7 @@ class BenchmarkSupervisor:
             configuration["analysis_concurrency"] = self.analysis_concurrency
             configuration["baseline_concurrency"] = self.baseline_concurrency
             configuration["judge_concurrency"] = self.judge_concurrency
+            configuration["judge_repetitions"] = self.judge_repetitions
             _atomic_json(self.state_path, state)
             return state
         self.output.mkdir(parents=True, exist_ok=True)
@@ -1030,7 +1036,7 @@ class BenchmarkSupervisor:
             str(output),
             "--resume",
             "--repetitions",
-            "3",
+            str(self.judge_repetitions),
         ]
         return command, output, str(output)
 
@@ -1412,6 +1418,7 @@ async def run_benchmark(
     analysis_concurrency: int,
     baseline_concurrency: int,
     judge_concurrency: int,
+    judge_repetitions: int,
     poll_seconds: float,
     wait_for_benchmark_output: Path | None = None,
     worker_services: tuple[str, ...] = (),
@@ -1434,6 +1441,7 @@ async def run_benchmark(
             analysis_concurrency=analysis_concurrency,
             baseline_concurrency=baseline_concurrency,
             judge_concurrency=judge_concurrency,
+            judge_repetitions=judge_repetitions,
             poll_seconds=poll_seconds,
             wait_for_benchmark_output=wait_for_benchmark_output,
             worker_services=worker_services,

@@ -240,5 +240,39 @@ describe("JobPage", () => {
     );
 
     expect((await screen.findAllByText("正在为第 2/3 个方案编译实验规范")).length).toBeGreaterThan(0);
+    expect(screen.getByText("方案 2/3")).toBeInTheDocument();
+  });
+
+  it("shows deferred PilotSpecification work as post-report background work", async () => {
+    api.getJob.mockResolvedValue({
+      id: "job-pilot-deferred",
+      mode: "single",
+      max_rounds: 1,
+      current_round: 1,
+      status: "analyzing",
+      stage: "v4_pilot_specification",
+      progress: 91,
+      created_at: "2026-09-03T00:00:00Z",
+      file_names: ["paper.pdf"],
+    });
+    supabase.query.order.mockResolvedValueOnce({
+      data: [{
+        id: 1,
+        kind: "stage",
+        data: { workflow_stage: "v4_pilot_specification", substage: "pilot_specification_deferred", progress: 91, idea_index: 1, idea_total: 3 },
+        created_at: "2026-09-03T00:01:00Z",
+      }],
+      error: null,
+    });
+
+    render(
+      <LanguageProvider>
+        <MemoryRouter initialEntries={["/jobs/job-pilot-deferred"]}>
+          <Routes><Route path="/jobs/:id" element={<JobPage />} /></Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
+    );
+
+    expect(await screen.findByText("报告将先生成；实验规范由主实验在后台补全")).toBeInTheDocument();
   });
 });

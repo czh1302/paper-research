@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     E2B_API_KEY: SecretStr | None = None
     V4_PILOT_SPEC_REQUIRED: bool = True
     V4_REQUIRE_PILOT_FOR_ALL_REPORTED_IDEAS: bool = True
+    # Compile every delivered Idea once during analysis, but never hold the
+    # research report hostage to an engineering-contract formatting failure.
+    V4_PILOT_FOREGROUND_ATTEMPTS: int = Field(default=1, ge=0, le=1)
+    V4_PILOT_BLOCKS_REPORT: bool = False
     V4_DELIVER_EXPLORATORY_IDEA: bool = True
     EXPERIMENT_FORCE_CPU_PROXY: bool = True
     E2B_PILOT_ENABLED: bool = False
@@ -72,6 +76,8 @@ class Settings(BaseSettings):
     E2B_MAX_SPEND_USD: float = Field(default=90, gt=0, le=90)
     E2B_ESTIMATED_COST_PER_SECOND_USD: float = Field(default=0.000092, gt=0)
     EXPERIMENT_MAX_REPAIRS: int = Field(default=2, ge=0, le=2)
+    EXPERIMENT_PILOT_MAX_ATTEMPTS: int = Field(default=2, ge=1, le=2)
+    EXPERIMENT_PILOT_TIMEOUT_SECONDS: int = Field(default=120, ge=30, le=300)
     EXPERIMENT_MAX_USER_VALIDATIONS: int = Field(default=3, ge=0, le=3)
     EXPERIMENT_LLM_MAX_CNY_PER_RUN: float = Field(default=5, gt=0, le=5)
     # Experiment calls are additionally bounded at the Claude Code process.

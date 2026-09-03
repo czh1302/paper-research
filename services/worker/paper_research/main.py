@@ -359,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--analysis-concurrency", type=int, default=2)
     benchmark.add_argument("--baseline-concurrency", type=int, default=2)
     benchmark.add_argument("--judge-concurrency", type=int, default=2)
+    benchmark.add_argument("--judge-repetitions", type=int, choices=(1, 2, 3), default=1)
     benchmark.add_argument("--resume", action="store_true")
     benchmark.add_argument(
         "--output", type=Path, default=Path(".artifacts/benchmark/teacher-v1")
@@ -484,6 +485,7 @@ def main() -> None:
                         analysis_concurrency=args.analysis_concurrency,
                         baseline_concurrency=args.baseline_concurrency,
                         judge_concurrency=args.judge_concurrency,
+                        judge_repetitions=args.judge_repetitions,
                         poll_seconds=args.poll_seconds,
                         wait_for_benchmark_output=args.wait_for_benchmark_output,
                         worker_services=tuple(args.reload_worker_service),

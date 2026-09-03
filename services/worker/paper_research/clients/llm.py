@@ -180,6 +180,7 @@ class ClaudeCodeClient:
         ) = None,
         max_turns: int | None = None,
         max_budget_usd: float | None = None,
+        timeout_seconds: int | None = None,
         image_paths: list[Path] | None = None,
         usage_metadata: dict[str, Any] | None = None,
     ) -> SchemaModel:
@@ -223,10 +224,13 @@ class ClaudeCodeClient:
         payload: dict[str, Any] = {}
         stdout = b""
         stderr = b""
+        effective_timeout = timeout_seconds or self.timeout_seconds
+        if effective_timeout <= 0:
+            raise ValueError("Claude Code timeout must be positive")
         if progress_callback is None:
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(prompt.encode("utf-8")), timeout=self.timeout_seconds
+                    process.communicate(prompt.encode("utf-8")), timeout=effective_timeout
                 )
             except asyncio.TimeoutError:
                 process.terminate()
@@ -272,7 +276,7 @@ class ClaudeCodeClient:
                 await process.wait()
 
             try:
-                await asyncio.wait_for(consume_stream(), timeout=self.timeout_seconds)
+                await asyncio.wait_for(consume_stream(), timeout=effective_timeout)
                 stderr = await stderr_task
             except asyncio.TimeoutError:
                 process.terminate()

@@ -371,6 +371,7 @@ def test_joint_baseline_and_evaluator_commands_keep_both_inputs_ordered(
         for index, value in enumerate(metrics)
         if value == "--source-paper-id"
     ] == ["joint-paper-0", "joint-paper-1"]
+    assert metrics[metrics.index("--repetitions") + 1] == "1"
 
 
 @pytest.mark.asyncio
@@ -548,6 +549,8 @@ def test_cli_exposes_parallel_benchmark_options() -> None:
             "2",
             "--judge-concurrency",
             "4",
+            "--judge-repetitions",
+            "1",
             "--resume",
         ]
     )
@@ -556,6 +559,7 @@ def test_cli_exposes_parallel_benchmark_options() -> None:
     assert args.analysis_concurrency == 6
     assert args.baseline_concurrency == 2
     assert args.judge_concurrency == 4
+    assert args.judge_repetitions == 1
 
     baseline_args = build_parser().parse_args(
         ["baseline-local", "first.pdf", "second.pdf", "--output", "out"]
