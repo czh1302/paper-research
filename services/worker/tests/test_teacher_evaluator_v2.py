@@ -12,6 +12,7 @@ from paper_research.teacher_evaluator import compact_report_payload
 from paper_research.teacher_evaluator_v2 import (
     MAX_BATCH_ITEMS,
     ComparisonBatchResponseV2,
+    _partition_problem_claim_decisions,
     freeze_primary_items,
     load_frozen_v1_assets,
 )
@@ -168,3 +169,21 @@ def test_partial_batch_schema_allows_progress_without_fabricating_missing_ids() 
         }
     )
     assert [row.item_id for row in response.decisions] == ["one"]
+
+
+def test_problem_claim_partition_never_treats_unknown_or_duplicate_ids_as_failures() -> None:
+    valid, unknown, duplicates = _partition_problem_claim_decisions(
+        [
+            {"claim_id": "expected-one", "supported": True},
+            {"claim_id": "expected-two", "supported": True},
+            {"claim_id": "expected-two", "supported": False},
+            {"claim_id": "rubric-semantic-id", "supported": False},
+        ],
+        ["expected-one", "expected-two", "expected-three"],
+    )
+
+    assert list(valid) == ["expected-one"]
+    assert valid["expected-one"].supported is True
+    assert unknown == ["rubric-semantic-id"]
+    assert duplicates == ["expected-two"]
+    assert "expected-three" not in valid

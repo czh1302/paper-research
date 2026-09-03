@@ -87,6 +87,14 @@ class ProblemStageResponseV2(BaseModel):
     candidate_b: ProblemArmAssessmentV2
 
 
+class ProblemClaimRepairResponseV2(BaseModel):
+    """A small repair response containing only explicitly requested report claims."""
+
+    model_config = ConfigDict(extra="forbid")
+    candidate_a: list[ClaimSupportAssessmentProxy] = Field(default_factory=list, max_length=80)
+    candidate_b: list[ClaimSupportAssessmentProxy] = Field(default_factory=list, max_length=80)
+
+
 class ComparisonDecisionV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
     item_id: str = Field(min_length=1, max_length=300)
@@ -197,6 +205,28 @@ def _problem_prompt(rubric: SourceSilverRubricProxy, bundle: BlindPairBundleProx
         f"FROZEN RUBRIC:\n{rubric.model_dump_json()}\n"
         f"CANDIDATE A:\n{json.dumps(view(bundle.evaluation.candidate_a), ensure_ascii=False)}\n"
         f"CANDIDATE B:\n{json.dumps(view(bundle.evaluation.candidate_b), ensure_ascii=False)}"
+    )
+
+
+def _problem_claim_repair_prompt(
+    rubric: SourceSilverRubricProxy,
+    *,
+    candidate_a: Sequence[Mapping[str, Any]],
+    candidate_b: Sequence[Mapping[str, Any]],
+) -> str:
+    return (
+        "Repair only the missing atomic-support decisions for two anonymous Problem Statements. "
+        "For candidate_a and candidate_b, return one decision for every supplied report claim. "
+        "Copy each supplied claim_id byte-for-byte; do not return IDs from the frozen rubric, "
+        "rename IDs, add claims, or infer support without source evidence. Empty input lists must "
+        "produce empty output lists.\n"
+        f"FROZEN RUBRIC:\n{rubric.model_dump_json()}\n"
+        "MISSING REPORT CLAIMS:\n"
+        + json.dumps(
+            {"candidate_a": list(candidate_a), "candidate_b": list(candidate_b)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     )
 
 
@@ -339,6 +369,34 @@ def _validate_ids(expected: Sequence[str], actual: Sequence[str], label: str) ->
         raise ValueError(
             f"{label} ID coverage mismatch: missing={missing[:5]} unknown={unknown[:5]}"
         )
+
+
+def _partition_problem_claim_decisions(
+    rows: Sequence[ClaimSupportAssessmentProxy | Mapping[str, Any]], expected: Sequence[str]
+) -> tuple[dict[str, ClaimSupportAssessmentProxy], list[str], list[str]]:
+    """Keep only unique requested IDs, leaving malformed output eligible for repair.
+
+    Unknown IDs are never interpreted as negative judgments. Duplicate IDs are also
+    left unresolved because conflicting duplicate decisions cannot be reconciled
+    safely. Both classes are returned for the audit checkpoint.
+    """
+
+    expected_set = set(expected)
+    grouped: dict[str, list[ClaimSupportAssessmentProxy]] = {}
+    unknown: list[str] = []
+    for raw_row in rows:
+        row = (
+            raw_row
+            if isinstance(raw_row, ClaimSupportAssessmentProxy)
+            else ClaimSupportAssessmentProxy.model_validate(raw_row)
+        )
+        if row.claim_id not in expected_set:
+            unknown.append(row.claim_id)
+            continue
+        grouped.setdefault(row.claim_id, []).append(row)
+    duplicates = sorted(claim_id for claim_id, values in grouped.items() if len(values) != 1)
+    valid = {claim_id: values[0] for claim_id, values in grouped.items() if len(values) == 1}
+    return valid, sorted(set(unknown)), duplicates
 
 
 def _metric_from_problem(
@@ -629,9 +687,117 @@ async def evaluate_teacher_reports_v2(
     problem_response = await call(
         "problem_statement", _problem_prompt(rubric, primary), ProblemStageResponseV2
     )
+
+    problem_candidates = {
+        "candidate_a": primary.evaluation.candidate_a,
+        "candidate_b": primary.evaluation.candidate_b,
+    }
+    original_assessments = {
+        "candidate_a": problem_response.candidate_a,
+        "candidate_b": problem_response.candidate_b,
+    }
+    problem_grounding = state.setdefault("problem_grounding", {})
+    problem_anomalies = state.setdefault("problem_claim_anomalies", {})
+    decisions_by_orientation: dict[str, dict[str, ClaimSupportAssessmentProxy]] = {}
+
+    for orientation, candidate in problem_candidates.items():
+        expected = [str(row["claim_id"]) for row in candidate.get("problem_claims", [])]
+        expected_set = set(expected)
+        stored = problem_grounding.setdefault(orientation, {})
+        decisions = {
+            claim_id: ClaimSupportAssessmentProxy.model_validate(value)
+            for claim_id, value in stored.items()
+            if claim_id in expected_set
+        }
+        initial, unknown, duplicates = _partition_problem_claim_decisions(
+            original_assessments[orientation].claim_support_auto, expected
+        )
+        for claim_id, row in initial.items():
+            decisions.setdefault(claim_id, row)
+        if unknown or duplicates:
+            problem_anomalies[orientation] = {
+                "unknown_ids": unknown,
+                "duplicate_ids": duplicates,
+            }
+        for claim_id, row in decisions.items():
+            stored[claim_id] = row.model_dump(mode="json")
+        decisions_by_orientation[orientation] = decisions
+    atomic_write_json(checkpoint_path, state)
+
+    for part in range(1, 5):
+        missing_by_orientation = {
+            orientation: [
+                str(row["claim_id"])
+                for row in candidate.get("problem_claims", [])
+                if str(row["claim_id"]) not in decisions_by_orientation[orientation]
+            ]
+            for orientation, candidate in problem_candidates.items()
+        }
+        if not any(missing_by_orientation.values()):
+            break
+        pending = {
+            orientation: [
+                row
+                for row in problem_candidates[orientation].get("problem_claims", [])
+                if str(row["claim_id"]) in set(missing_by_orientation[orientation])
+            ]
+            for orientation in problem_candidates
+        }
+        key = f"problem_claims_repair_part_{part:02d}"
+        response = await call(
+            key,
+            _problem_claim_repair_prompt(
+                rubric,
+                candidate_a=pending["candidate_a"],
+                candidate_b=pending["candidate_b"],
+            ),
+            ProblemClaimRepairResponseV2,
+        )
+        progress = 0
+        for orientation in problem_candidates:
+            rows = getattr(response, orientation)
+            valid, unknown, duplicates = _partition_problem_claim_decisions(
+                rows, missing_by_orientation[orientation]
+            )
+            anomaly = problem_anomalies.setdefault(orientation, {})
+            if unknown:
+                anomaly.setdefault("repair_unknown_ids", []).extend(unknown)
+                anomaly["repair_unknown_ids"] = sorted(set(anomaly["repair_unknown_ids"]))
+            if duplicates:
+                anomaly.setdefault("repair_duplicate_ids", []).extend(duplicates)
+                anomaly["repair_duplicate_ids"] = sorted(set(anomaly["repair_duplicate_ids"]))
+            for claim_id, row in valid.items():
+                if claim_id not in decisions_by_orientation[orientation]:
+                    decisions_by_orientation[orientation][claim_id] = row
+                    problem_grounding[orientation][claim_id] = row.model_dump(mode="json")
+                    progress += 1
+        atomic_write_json(checkpoint_path, state)
+        if progress == 0:
+            raise ValueError("problem claim repair made no progress")
+
+    remaining = {
+        orientation: [
+            str(row["claim_id"])
+            for row in candidate.get("problem_claims", [])
+            if str(row["claim_id"]) not in decisions_by_orientation[orientation]
+        ]
+        for orientation, candidate in problem_candidates.items()
+    }
+    if any(remaining.values()):
+        raise ValueError("problem claim repair remained incomplete")
+
+    repaired_assessments: dict[str, ProblemArmAssessmentV2] = {}
+    for orientation, candidate in problem_candidates.items():
+        expected = [str(row["claim_id"]) for row in candidate.get("problem_claims", [])]
+        decisions = decisions_by_orientation[orientation]
+        _validate_ids(expected, list(decisions), "problem claims")
+        repaired_assessments[orientation] = original_assessments[orientation].model_copy(
+            update={"claim_support_auto": [decisions[claim_id] for claim_id in expected]}
+        )
+
     problem_by_arm = {
-        primary.private_assignment.candidate_a_id: problem_response.candidate_a,
-        primary.private_assignment.candidate_b_id: problem_response.candidate_b,
+        primary.private_assignment.candidate_a_id: repaired_assessments["candidate_a"],
+        primary.private_assignment.candidate_b_id: repaired_assessments["candidate_b"],
     }
 
     decisions_by_arm: dict[str, dict[str, ComparisonDecisionV2]] = {}
