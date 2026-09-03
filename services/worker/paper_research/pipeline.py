@@ -4514,6 +4514,9 @@ class AnalysisPipeline:
                     resume_progress,
                     current_round=1,
                 )
+                reused_complete_v4 = bool(
+                    dict(pipeline_checkpoint.get("v4") or {}).get("complete")
+                )
                 presentation_v4, all_candidates, search_audit, bundles = (
                     await self._run_v4_pipeline(
                         job,
@@ -4565,7 +4568,12 @@ class AnalysisPipeline:
                     uncovered_axes=[],
                     high_relevance_ids=list(external_ids)[:30],
                 )
-                if self.repository and persist:
+                # A completed V4 checkpoint was assembled from candidates and
+                # search rounds that are already durable.  Re-upserting the
+                # full (often 1,000+ row) candidate pool during report-only
+                # recovery needlessly contends with the large atomic report
+                # write and can hit the hosted database statement timeout.
+                if self.repository and persist and not reused_complete_v4:
                     await self.repository.save_candidates(
                         job.id,
                         [item.model_dump(mode="json") for item in all_candidates],
