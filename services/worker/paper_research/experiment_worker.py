@@ -890,6 +890,10 @@ class ExperimentWorker:
             self.settings.EXPERIMENT_LLM_CONTEXT_TOKENS * input_price
             + self.settings.EXPERIMENT_LLM_MAX_OUTPUT_TOKENS * output_price
         ) / 1_000_000
+        max_budget_usd = min(
+            max_budget_usd,
+            self.settings.EXPERIMENT_LLM_MAX_CNY_PER_CALL / 7.5,
+        )
         max_call_cny = round(max_budget_usd * 7.5, 6)
         await self._authorize_llm_call(
             invocation_id=str(journal["invocation_id"]),
@@ -952,7 +956,7 @@ class ExperimentWorker:
             if isinstance(recovered.get("result"), dict):
                 return response_model.model_validate(recovered["result"])
             raise accounting_error
-        except ClaudeCodeError:
+        except ClaudeCodeError as provider_error:
             # Non-zero and invalid-structure calls can still report exact usage.
             # Their result is intentionally not reusable, but the receipt is.
             failed = self._load_llm_journal(journal_path)
@@ -960,7 +964,18 @@ class ExperimentWorker:
                 failed["settled"] = True
                 failed["settled_at"] = utc_now()
                 self._write_llm_journal(journal_path, failed)
-            raise
+            else:
+                # The per-call cap is deliberately smaller than the complete
+                # run envelope. Conservatively settling an ambiguous timeout
+                # therefore preserves both honest accounting and enough room
+                # for a deterministic fallback plus later repository work.
+                try:
+                    await self._settle_llm_journal(journal_path, failed)
+                except Exception as settlement_error:
+                    raise ClaudeCodeAccountingError(
+                        "Provider invocation failed and its reservation could not be settled"
+                    ) from settlement_error
+            raise provider_error
         self._ensure_active_lease()
         journal = self._load_llm_journal(journal_path)
         if not isinstance(journal.get("result"), dict):

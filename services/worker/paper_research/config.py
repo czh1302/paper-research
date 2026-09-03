@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     EXPERIMENT_PILOT_TIMEOUT_SECONDS: int = Field(default=120, ge=30, le=300)
     EXPERIMENT_MAX_USER_VALIDATIONS: int = Field(default=3, ge=0, le=3)
     EXPERIMENT_LLM_MAX_CNY_PER_RUN: float = Field(default=5, gt=0, le=5)
+    # A single ambiguous provider call must not consume the complete run
+    # envelope and strand a valid specification before repository generation.
+    EXPERIMENT_LLM_MAX_CNY_PER_CALL: float = Field(default=1.5, gt=0, le=5)
     # Experiment calls are additionally bounded at the Claude Code process.
     # These limits make the database's per-invocation reservation a provable
     # upper bound even when a model consumes its full context on every turn.

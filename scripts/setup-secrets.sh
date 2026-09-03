@@ -43,6 +43,7 @@ printf '%s\n' \
   'CLAUDE_MODEL=deepseek-v4-flash' \
   'CLAUDE_PRO_MODEL=deepseek-v4-pro' \
   'CLAUDE_TIMEOUT_SECONDS=900' \
+  'EXPERIMENT_LLM_MAX_CNY_PER_CALL=1.5' \
   'MINERU_POLL_SECONDS=5' \
   'MINERU_TIMEOUT_SECONDS=900' >> "${secrets_file}.new"
 

@@ -14,7 +14,7 @@ from paper_research.clients.e2b import (
     SandboxNotFoundError,
     SandboxRuntimeTaintedError,
 )
-from paper_research.clients.llm import ClaudeCodeAccountingError
+from paper_research.clients.llm import ClaudeCodeAccountingError, ClaudeCodeError
 from paper_research.config import Settings
 from paper_research.experiment_models import (
     AssistantWorkspaceChange,
@@ -869,11 +869,11 @@ async def test_experiment_model_routes_flash_and_pro_explicitly(tmp_path) -> Non
     assert llm.calls[0]["model"] == settings.CLAUDE_MODEL
     assert llm.calls[0]["stage"] == "repository"
     assert llm.calls[0]["max_turns"] == 4
-    assert 0 < llm.calls[0]["max_budget_usd"] < 0.5
+    assert llm.calls[0]["max_budget_usd"] == pytest.approx(0.2)
     assert llm.calls[1]["model"] == settings.CLAUDE_PRO_MODEL
     assert llm.calls[1]["stage"] == "specification"
     assert llm.calls[1]["max_turns"] == 2
-    assert 0 < llm.calls[1]["max_budget_usd"] < 1
+    assert llm.calls[1]["max_budget_usd"] == pytest.approx(0.2)
     assert llm.calls[2]["model"] == settings.CLAUDE_VISION_MODEL
     assert llm.calls[2]["image_paths"] == [image_path]
     assert llm.calls[2]["usage_metadata"] == {"attachment_count": 1, "attachment_bytes": 8}
@@ -1110,6 +1110,48 @@ async def test_experiment_never_repeats_an_ambiguous_started_invocation(
 
     assert llm.calls == 1
     assert repository.settlement_calls == 1
+
+
+async def test_experiment_settles_failed_call_without_usage_immediately(
+    tmp_path,
+) -> None:
+    from pydantic import BaseModel
+
+    class Response(BaseModel):
+        value: str
+
+    class SettlementRepository(FakeRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.settlement_calls = 0
+
+        async def settle_experiment_llm_reservation(self, *_args, **_kwargs):
+            self.settlement_calls += 1
+            return record.model_copy(update={"llm_cost_cny": 1.5})
+
+    class FailedLlm:
+        async def structured(self, *_args, **_kwargs):
+            raise ClaudeCodeError("provider timeout")
+
+    record = experiment(pilot_spec())
+    repository = SettlementRepository()
+    worker = ExperimentWorker(
+        Settings(_env_file=None, ARTIFACT_ROOT=tmp_path),
+        repository=repository,
+        sandbox_provider=FakeProvider(),
+        llm=FailedLlm(),
+    )
+    worker._active_experiment = record
+
+    with pytest.raises(ClaudeCodeError, match="provider timeout"):
+        await worker._structured("prompt", Response, stage="repository")
+
+    assert repository.settlement_calls == 1
+    journal_files = list(
+        (tmp_path / "experiment-llm-journals" / record.id).glob("*.json")
+    )
+    assert len(journal_files) == 1
+    assert json.loads(journal_files[0].read_text(encoding="utf-8"))["settled"] is True
 
 
 def test_experiment_llm_budget_is_scoped_to_current_run(tmp_path) -> None:
