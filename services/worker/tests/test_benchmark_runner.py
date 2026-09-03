@@ -533,6 +533,37 @@ async def test_resume_reconciles_existing_baselines_without_relaunch(
         assert child["attempts"] == 1
 
 
+@pytest.mark.asyncio
+async def test_live_managed_child_does_not_abort_supervisor_poll(
+    tmp_path: Path,
+) -> None:
+    manifest = load_benchmark_manifest(_manifest(tmp_path), project_root=tmp_path)
+    supervisor = BenchmarkSupervisor(
+        SimpleNamespace(),
+        manifest,
+        tmp_path / "output",
+        "owner-job",
+        repository=SubmissionRepository(),
+        project_root=tmp_path,
+    )
+    paper_id = manifest.papers[0].id
+    child = supervisor.state["papers"][paper_id]["baseline"]
+    child.update({"status": "running", "pid": 123, "process_start_token": "token"})
+
+    class LiveProcess:
+        returncode = None
+
+        async def wait(self) -> int:
+            await asyncio.sleep(1)
+            return 0
+
+    supervisor._children[(paper_id, "baseline")] = LiveProcess()  # type: ignore[assignment]
+
+    await supervisor._inspect_managed_commands("baseline")
+
+    assert child["status"] == "running"
+
+
 def test_cli_exposes_parallel_benchmark_options() -> None:
     args = build_parser().parse_args(
         [

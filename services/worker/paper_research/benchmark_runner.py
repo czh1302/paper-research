@@ -1056,7 +1056,12 @@ class BenchmarkSupervisor:
                 if process.returncode is None:
                     try:
                         await asyncio.wait_for(process.wait(), timeout=0.001)
-                    except TimeoutError:
+                    # Python 3.10 raises asyncio.TimeoutError here; catching
+                    # only the built-in TimeoutError makes the whole
+                    # supervisor polling cycle abort while any evaluator is
+                    # still alive, so completed siblings are never reaped and
+                    # pending metric cases cannot refill the concurrency slots.
+                    except asyncio.TimeoutError:
                         continue
                 return_code = process.returncode
                 self._children.pop(key, None)
