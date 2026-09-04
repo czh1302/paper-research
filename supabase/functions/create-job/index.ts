@@ -1,4 +1,5 @@
 import { authenticate, handleError, HttpError, json, preflight, requireActiveAccount, verifyTurnstile } from "../_shared/http.ts";
+import { parseSinglePaperAnalysisRequest } from "../_shared/analysis-request.ts";
 
 Deno.serve(async (request) => {
   const early = preflight(request);
@@ -7,15 +8,13 @@ Deno.serve(async (request) => {
     const { user, admin } = await authenticate(request);
     await requireActiveAccount(admin, user);
     const body = await request.json();
-    const mode = body.mode as "single" | "multi";
-    const uploadIds = body.uploadIds as string[];
-    const maxRounds = Number(body.maxRounds);
-    const researchBrief = typeof body.researchBrief === "string" ? body.researchBrief.trim() : "";
-    if (!Array.isArray(uploadIds) || !["single", "multi"].includes(mode) || !Number.isInteger(maxRounds)) {
-      throw new HttpError(400, "Invalid analysis request");
+    let parsed: ReturnType<typeof parseSinglePaperAnalysisRequest>;
+    try {
+      parsed = parseSinglePaperAnalysisRequest(body);
+    } catch {
+      throw new HttpError(400, "Invalid single-paper analysis request");
     }
-    const expected = mode === "single" ? uploadIds.length === 1 : uploadIds.length >= 2 && uploadIds.length <= 5;
-    if (!expected || maxRounds < 1 || maxRounds > 5 || researchBrief.length > 2000) throw new HttpError(400, "Invalid mode, PDF count, rounds, or research brief");
+    const { uploadIds, maxRounds, researchBrief } = parsed;
     await verifyTurnstile(body.turnstileToken, request.headers.get("CF-Connecting-IP"));
 
     const { data: uploads, error: uploadsError } = await admin
@@ -39,7 +38,7 @@ Deno.serve(async (request) => {
 
     const { data, error } = await admin.rpc("reserve_job", {
       p_user_id: user.id,
-      p_mode: mode,
+      p_mode: "single",
       p_file_ids: uploadIds,
       p_max_rounds: maxRounds,
       p_languages: ["zh", "en"],

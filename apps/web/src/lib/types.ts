@@ -11,6 +11,7 @@ export interface JobRecord {
   error: string | null;
   created_at: string;
   completed_at: string | null;
+  paper_title?: string | null;
   file_names?: string[];
   is_favorite?: boolean;
   report_id?: string | null;
@@ -277,6 +278,7 @@ export interface AdminJobRow {
   started_at: string | null;
   completed_at: string | null;
   updated_at: string;
+  paper_title: string | null;
   file_names: string[];
   report_id: string | null;
 }

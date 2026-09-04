@@ -5,6 +5,7 @@ import { WorkflowStatusBadge } from "../components/WorkflowStatusBadge";
 import { adminDeleteJob, adminDeleteUser, adminListDeletionRequests, adminListJobs, adminListUsers } from "../lib/api";
 import { deriveWorkflowState, workflowStageName } from "../lib/job-workflow";
 import { useLanguage } from "../lib/language";
+import { jobDisplayTitle } from "../lib/paper-job";
 import { requireSupabase } from "../lib/supabase";
 import type { AdminDeletionRequest, AdminJobRow, AdminUserRow } from "../lib/types";
 
@@ -75,7 +76,8 @@ export function AdminPage() {
   }
 
   async function deleteAdminJob(job: AdminJobRow) {
-    if (!window.confirm(text(`确定永久删除任务 ${job.file_names[0] || job.job_id} 吗？运行中的任务会先安全取消。`, `Permanently delete ${job.file_names[0] || job.job_id}? Active processing will be cancelled first.`))) return;
+    const title = jobDisplayTitle(job, job.job_id);
+    if (!window.confirm(text(`确定永久删除任务 ${title} 吗？运行中的任务会先安全取消。`, `Permanently delete ${title}? Active processing will be cancelled first.`))) return;
     setDeleting(`job:${job.job_id}`); setError(""); setNotice("");
     try {
       await adminDeleteJob(job.job_id);
@@ -92,6 +94,7 @@ export function AdminPage() {
   const visibleJobs = useMemo(() => jobs.filter((job) => !normalizedQuery
     || job.user_email.toLowerCase().includes(normalizedQuery)
     || job.job_id.toLowerCase().includes(normalizedQuery)
+    || job.paper_title?.toLowerCase().includes(normalizedQuery)
     || job.file_names.some((name) => name.toLowerCase().includes(normalizedQuery))), [jobs, normalizedQuery]);
   const totalUsers = users[0]?.total_count ?? 0;
   const totalJobs = jobs[0]?.total_count ?? 0;
@@ -145,7 +148,7 @@ export function AdminPage() {
           <table className="report-table min-w-[1200px]">
             <thead><tr><th>{text("任务 / 文件", "Job / Files")}</th><th>{text("用户", "User")}</th><th>{text("状态", "Status")}</th><th>{text("时间", "Time")}</th><th>{text("操作", "Actions")}</th></tr></thead>
             <tbody>{visibleJobs.map((job) => <tr key={job.job_id}>
-              <td><div className="font-mono text-xs text-accent-strong">{job.job_id}</div><div className="mt-1 max-w-xs truncate text-xs text-muted" title={job.file_names.join(", ")}>{job.file_names.join(", ") || "—"}</div></td>
+              <td><div className="max-w-xs truncate font-medium text-content" title={jobDisplayTitle(job, job.job_id)}>{jobDisplayTitle(job, job.job_id)}</div><div className="mt-1 font-mono text-[10px] text-accent-strong">{job.job_id}</div><div className="mt-1 max-w-xs truncate text-xs text-muted" title={job.file_names.join(", ")}>{job.file_names.join(", ") || "—"}</div></td>
               <td><div className="text-content">{job.user_email}</div><div className="mt-1 font-mono text-[10px] text-faint">{job.user_id}</div></td>
               <td><WorkflowStatusBadge status={job.status} step={deriveWorkflowState(job).step}/><div className="mt-2 text-xs text-muted">{workflowStageName(deriveWorkflowState(job).step, language)} · {deriveWorkflowState(job).progress}%</div>{job.error && <div className="mt-1 max-w-xs truncate text-xs text-danger" title={job.error}>{job.error}</div>}</td>
               <td>{formatDate(job.created_at)}<div className="mt-1 text-xs text-muted">{text("更新：", "Updated: ")}{formatDate(job.updated_at)}</div></td>

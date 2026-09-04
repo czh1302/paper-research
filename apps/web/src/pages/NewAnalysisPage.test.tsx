@@ -49,7 +49,7 @@ describe("NewAnalysisPage", () => {
     await user.click(screen.getByRole("button", { name: "完成安全验证" }));
     await user.click(screen.getByRole("button", { name: "开始分析" }));
 
-    expect(createAnalysis).toHaveBeenCalledWith([paper], "single", 1, "verified-token", "");
+    expect(createAnalysis).toHaveBeenCalledWith(paper, 1, "verified-token");
     expect(await screen.findByText("任务页面")).toBeInTheDocument();
   });
 
@@ -68,27 +68,22 @@ describe("NewAnalysisPage", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("只支持 PDF 文件");
   });
 
-  it("requires two multi-paper files and prevents destructive mode switching", async () => {
-    const user = userEvent.setup();
+  it("exposes no mode or advanced settings and rejects a multi-file drop", () => {
     const { container } = renderPage();
-    await user.click(screen.getByRole("radio", { name: "多论文" }));
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
-    await user.upload(input, pdf("one.pdf"));
-    expect(screen.getByRole("button", { name: "请至少上传 2 篇 PDF" })).toBeDisabled();
-    await user.upload(input, pdf("two.pdf"));
-    await user.click(screen.getByRole("radio", { name: "单论文" }));
-    expect(screen.getByRole("radio", { name: "多论文" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("alert")).toHaveTextContent("请先移除多余文件");
+    expect(input).not.toHaveAttribute("multiple");
+    expect(screen.queryByText("分析模式")).not.toBeInTheDocument();
+    expect(screen.queryByText("高级设置")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("多论文");
+    fireEvent.change(input, { target: { files: [pdf("one.pdf"), pdf("two.pdf")] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("每次只能选择一篇 PDF");
   });
 
-  it("passes advanced rounds and keeps files after a failed submission", async () => {
+  it("keeps the file and fixed default configuration after a failed submission", async () => {
     const user = userEvent.setup();
     const { container } = renderPage();
     const paper = pdf("retry.pdf");
     await user.upload(container.querySelector<HTMLInputElement>('input[type="file"]')!, paper);
-    await user.click(screen.getByText("高级设置"));
-    await user.selectOptions(screen.getByRole("combobox", { name: /最大循环轮数/ }), "3");
-    expect(screen.getByText(/深度检索 · 3轮/)).toBeInTheDocument();
     await user.click(screen.getByLabelText(/我同意将 PDF/));
     await user.click(screen.getByRole("button", { name: "完成安全验证" }));
     createAnalysis.mockRejectedValueOnce(new Error("网络暂时不可用"));
@@ -96,7 +91,7 @@ describe("NewAnalysisPage", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("网络暂时不可用");
     expect(screen.getByText("retry.pdf")).toBeInTheDocument();
-    expect(createAnalysis).toHaveBeenCalledWith([paper], "single", 3, "verified-token", "");
+    expect(createAnalysis).toHaveBeenCalledWith(paper, 1, "verified-token");
     expect(screen.getByRole("button", { name: "正在进行安全验证…" })).toBeDisabled();
   });
 });

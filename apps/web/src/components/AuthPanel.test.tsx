@@ -25,6 +25,9 @@ describe("AuthPanel", () => {
     const user = userEvent.setup();
     render(<LanguageProvider><ThemeProvider><MemoryRouter initialEntries={["/"]}><Routes><Route path="/" element={<AuthPanel/>}/><Route path="/new" element={<div>新建分析页面</div>}/></Routes></MemoryRouter></ThemeProvider></LanguageProvider>);
 
+    expect(screen.getByText("深度论文调研")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("多篇");
+
     await user.type(screen.getByLabelText("邮箱"), "researcher@example.com");
     await user.type(screen.getByLabelText("密码"), "password123");
     await user.click(screen.getByRole("button", { name: "完成人机验证" }));

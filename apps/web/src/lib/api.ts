@@ -72,20 +72,18 @@ export async function listJobs(limit = 20, offset = 0, favoritesOnly = false): P
   return (data ?? []) as JobRecord[];
 }
 
-export async function createAnalysis(files: File[], mode: "single" | "multi", maxRounds: number, turnstileToken: string, researchBrief = "") {
+export async function createAnalysis(file: File, maxRounds: number, turnstileToken: string) {
   const client = requireSupabase();
   const { data: uploadData, error: uploadError } = await client.functions.invoke("create-upload", {
-    body: { files: files.map((file) => ({ name: file.name, size: file.size, type: file.type })) },
+    body: { files: [{ name: file.name, size: file.size, type: file.type }] },
   });
   if (uploadError) throw uploadError;
   const uploads = uploadData.uploads as { uploadId: string; path: string; token: string }[];
-  for (let index = 0; index < files.length; index += 1) {
-    const upload = uploads[index];
-    const { error } = await client.storage.from("papers").uploadToSignedUrl(upload.path, upload.token, files[index], { contentType: "application/pdf" });
-    if (error) throw error;
-  }
+  const upload = uploads[0];
+  const { error: storageError } = await client.storage.from("papers").uploadToSignedUrl(upload.path, upload.token, file, { contentType: "application/pdf" });
+  if (storageError) throw storageError;
   const { data, error } = await client.functions.invoke("create-job", {
-    body: { mode, uploadIds: uploads.map((item) => item.uploadId), maxRounds, turnstileToken, researchBrief },
+    body: { mode: "single", uploadIds: [upload.uploadId], maxRounds, turnstileToken, researchBrief: "" },
   });
   if (error) throw error;
   return data.job as JobRecord;
@@ -94,8 +92,8 @@ export async function createAnalysis(files: File[], mode: "single" | "multi", ma
 export async function getJob(jobId: string, includeInternal = false): Promise<JobRecord> {
   const client = requireSupabase();
   const result = includeInternal
-    ? await client.from("jobs").select("id,mode,max_rounds,current_round,status,stage,progress,created_at,completed_at,retry_count,next_retry_at,last_recovery_at,error,job_files(position,upload:uploads(original_name))").eq("id", jobId).single()
-    : await client.from("jobs").select("id,mode,max_rounds,current_round,status,stage,progress,created_at,completed_at,retry_count,next_retry_at,last_recovery_at,job_files(position,upload:uploads(original_name))").eq("id", jobId).single();
+    ? await client.from("jobs").select("id,mode,max_rounds,current_round,status,stage,progress,created_at,completed_at,paper_title,retry_count,next_retry_at,last_recovery_at,error,job_files(position,upload:uploads(original_name))").eq("id", jobId).single()
+    : await client.from("jobs").select("id,mode,max_rounds,current_round,status,stage,progress,created_at,completed_at,paper_title,retry_count,next_retry_at,last_recovery_at,job_files(position,upload:uploads(original_name))").eq("id", jobId).single();
   const { data, error } = result;
   if (error) throw error;
   const row = data as unknown as Record<string, unknown>;

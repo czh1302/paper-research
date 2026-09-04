@@ -53,6 +53,7 @@ describe("JobPage", () => {
       stage: "completed",
       progress: 100,
       created_at: "2026-08-31T00:00:00Z",
+      paper_title: "Probe-Guided Reproduction",
       file_names: ["2509.21074v4.pdf"],
     });
     api.getReportByJob.mockResolvedValue({
@@ -72,11 +73,13 @@ describe("JobPage", () => {
       </LanguageProvider>,
     );
 
-    expect(await screen.findByText("2509.21074v4.pdf")).toBeInTheDocument();
+    expect(await screen.findByText("Probe-Guided Reproduction")).toBeInTheDocument();
+    expect(screen.getByText("arXiv: 2509.21074v4")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /返回任务列表/ })).toHaveAttribute("href", "/");
     expect(screen.getAllByText(/^步骤 [1-7]$/)).toHaveLength(7);
     expect(screen.getAllByText("生成报告和导出文件").length).toBeGreaterThan(0);
-    expect(screen.getByText("单论文")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("单论文");
+    expect(document.body.textContent).not.toContain("job-12345678");
     expect(document.body.textContent).not.toContain("1 轮");
   });
 
