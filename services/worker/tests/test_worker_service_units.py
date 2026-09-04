@@ -54,7 +54,7 @@ def test_worker_health_check_never_dumps_service_environment() -> None:
     assert "cat ${secrets_file}" not in health_check
 
 
-def test_benchmark_services_use_all_six_analysis_workers() -> None:
+def test_benchmark_services_use_expected_concurrency() -> None:
     benchmark = (ROOT / "ops/systemd/paper-research-teacher-benchmark.service").read_text(
         encoding="utf-8"
     )
@@ -62,8 +62,8 @@ def test_benchmark_services_use_all_six_analysis_workers() -> None:
         ROOT / "ops/systemd/paper-research-teacher-joint-benchmark.service"
     ).read_text(encoding="utf-8")
 
-    assert "--analysis-concurrency 6" in benchmark
+    assert "benchmark-evaluate-v2" in benchmark
+    assert "--concurrency 4" in benchmark
     assert "--analysis-concurrency 6" in joint
     for worker_number in range(2, 7):
-        assert f"paper-research-worker-{worker_number}.service" in benchmark
         assert f"--reload-worker-service paper-research-worker-{worker_number}.service" in joint
